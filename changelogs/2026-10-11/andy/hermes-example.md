@@ -1,0 +1,1 @@
+- Add `examples/hermes`: run Nous Research's Hermes Agent headless in a sandbox whose egress is limited to the model endpoint, with the API key bound to that host via `add_credentials` so the agent only ever sees a placeholder.

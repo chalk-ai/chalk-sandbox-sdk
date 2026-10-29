@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
-from chalkcompute import Container, ComputeClass, NetworkPolicy
+from chalkcompute import Container, ComputeClass, ExecutionBackend, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 from chalkcompute._gen.chalk.container.v1 import service_pb as pb
 from chalkcompute._volume import VolumeMount
@@ -373,3 +374,28 @@ def test_container_tracing_default_keeps_platform_sampler() -> None:
     with pytest.warns(DeprecationWarning):
         container = Container(image="ubuntu:latest", env={"APP": "1"})
     assert container._env == {"APP": "1"}
+
+
+@pytest.mark.parametrize(
+    "target", [None, ExecutionBackend.ENVIRONMENT, ExecutionBackend.SERVERLESS]
+)
+def test_container_execution_target(target) -> None:
+    from chalkcompute._containerspec import ContainerSpec
+
+    spec = ContainerSpec(image="ubuntu:latest", execution_target=target)
+    if target is None:
+        assert "executionTarget" not in spec.to_dict()
+    else:
+        assert spec.to_dict()["executionTarget"] == {"backend": target.value}
+    assert (
+        pb.ChalkContainerSpec.from_json(json.dumps(spec.to_dict())) == spec.to_proto()
+    )
+
+    client = FakeConnectClient()
+    container = Container(image="ubuntu:latest", execution_target=target)
+    container._client = client
+    container.run()
+    submitted = client.calls[0].request.container.spec
+    assert submitted.has_field("execution_target") == (target is not None)
+    if target is not None:
+        assert submitted.execution_target.backend == pb.ExecutionBackend[target.name]

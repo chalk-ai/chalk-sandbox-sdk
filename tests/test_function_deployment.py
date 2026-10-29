@@ -12,6 +12,8 @@ from protobuf import Oneof
 
 import chalkcompute._function_deployment as deployment
 import chalkcompute._function as function_module
+from chalkcompute import ExecutionBackend
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg
@@ -239,7 +241,9 @@ def test_redeploy_preserves_callable_and_desired_spec(
     monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", strip_source)
     monkeypatch.delenv("CHALK_FUNCTION_LOCAL_SDK_COPY", raising=False)
     source = tmp_path / "reuse_example.py"
-    source.write_text("def add_values(x: int = 41) -> int:\n    return x + 1\n")
+    source.write_text(
+        "# Deployment source\n\ndef add_values(x: int = 41) -> int:\n    return x + 1\n"
+    )
     spec = importlib.util.spec_from_file_location("reuse_example", source)
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, module)
@@ -285,8 +289,41 @@ def test_redeploy_preserves_callable_and_desired_spec(
     assert [r.function_name for r in client.requests] == [registered_name] * 2
     assert client.requests[0].spec == client.requests[1].spec
     assert prepared_sources[0] == prepared_sources[1]
+    location = client.requests[0].spec.version_spec.config.source_location
+    assert location is not None
+    captured = prepared_sources[0][location.path]
+    assert captured.splitlines()[location.line_number - 1].startswith("def add_values(")
+    assert location.column_number == 1
     for path, text in prepared_sources[1].items():
         compile(text, path, "exec")
     assert fn._func_name == "add_values"
     assert fn._queue_function_name() == registered_name
     assert fn._bind_call_arguments((), {}) == (41,)
+
+
+@pytest.mark.parametrize(
+    "target", [None, ExecutionBackend.ENVIRONMENT, ExecutionBackend.SERVERLESS]
+)
+def test_function_deploy_forwards_execution_target(monkeypatch, target):
+    def add(x: int) -> int:
+        return x
+
+    fn = RemoteFunction(add, name="test", execution_target=target)
+    client = Client([complete(), complete()])
+    client._env_id = None
+    fn._client = client
+    monkeypatch.setattr(
+        RemoteFunction, "_build_deploy_image", lambda _: Image("python:3.11")
+    )
+    fn.deploy()
+    fn.deploy()
+
+    assert len(client.requests) == 2
+    for request in client.requests:
+        spec = request.spec.version_spec.spec.container_spec
+        assert spec.has_field("execution_target") == (target is not None)
+        if target is not None:
+            assert (
+                spec.execution_target.backend
+                == container_pb.ExecutionBackend[target.name]
+            )

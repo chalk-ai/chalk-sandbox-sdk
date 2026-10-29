@@ -206,8 +206,10 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=9a760cc18c4bea5f06888a8cad51afc9bfb7aa77#9a760cc18c4bea5f06888a8cad51afc9bfb7aa77"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
 dependencies = [
+ "chalk_arrow_protos",
+ "chalk_metrics_protos",
  "prost",
  "prost-build",
  "prost-types",
@@ -223,6 +225,25 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "chalk_arrow_protos"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
+dependencies = [
+ "prost",
+ "prost-build",
+]
+
+[[package]]
+name = "chalk_metrics_protos"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
 ]
 
 [[package]]
@@ -270,11 +291,11 @@ dependencies = [
 [[package]]
 name = "chalk_volume_client"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=9a760cc18c4bea5f06888a8cad51afc9bfb7aa77#9a760cc18c4bea5f06888a8cad51afc9bfb7aa77"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
 dependencies = [
  "blake3",
  "bytes",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=9a760cc18c4bea5f06888a8cad51afc9bfb7aa77)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a)",
  "futures-util",
  "log",
  "prost",
@@ -312,6 +333,16 @@ name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
+name = "core-foundation"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -710,6 +741,7 @@ dependencies = [
  "hyper 1.10.1",
  "hyper-util",
  "rustls 0.23.40",
+ "rustls-native-certs 0.8.4",
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
@@ -1138,6 +1170,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
+name = "openssl-probe"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1332,9 +1370,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8970a78afe0628a3e3430376fc5fd76b6b45c4d43360ffd6cdd40bdde72b682a"
+checksum = "7ba0117f4212101ee6544044dae45abe1083d30ce7b29c4b5cbdfa2354e07383"
 dependencies = [
  "indoc",
  "libc",
@@ -1349,19 +1387,18 @@ dependencies = [
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "458eb0c55e7ece017adeba38f2248ff3ac615e53660d7c71a238d7d2a01c7598"
+checksum = "4fc6ddaf24947d12a9aa31ac65431fb1b851b8f4365426e182901eabfb87df5f"
 dependencies = [
- "once_cell",
  "target-lexicon",
 ]
 
 [[package]]
 name = "pyo3-ffi"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7114fe5457c61b276ab77c5055f206295b812608083644a5c5b2640c3102565c"
+checksum = "025474d3928738efb38ac36d4744a74a400c901c7596199e20e45d98eb194105"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -1369,9 +1406,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8725c0a622b374d6cb051d11a0983786448f7785336139c3c94f5aa6bef7e50"
+checksum = "2e64eb489f22fe1c95911b77c44cc41e7c19f3082fc81cce90f657cdc42ffded"
 dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
@@ -1381,9 +1418,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros-backend"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4109984c22491085343c05b0dbc54ddc405c3cf7b4374fc533f5c3313a572ccc"
+checksum = "100246c0ecf400b475341b8455a9213344569af29a3c841d29270e53102e0fcf"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1577,6 +1614,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls 0.23.40",
+ "rustls-native-certs 0.8.4",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -1693,10 +1731,22 @@ version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
 dependencies = [
- "openssl-probe",
+ "openssl-probe 0.1.6",
  "rustls-pemfile",
  "schannel",
- "security-framework",
+ "security-framework 2.11.1",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+dependencies = [
+ "openssl-probe 0.2.1",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework 3.7.0",
 ]
 
 [[package]]
@@ -1853,7 +1903,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
 dependencies = [
  "bitflags 2.11.1",
- "core-foundation",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+dependencies = [
+ "bitflags 2.11.1",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "libc",
  "security-framework-sys",
@@ -2059,7 +2122,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -2240,7 +2303,7 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost",
- "rustls-native-certs",
+ "rustls-native-certs 0.6.3",
  "rustls-pemfile",
  "tokio",
  "tokio-rustls 0.24.1",

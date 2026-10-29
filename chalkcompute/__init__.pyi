@@ -11,6 +11,8 @@ from chalkcompute._artifact import ArtifactError as ArtifactError
 from chalkcompute._artifact import ArtifactNotFoundError as ArtifactNotFoundError
 from chalkcompute._cls import ClassBuildError as ClassBuildError
 from chalkcompute._cls import ClassError as ClassError
+from chalkcompute._chalk_identity import ChalkIdentity as ChalkIdentity
+from chalkcompute._chalk_identity import OIDCTokenFile as OIDCTokenFile
 from chalkcompute._cls import RemoteClass as RemoteClass
 from chalkcompute._cls import after as after
 from chalkcompute._cls import before as before
@@ -18,6 +20,13 @@ from chalkcompute._cls import cls as cls
 from chalkcompute._cls import method as method
 from chalkcompute._concurrency import ConcurrencyPolicy as ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient as ConnectClient
+from chalkcompute._workload_identity import OIDCToken as OIDCToken
+from chalkcompute._workload_identity import (
+    WorkloadIdentityTokenError as WorkloadIdentityTokenError,
+)
+from chalkcompute._workload_identity import (
+    WorkloadIdentityTokenSource as WorkloadIdentityTokenSource,
+)
 from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
@@ -31,6 +40,7 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._dataset import DatasetClient as DatasetClient
 from chalkcompute._dataset import DatasetError as DatasetError
 from chalkcompute._containerspec import ComputeClass as ComputeClass
+from chalkcompute._containerspec import ExecutionBackend as ExecutionBackend
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
 )
@@ -104,9 +114,20 @@ from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxSnapshot as SandboxSnapshot
 from chalkcompute._sandbox import SandboxSnapshotError as SandboxSnapshotError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
+from chalkcompute._sandbox_fs import FileDownload as FileDownload
+from chalkcompute._sandbox_fs import FileMatch as FileMatch
+from chalkcompute._sandbox_fs import FileUpload as FileUpload
 from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
+from chalkcompute._sandbox_fs import ReplaceResult as ReplaceResult
+from chalkcompute._sandbox_fs import SandboxFileInfo as SandboxFileInfo
+from chalkcompute._sandbox_fs import SandboxFileSystem as SandboxFileSystem
 from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
+from chalkcompute._workflow_worker import WorkflowWorker as WorkflowWorker
+from chalkcompute._workflow_worker import (
+    deploy_workflow_worker as deploy_workflow_worker,
+)
+from chalkcompute._workflow_worker import run_workflow as run_workflow
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
@@ -155,6 +176,9 @@ from chalkcompute._training import TrainingFunction as TrainingFunction
 from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
 from chalkcompute._training import training as training
 
+from chalkcompute._workflow import WorkflowError as WorkflowError
+from chalkcompute._workflow import trigger_workflow as trigger_workflow
+
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
 # the canonical names. Keep the old spellings importable.
 from chalkcompute._volume import Volume as VersionedVolume
@@ -193,6 +217,7 @@ __all__ = [
     "ContainerExecResult",
     "ImageBuildError",
     "ComputeClass",
+    "ExecutionBackend",
     "KernelPolicy",
     "NetworkPolicy",
     "SSHDest",
@@ -246,6 +271,11 @@ __all__ = [
     "ModelNotFoundError",
     "ModelNotDeployedError",
     "ConnectClient",
+    "OIDCToken",
+    "OIDCTokenFile",
+    "ChalkIdentity",
+    "WorkloadIdentityTokenError",
+    "WorkloadIdentityTokenSource",
     "build_image",
     "build_image_with_volumes",
     "HTTPHeaders",
@@ -276,7 +306,13 @@ __all__ = [
     "SandboxSnapshot",
     "SandboxSnapshotError",
     "SandboxTerminatedError",
+    "FileDownload",
+    "FileMatch",
+    "FileUpload",
     "FilesystemError",
+    "ReplaceResult",
+    "SandboxFileInfo",
+    "SandboxFileSystem",
     "SandboxFileSystemError",
     "ScalingGroup",
     "ScalingGroupBuildError",
@@ -288,6 +324,9 @@ __all__ = [
     "StartupProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
+    "WorkflowWorker",
+    "deploy_workflow_worker",
+    "run_workflow",
     "FileInfo",
     "ForkInfo",
     "Volume",
@@ -306,6 +345,8 @@ __all__ = [
     "TrainingRunHandle",
     "TrainingError",
     "training",
+    "WorkflowError",
+    "trigger_workflow",
     "SessionSummary",
     "Span",
     "SpanKind",

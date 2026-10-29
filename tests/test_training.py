@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from chalkcompute import ComputeClass, ExecutionBackend, NetworkPolicy
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._training import (
     TrainingError,
@@ -240,7 +241,7 @@ def test_build_resources_all() -> None:
     def train(df: Any, config: Any) -> str:
         return "ok"
 
-    r = train._build_resources()
+    r = train._build_container_spec("img:latest").resources
     assert r is not None
     assert r.cpu == "4"
     assert r.memory == "16Gi"
@@ -252,7 +253,7 @@ def test_build_resources_none() -> None:
     def train(df: Any, config: Any) -> str:
         return "ok"
 
-    assert train._build_resources() is None
+    assert train._build_container_spec("img:latest").resources is None
 
 
 # --- TrainingRunHandle ---
@@ -404,6 +405,11 @@ def test_run_training_calls_create_rpc() -> None:
     assert "API_KEY" not in request.env
     assert request.secret_refs[0].source.value == "TOKEN"
     assert dict(request.secret_refs[0].aliases) == {"TOKEN": "API_KEY"}
+    assert list(request.entrypoint) == [
+        "python",
+        "-m",
+        "chalkcompute._training_entrypoint",
+    ]
 
 
 def test_run_training_with_dataclass_config() -> None:
@@ -577,4 +583,122 @@ def test_run_training_builds_image_when_provided() -> None:
     ):
         handle = tf.run_training(config=None, client=mock_client)
         bi.assert_called_once()
+        assert bi.call_args.args[0] is mock_client
+        assert bi.call_args.kwargs == {"timeout": None}
     assert handle.run_id == "run-img"
+
+
+def test_run_training_forwards_build_timeout() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    tf = TrainingFunction(lambda df, config: "ok", data="ds")
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.CreateTrainingRunResponse(
+        training_run=tr_pb.TrainingRun(id="run-timeout")
+    )
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest") as bi,
+    ):
+        tf.run_training(client=mock_client, build_timeout=1200)
+
+    bi.assert_called_once()
+    assert bi.call_args.args[0] is mock_client
+    assert bi.call_args.kwargs == {"timeout": 1200}
+
+
+def test_run_training_timeout_explains_build_is_still_running() -> None:
+    from chalkcompute._connect import ImageBuildTimeoutError
+
+    tf = TrainingFunction(lambda df, config: "ok", data="ds")
+    mock_client = MagicMock()
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch(
+            "chalkcompute._training.build_image",
+            side_effect=ImageBuildTimeoutError("build-123", 900),
+        ),
+        pytest.raises(
+            TrainingError,
+            match=r"not submitted.*build-123.*still running.*rerun.*same image spec",
+        ),
+    ):
+        tf.run_training(client=mock_client, build_timeout=900)
+
+    mock_client.call.assert_not_called()
+
+
+@pytest.mark.parametrize("compute_class", [None, ComputeClass.K8S, ComputeClass.HOST])
+@pytest.mark.parametrize(
+    "execution_target",
+    [None, ExecutionBackend.ENVIRONMENT, ExecutionBackend.SERVERLESS],
+)
+def test_run_training_forwards_placement(compute_class, execution_target) -> None:
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    policy = (
+        NetworkPolicy(allowed_hosts=["huggingface.co"])
+        if compute_class is ComputeClass.HOST
+        else None
+    )
+
+    @training(
+        data="my_ds",
+        gpu="nvidia-tesla-a100:1",
+        compute_class=compute_class,
+        execution_target=execution_target,
+        network_policy=policy,
+    )
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    client = MagicMock()
+    client.call.return_value = tr_pb.CreateTrainingRunResponse(
+        training_run=tr_pb.TrainingRun(id="run-placement")
+    )
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=client)
+
+    request = tr_pb.CreateTrainingRunRequest.from_json(
+        client.call.call_args.args[1].to_json()
+    )
+    assert request.resources.gpu == "nvidia-tesla-a100:1"
+    assert request.has_field("compute_class") == (compute_class is not None)
+    if compute_class is not None:
+        assert request.compute_class == container_pb.ComputeClass[compute_class.name]
+    assert request.has_field("execution_target") == (execution_target is not None)
+    if execution_target is not None:
+        assert (
+            request.execution_target.backend
+            == container_pb.ExecutionBackend[execution_target.name]
+        )
+    assert request.has_field("network_policy") == (policy is not None)
+    if policy is not None:
+        assert "huggingface.co" in request.network_policy.allowed_hosts
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("compute_class", "HOST", "compute_class must be a ComputeClass"),
+        (
+            "execution_target",
+            "serverless",
+            "execution_target must be an ExecutionBackend",
+        ),
+        ("network_policy", {}, "network_policy must be a NetworkPolicy"),
+    ],
+)
+def test_training_validates_compute_options(field, value, message) -> None:
+    with pytest.raises(TypeError, match=message):
+        TrainingFunction(lambda: None, data="ds", **{field: value})

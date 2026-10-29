@@ -149,15 +149,20 @@ def _delete_model_registration(model_name: str) -> None:
         client.close()
 
 
-def _get_access_token() -> str:
-    """Exchange client credentials for a bearer token via the Chalk REST API."""
+def _get_token_response() -> dict[str, Any]:
+    """Exchange client credentials for a token and its routing metadata."""
+    body = {
+        "client_id": CHALK_CLIENT_ID,
+        "client_secret": CHALK_CLIENT_SECRET,
+        "grant_type": "client_credentials",
+    }
+    if os.environ.get("BUILDKITE") == "true":
+        if not CHALK_ENVIRONMENT_ID:
+            raise RuntimeError("CI token scoping requires CHALK_ENVIRONMENT_ID")
+        body["scope"] = f"env:{CHALK_ENVIRONMENT_ID}"
     resp = _HTTP_CLIENT.post(
         f"{CHALK_API_SERVER}/v1/oauth/token",
-        content={
-            "client_id": CHALK_CLIENT_ID,
-            "client_secret": CHALK_CLIENT_SECRET,
-            "grant_type": "client_credentials",
-        },
+        content=body,
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -168,7 +173,12 @@ def _get_access_token() -> str:
         raise RuntimeError(
             f"Token exchange failed with status {resp.status}: {resp.text()}"
         )
-    return resp.json()["access_token"]
+    return resp.json()
+
+
+def _get_access_token() -> str:
+    """Exchange client credentials for a bearer token via the Chalk REST API."""
+    return _get_token_response()["access_token"]
 
 
 def _connect_rpc(

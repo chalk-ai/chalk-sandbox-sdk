@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from chalkcompute import _tracing
 from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
@@ -99,7 +100,9 @@ def llm_judge(
     Naming ``trace`` among them hands the judge the row's
     :class:`~chalkcompute.Trace`, rendered into the prompt with
     :meth:`~chalkcompute.Trace.transcript`, or ``None`` for a row that recorded
-    no telemetry. ``prompt_fn(response_model, **inputs)`` replaces the prompt
+    no telemetry. The default prompt fails the row if raw trace content was
+    externalized but not loaded, or was omitted/truncated during recording.
+    ``prompt_fn(response_model, **inputs)`` replaces the prompt
     and receives that same handle; ``parse_fn``
     replaces structured outputs. With neither ``base_url`` nor ``api_key`` the
     judge calls Chalk's AI router as the environment itself, so no provider key
@@ -382,7 +385,7 @@ def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
 def _render_input(column: str, value: Any) -> str:
     """A prompt section's body: the trace as its transcript, anything else as text."""
     if isinstance(value, Trace):
-        return value.transcript()
+        return value.transcript(require_content=True)
     if column == _TRACE_INPUT and value is None:
         return _NO_TRACE_NOTE
     return str(value)
@@ -392,6 +395,17 @@ def _environment_id() -> str | None:
     return os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
         "CHALK_ACTIVE_ENVIRONMENT"
     )
+
+
+def _client_headers(environment_id: str | None) -> dict[str, str]:
+    # Attribution belongs to the active row, not the cached router credential.
+    headers = _tracing.trace_headers()
+    if environment_id is not None:
+        headers["X-Chalk-Env-Id"] = environment_id
+    session_id = _tracing.current_session_id()
+    if session_id:
+        headers["X-Chalk-Agent-Session-Id"] = session_id
+    return headers
 
 
 def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
@@ -415,10 +429,9 @@ def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
     options: dict[str, Any] = {"api_key": api_key}
     if base_url:
         options["base_url"] = base_url
-    # Chalk's AI router routes on this; other endpoints ignore it.
-    env_id = _environment_id()
-    if env_id:
-        options["default_headers"] = {"X-Chalk-Env-Id": env_id}
+    headers = _client_headers(_environment_id())
+    if headers:
+        options["default_headers"] = headers
     return options
 
 
@@ -446,9 +459,9 @@ def _router_client_options() -> dict[str, Any]:
     return {
         "api_key": token,
         "base_url": f"{api_server}{_ROUTER_PATH}",
-        "default_headers": {
-            "X-Chalk-Env-Id": connection._env_id or _environment_id() or ""
-        },
+        "default_headers": _client_headers(
+            connection._env_id or _environment_id() or ""
+        ),
     }
 
 

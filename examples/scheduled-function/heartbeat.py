@@ -18,6 +18,7 @@ not disable the platform-managed schedule.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 import chalkcompute
@@ -26,7 +27,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 
-@chalkcompute.function(name="ex-heartbeat", schedule="10m")
+@chalkcompute.function(
+    name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-heartbeat"), schedule="10m"
+)
 def heartbeat() -> None:
     """Log a timestamp each time the schedule fires."""
     log.info("heartbeat at %s", datetime.now(timezone.utc).isoformat())

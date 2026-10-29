@@ -20,8 +20,123 @@ from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
-from chalkcompute._sandbox import SandboxClient, SandboxCreationError
+from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
 from chalkcompute._volume import VolumeMount
+
+
+@pytest.mark.parametrize("next_cursor", [None, ""])
+@pytest.mark.parametrize("count", [0, 1])
+def test_sandbox_client_list_single_page(count: int, next_cursor: str | None) -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.list_sandboxes.return_value = pb.ListSandboxesResponse(
+        sandboxes=[pb.SandboxInfo(id="sandbox-1", status=pb.SandboxStatus.RUNNING)]
+        * count,
+        next_cursor=next_cursor,
+    )
+    client._stub = stub
+    try:
+        sandboxes = client.list()
+    finally:
+        client.close()
+
+    assert [sandbox.id for sandbox in sandboxes] == ["sandbox-1"] * count
+    stub.list_sandboxes.assert_called_once_with(
+        pb.ListSandboxesRequest(), headers=client._headers
+    )
+
+
+def test_sandbox_client_list_follows_cursors_through_empty_page() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.list_sandboxes.side_effect = [
+        pb.ListSandboxesResponse(
+            sandboxes=[
+                pb.SandboxInfo(id=f"sandbox-{i}", status=pb.SandboxStatus.RUNNING)
+                for i in range(100)
+            ],
+            next_cursor="page-2",
+        ),
+        pb.ListSandboxesResponse(next_cursor="page-3"),
+        pb.ListSandboxesResponse(
+            sandboxes=[
+                pb.SandboxInfo(id="sandbox-100", status=pb.SandboxStatus.TERMINATED)
+            ]
+        ),
+    ]
+    client._stub = stub
+    try:
+        sandboxes = client.list()
+    finally:
+        client.close()
+
+    assert [sandbox.id for sandbox in sandboxes] == [f"sandbox-{i}" for i in range(101)]
+    assert sandboxes[0].status == "running"
+    assert sandboxes[-1].status == "terminated"
+    calls = stub.list_sandboxes.call_args_list
+    assert len(calls) == 3
+    assert not calls[0].args[0].has_field("cursor")
+    assert [call.args[0].cursor for call in calls[1:]] == ["page-2", "page-3"]
+    assert all(call.kwargs == {"headers": client._headers} for call in calls)
+
+
+@pytest.mark.parametrize("cursors", [["a", "a"], ["a", "b", "a"]])
+def test_sandbox_client_list_rejects_cursor_cycles(cursors: list[str]) -> None:
+    with SandboxClient() as client:
+        stub = MagicMock()
+        stub.list_sandboxes.side_effect = [
+            pb.ListSandboxesResponse(next_cursor=cursor) for cursor in cursors
+        ]
+        client._stub = stub
+        with pytest.raises(SandboxError, match="repeated pagination cursor"):
+            client.list()
+        assert stub.list_sandboxes.call_count == len(cursors)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_sandbox_client_list_limit_without_requests(limit: int) -> None:
+    with SandboxClient() as client:
+        stub = MagicMock()
+        client._stub = stub
+        if limit < 0:
+            with pytest.raises(ValueError, match="limit must be >= 0"):
+                client.list(limit=limit)
+        else:
+            assert client.list(limit=limit) == []
+        stub.list_sandboxes.assert_not_called()
+
+
+def test_sandbox_client_list_caps_results_and_page_sizes() -> None:
+    with SandboxClient() as client:
+        stub = MagicMock()
+        stub.list_sandboxes.side_effect = [
+            pb.ListSandboxesResponse(
+                sandboxes=[
+                    pb.SandboxInfo(id=f"sandbox-{i}", status=pb.SandboxStatus.RUNNING)
+                    for i in range(start, start + 100)
+                ],
+                next_cursor="next",
+            )
+            for start in (0, 100)
+        ]
+        client._stub = stub
+        sandboxes = client.list(limit=101)
+        assert [sandbox.id for sandbox in sandboxes] == [
+            f"sandbox-{i}" for i in range(101)
+        ]
+        calls = stub.list_sandboxes.call_args_list
+        assert len(calls) == 2
+        assert [call.args[0].limit for call in calls] == [100, 1]
+        assert calls[1].args[0].cursor == "next"
+
+
+def test_sandbox_list_all_forwards_limit() -> None:
+    with patch.object(SandboxClient, "from_env") as from_env:
+        client = from_env.return_value
+        client.list.return_value = []
+        assert Sandbox.list_all(limit=5) == []
+        client.list.assert_called_once_with(limit=5)
+        client.close.assert_called_once()
 
 
 class _RecordingSandboxClient:
@@ -72,6 +187,17 @@ def test_sandbox_run_builds_image_before_create() -> None:
 class _Stub:
     def __init__(self) -> None:
         self.request: pb.CreateSandboxRequest | None = None
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id=request.id,
+                status=pb.SandboxStatus.RUNNING,
+                spec=container_pb.ChalkContainerSpec(
+                    compute_class=container_pb.ComputeClass.HOST,
+                ),
+            )
+        )
 
     def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         self.request = request
@@ -660,20 +786,7 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     }
 
 
-def test_sandbox_client_create_can_request_chalk_identity() -> None:
-    client = SandboxClient()
-    stub = _Stub()
-    client._stub = stub  # type: ignore[assignment]
-    try:
-        client.create("python:3.14-slim", chalk_identity=True, wait=False)
-    finally:
-        client.close()
-
-    assert stub.request is not None
-    assert stub.request.source.value.has_field("chalk_workload_identity")
-
-
-def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
+def test_sandbox_client_create_default_identity() -> None:
     client = SandboxClient()
     stub = _Stub()
     client._stub = stub  # type: ignore[assignment]
@@ -683,7 +796,11 @@ def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
         client.close()
 
     assert stub.request is not None
-    assert not stub.request.source.value.has_field("chalk_workload_identity")
+    assert stub.request.source.value.has_field("chalk_workload_identity")
+    assert (
+        stub.request.source.value.chalk_workload_identity.mode
+        == container_pb.IdentityMode.CREATOR_IDENTITY
+    )
 
 
 def test_sandbox_client_create_sends_resource_detectors() -> None:
@@ -887,6 +1004,7 @@ def test_sandbox_exec_hands_trace_context_to_the_process(monkeypatch) -> None:
     client = SandboxClient()
     stub = _ProcessStub()
     client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         Sandbox(client=client, sandbox_id="sandbox-123").exec(
             "env", env={"APP": "1", "BAGGAGE": "mine=1"}
@@ -953,6 +1071,7 @@ def test_sandbox_exec_without_a_trace_adds_no_env(monkeypatch) -> None:
     client = SandboxClient()
     stub = _ProcessStub()
     client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         Sandbox(client=client, sandbox_id="sandbox-123").exec("env")
     finally:
@@ -998,6 +1117,128 @@ def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None
     assert sandbox.info.status_details is None
 
 
+class _PermissionDeniedOnGetStub:
+    def __init__(self) -> None:
+        self.terminate_request: pb.TerminateSandboxRequest | None = None
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        raise ConnectRpcError(Code.PERMISSION_DENIED, "deploy.read required")
+
+    def terminate_sandbox(self, request: pb.TerminateSandboxRequest, **_kwargs: object):
+        self.terminate_request = request
+        return pb.TerminateSandboxResponse()
+
+
+def test_sandbox_id_survives_permission_denied_during_readiness_poll() -> None:
+    client = SandboxClient()
+    stub = _PermissionDeniedOnGetStub()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
+    try:
+        with pytest.raises(
+            SandboxError, match="sandbox-123 was created and is still running"
+        ):
+            with patch("chalkcompute._sandbox.time.sleep"):
+                sandbox.run(poll_interval=0, timeout=30)
+
+        # run() lost the handle before this fix: the id below was None, and
+        # terminate() raised "Sandbox is not running" instead of cleaning up.
+        assert sandbox.id == "sandbox-123"
+        sandbox.terminate()
+        assert stub.terminate_request is not None
+        assert stub.terminate_request.id == "sandbox-123"
+    finally:
+        client.close()
+
+
+def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
+    # Unlike the test above, this sandbox has no sandbox_client= at
+    # construction, so run() must resolve one via SandboxClient.from_env().
+    # terminate() should reuse that same client rather than resolving a
+    # second, differently-authenticated one through _require_client().
+    fake_client = SandboxClient()
+    fake_client._stub = _PermissionDeniedOnGetStub()  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest")
+
+    try:
+        with patch.object(
+            SandboxClient, "from_env", return_value=fake_client
+        ) as from_env:
+            with pytest.raises(SandboxError, match="still running"):
+                with patch("chalkcompute._sandbox.time.sleep"):
+                    sandbox.run(poll_interval=0, timeout=30)
+
+            sandbox.terminate()
+
+        from_env.assert_called_once_with(chalk_client=None)
+        assert fake_client._stub.terminate_request is not None
+        assert fake_client._stub.terminate_request.id == "sandbox-123"
+    finally:
+        fake_client.close()
+
+
+class _RerunPermissionDeniedStub:
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.terminate_calls: list[str] = []
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        self.create_calls += 1
+        sandbox_id = f"sandbox-{self.create_calls}"
+        status = (
+            pb.SandboxStatus.RUNNING
+            if self.create_calls == 1
+            else pb.SandboxStatus.PENDING
+        )
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id=sandbox_id, status=status, created_at=Timestamp(seconds=1)
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        raise ConnectRpcError(Code.PERMISSION_DENIED, "deploy.read required")
+
+    def terminate_sandbox(self, request: pb.TerminateSandboxRequest, **_kwargs: object):
+        self.terminate_calls.append(request.id)
+        return pb.TerminateSandboxResponse()
+
+
+def test_sandbox_terminate_flag_resets_before_a_retried_run() -> None:
+    client = SandboxClient()
+    stub = _RerunPermissionDeniedStub()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
+    try:
+        sandbox.run()
+        assert sandbox.id == "sandbox-1"
+        sandbox.terminate()
+        assert sandbox.id is None
+        assert stub.terminate_calls == ["sandbox-1"]
+
+        with pytest.raises(SandboxError, match="still running"):
+            with patch("chalkcompute._sandbox.time.sleep"):
+                sandbox.run(poll_interval=0, timeout=30)
+        assert sandbox.id == "sandbox-2"
+
+        # Before the fix, _terminated stayed True from the earlier
+        # terminate() call (only reset after _instantiate returns), so this
+        # silently no-op'd instead of terminating the new sandbox.
+        sandbox.terminate()
+        assert stub.terminate_calls == ["sandbox-1", "sandbox-2"]
+    finally:
+        client.close()
+
+
 class _ProcessStub:
     def __init__(self) -> None:
         self.request: process_pb.OpenSessionRequest | None = None
@@ -1032,6 +1273,7 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     client = SandboxClient()
     stub = _ProcessStub()
     client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo", "hello")
     finally:
@@ -1093,6 +1335,7 @@ class _ReattachProcessStub:
 def test_sandbox_reattach() -> None:
     client = SandboxClient()
     client._process_stub = _ReattachProcessStub()  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         with patch("chalkcompute._sandbox.time.sleep"):
             result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo")
@@ -1124,6 +1367,24 @@ def test_terminated_during_creation_includes_status_message() -> None:
     try:
         with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
             client.create("python:3.14-slim", wait=True)
+    finally:
+        client.close()
+
+
+def test_sandbox_id_cleared_when_creation_is_immediately_terminal() -> None:
+    from chalkcompute._sandbox import SandboxTerminatedError
+
+    client = SandboxClient()
+    client._stub = _TerminatedStub()  # type: ignore[assignment]
+    sandbox = Sandbox(image="python:3.14-slim", sandbox_client=client)
+    try:
+        with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
+            sandbox.run()
+        # Before the fix, sandbox.id stayed bound to a sandbox the server
+        # already reported terminated, so a retried .run() raised "already
+        # running" with no way to recover the handle.
+        assert sandbox.id is None
+        assert sandbox.info is None
     finally:
         client.close()
 
@@ -1361,3 +1622,27 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
     else:
         stub.get_sandbox.assert_not_called()
         assert sandbox.info.status == "pending"
+
+
+@pytest.mark.parametrize("target", [None, "ENVIRONMENT", "SERVERLESS"])
+def test_sandbox_client_create_forwards_execution_target(target) -> None:
+    from chalkcompute import ExecutionBackend
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            execution_target=ExecutionBackend[target] if target else None,
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert spec.has_field("execution_target") == (target is not None)
+    if target is not None:
+        assert spec.execution_target.backend == container_pb.ExecutionBackend[target]

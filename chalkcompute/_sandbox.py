@@ -25,13 +25,14 @@ Usage:
 from __future__ import annotations
 
 import copy
+import os
 import queue
 import signal
 import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -47,8 +48,10 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     raise_for_rpc_error,
     rpc_address_from_target,
+    rpc_error_message,
 )
 from chalkcompute._containerspec import (
+    ComputeClass,
     ContainerSpec,
     NetworkPolicy,
     ResourceDetector,
@@ -76,6 +79,11 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 )
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
+from chalkcompute._chalk_identity import (
+    ChalkIdentity,
+    OIDCTokenFile,
+    split_oidc_token_files,
+)
 from chalkcompute._naming import validate_env
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
@@ -86,7 +94,12 @@ from chalkcompute._remote_function_tracing import (
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._sandbox_git import SandboxGit
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
-from chalkcompute._tracing import _instrumented, _request_tracing_intent, trace_env
+from chalkcompute._tracing import (
+    _instrumented,
+    _request_tracing_intent,
+    _set_sandbox_span_id,
+    trace_env,
+)
 from chalkcompute._volume import (
     VolumeClient,
     cleanup_owned_volumes,
@@ -107,13 +120,13 @@ if TYPE_CHECKING:
 
     from chalkcompute._artifact import Artifact
     from chalkcompute._containerspec import (
-        ComputeClass,
         ContainerSecurityPolicy,
+        ExecutionBackend,
         RestartPolicy,
         SSHDest,
     )
     from chalkcompute._remote_function_tracing import _RemoteFunctionTracingPolicy
-    from chalkcompute._sandbox_fs import SandboxFileSystem
+    from chalkcompute._sandbox_fs import FileUpload, SandboxFileSystem
     from chalkcompute._volume import Volume, VolumeMount
 
     # Aliases defined before SandboxClient, which has a ``.list()`` method that
@@ -227,6 +240,9 @@ class SandboxInfo:
 
     status_details: str | None = None
     """Additional diagnostic output for the current lifecycle status."""
+
+    compute_class: ComputeClass | None = None
+    """Backend compute class reported by the sandbox specification."""
 
 
 @dataclass
@@ -770,7 +786,7 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: Mapping[str, str | Secret] | None = None,
+        env: Mapping[str, str | Secret | OIDCTokenFile] | None = None,
         secrets: list[Secret] | None = None,
         volumes: _VolumeList | None = None,
         port: int | None = None,
@@ -779,11 +795,12 @@ class Sandbox:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         resource_detectors: Sequence[ResourceDetector] | None = None,
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -810,6 +827,9 @@ class Sandbox:
         env
             Environment variables as strings or single-value Secret references.
             The mapping key sets the injected name, overriding aliases and prefixes.
+            A value may also be an :class:`OIDCTokenFile`, which sets the variable
+            to the path of a platform-managed OIDC token file. That requires
+            ``chalk_identity=ChalkIdentity(mode="sandbox")``.
         secrets
             Optional :class:`~chalkcompute.Secret` references to inject.
         volumes
@@ -831,6 +851,8 @@ class Sandbox:
             :class:`NetworkPolicy` type accepted by :class:`Container`.
         compute_class
             Optional :class:`ComputeClass` (``K8S`` or ``HOST``).
+        execution_target
+            Optional :class:`ExecutionBackend`; defaults to the environment cluster.
         resource_detectors
             Optional :class:`ResourceDetector` values. Each detector inspects
             egress traffic to the hosts it recognizes and records resources the
@@ -849,6 +871,11 @@ class Sandbox:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+            When omitted, enables creator identity unless ``CHALK_REMOTE_FUNCTION``
+            is set to a nonempty value. Set ``True`` to explicitly enable creator
+            identity or ``False`` to disable managed Chalk identity. Pass
+            ``ChalkIdentity(mode="sandbox")`` for credentials that identify
+            the sandbox itself, which :class:`OIDCTokenFile` requires.
         managed_ssh
             Optional SSH destinations: a list of :class:`SSHDest`, each
             reachable by its ``alias`` (default: its ``host``), or a mapping
@@ -874,14 +901,83 @@ class Sandbox:
 
         Examples
         --------
-        >>> sandbox = Sandbox(image="ubuntu:latest")
-        >>> with SandboxClient.from_env() as client:
-        ...     client.run(sandbox)
+        Use the default image with Python, Git, SSH, and ``/workspace``:
+
+        >>> from chalkcompute import Sandbox
+        >>> Sandbox()
+
+        Add Python dependencies and upload a local project when the sandbox starts:
+
+        >>> from chalkcompute import Image
+        >>> Sandbox(
+        ...     image=Image.debian_slim("3.12")
+        ...         .pip_install(["pandas", "requests"])
+        ...         .add_local_dir("./src", "/workspace/src")
+        ...         .workdir("/workspace"),
+        ...     cpu="2",
+        ...     memory="8Gi",
+        ... )
+
+        Configure an API client with a secret and restricted outbound access:
+
+        >>> from chalkcompute import NetworkPolicy, Secret
+        >>> Sandbox(
+        ...     image=Image.debian_slim().pip_install(["openai"]),
+        ...     env={"LOG_LEVEL": "INFO"},
+        ...     network_policy=NetworkPolicy(allowed_hosts=["api.openai.com"]),
+        ... ).add_credentials("api.openai.com", Secret.from_chalk_env("OPENAI_API_KEY"))
+
+        Mount existing volumes for durable inputs and outputs:
+
+        >>> Sandbox(
+        ...     volumes=[("training-data", "/data"), ("results", "/results")],
+        ...     cpu="4",
+        ...     memory="16Gi",
+        ...     lifetime="3600s",
+        ... )
+
+        Prepare a coding agent with Claude Code, GitHub CLI, and tmux. Managed
+        SSH uses a stored deploy key; resource detection records pull requests:
+
+        >>> from chalkcompute import ComputeClass, ResourceDetector, SSHDest
+        >>> Sandbox(
+        ...     image=Image.sandbox().with_claude_code().with_gh().with_tmux(),
+        ...     compute_class=ComputeClass.HOST,
+        ...     managed_ssh=[SSHDest.github("GITHUB_DEPLOY_KEY")],
+        ...     resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+        ...     cpu="2",
+        ...     memory="16Gi",
+        ... ).add_credentials("api.github.com", "GITHUB_TOKEN").add_credentials(
+        ...     "api.anthropic.com", "CLAUDE_CODE_OAUTH_TOKEN",
+        ... )
+
+        Request a GPU on a host pool configured with NVIDIA L4 GPUs:
+
+        >>> Sandbox(
+        ...     image="nvcr.io/nvidia/pytorch:24.01-py3",
+        ...     gpu="nvidia-l4",
+        ...     cpu="8",
+        ...     memory="64Gi",
+        ...     compute_class=ComputeClass.HOST,
+        ... )
+
+        Give code inside the sandbox a Chalk identity and trace its requests:
+
+        >>> Sandbox(
+        ...     chalk_identity=True,
+        ...     tracing=True,
+        ...     tags={"project": "agent-evals", "stage": "development"},
+        ... )
+
+        These expressions configure sandboxes. Call :meth:`run` on a configured
+        sandbox, or pass it to :meth:`SandboxClient.run`, to start it.
         """
         self._client: Any | None = None
         self._id: str | None = None
         self._info: SandboxInfo | None = None
         self._terminated = False
+        # Files added with fs.add_file before run(); uploaded once ready.
+        self._pending_files: list[FileUpload] = []
 
         self._image: str | Image | None = None
         self._name: str | None = None
@@ -902,11 +998,13 @@ class Sandbox:
         self._security_policy: ContainerSecurityPolicy | None = None
         self._network_policy: NetworkPolicy | None = None
         self._compute_class: ComputeClass | None = None
+        self._execution_target: ExecutionBackend | None = None
         self._resource_detectors: tuple[ResourceDetector, ...] = ()
         self._host_pool_id: str | None = None
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
-        self._chalk_identity = False
+        self._chalk_identity: bool | ChalkIdentity = False
+        self._oidc_token_files: dict[str, OIDCTokenFile] = {}
         self._managed_ssh: dict[str, SSHDest] = {}
         self._tracing: TracingPolicy | _RemoteFunctionTracingPolicy | None = None
         self._chalk_client: Any | None = None
@@ -928,11 +1026,11 @@ class Sandbox:
                 or security_policy is not None
                 or network_policy is not None
                 or compute_class is not None
+                or execution_target is not None
                 or resource_detectors is not None
                 or host_pool_id is not None
                 or tags is not None
                 or restart_policy is not None
-                or chalk_identity
                 or managed_ssh is not None
                 or tracing is not None
                 or chalk_client is not None
@@ -950,7 +1048,12 @@ class Sandbox:
 
         if image is None:
             image = Image.sandbox()
-        env, secrets = normalize_env(env, secrets)
+        if chalk_identity is None:
+            chalk_identity = not os.environ.get("CHALK_REMOTE_FUNCTION")
+        env_without_token_files, oidc_token_files = split_oidc_token_files(env)
+        env, secrets = normalize_env(
+            cast("Mapping[str, str | Secret]", env_without_token_files), secrets
+        )
         tracing_policy = normalize_workload_tracing(tracing)
         env = merge_workload_tracing_env(env, tracing_policy)
         image, resolved_volumes = normalize_image_volumes(image, volumes)
@@ -968,10 +1071,13 @@ class Sandbox:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            execution_target=execution_target,
             resource_detectors=resource_detectors,
             tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
+            oidc_token_files=oidc_token_files,
+            allow_sandbox_identity=True,
             managed_ssh=managed_ssh,
         )
 
@@ -990,11 +1096,13 @@ class Sandbox:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._execution_target = execution_target
         self._resource_detectors = tuple(resource_detectors or ())
         self._host_pool_id = host_pool_id
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
+        self._oidc_token_files = oidc_token_files
         self._managed_ssh = normalize_managed_ssh(managed_ssh)
         self._tracing = tracing_policy
         self._chalk_client = chalk_client
@@ -1023,11 +1131,13 @@ class Sandbox:
         return sandbox
 
     @classmethod
-    def list_all(cls, *, chalk_client: Any | None = None) -> list[SandboxInfo]:
-        """List all sandboxes in the current environment."""
+    def list_all(
+        cls, *, chalk_client: Any | None = None, limit: int | None = None
+    ) -> list[SandboxInfo]:
+        """List sandboxes in the current environment, optionally capped by ``limit``."""
         client = SandboxClient.from_env(chalk_client=chalk_client)
         try:
-            return client.list()
+            return client.list(limit=limit)
         finally:
             client.close()
 
@@ -1043,7 +1153,10 @@ class Sandbox:
     def info(self) -> SandboxInfo | None:
         """The most recently fetched :class:`SandboxInfo` snapshot.
 
-        ``None`` until the sandbox has been started or attached to.
+        ``None`` until the sandbox has been started or attached to. If
+        :meth:`run` created the sandbox but failed before a snapshot was
+        fetched (for example, a readiness check that errored), this fetches
+        one now and raises if that fetch itself fails.
         """
         if self._info is None and self._id is not None:
             self._info = self._fetch_info()
@@ -1074,7 +1187,9 @@ class Sandbox:
             )
         except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
-            raise
+            raise SandboxError(
+                f"Checking sandbox {sandbox_id} failed: {rpc_error_message(e)}"
+            ) from e
         return _pb_to_sandbox_info(resp.sandbox)
 
     def mount_volume(self, name: str | Volume, mount_path: str) -> Sandbox:
@@ -1295,6 +1410,13 @@ class Sandbox:
             )
         if self._image is None:
             raise SandboxError("Sandbox has no image configured.")
+        if self._pending_files:
+            self._check_session_support()
+        if self._pending_files and not wait:
+            raise SandboxError(
+                "Files added with fs.add_file() are uploaded once the sandbox is "
+                "ready; call .run() with wait=True."
+            )
 
         client = self._client
         if client is None:
@@ -1390,6 +1512,11 @@ class Sandbox:
                                 secret_name = resolved._secret_name
                                 resolved_credentials.append((secret, secret_name))
                             transform.headers_secrets[placeholder] = secret_name
+        # Bind the client and clear _terminated before instantiating so a
+        # handle still behaves like a fresh run (not a no-op .terminate()) if
+        # readiness polling fails mid-_instantiate.
+        self._client = client
+        self._terminated = False
         client._instantiate(
             self,
             image,
@@ -1399,8 +1526,22 @@ class Sandbox:
             poll_interval=poll_interval,
             timeout=timeout,
         )
-        self._client = client
-        self._terminated = False
+        _set_sandbox_span_id(self._id)
+        if self._pending_files:
+            try:
+                self.fs.upload_files(self._pending_files)
+            except BaseException as error:
+                # The caller may not hold a handle (e.g. client.create()), so
+                # don't leave a sandbox running that it cannot clean up.
+                sandbox_id = self._id
+                try:
+                    self.terminate()
+                except Exception as cleanup_error:
+                    error.add_note(
+                        f"Terminating sandbox {sandbox_id} also failed: {cleanup_error}"
+                    )
+                raise
+            self._pending_files.clear()
 
         return self
 
@@ -1415,6 +1556,21 @@ class Sandbox:
         if self._id is None:
             raise SandboxError("Sandbox is not running. Call .run() first.")
         return self._id
+
+    def _check_session_support(self) -> None:
+        from chalkcompute._containerspec import ComputeClass
+
+        # The API server only opens exec/filesystem sessions on HOST sandboxes.
+        # A handle attached by ID has no known class; the server enforces it.
+        if self._compute_class == ComputeClass.K8S:
+            raise SandboxError(
+                "exec, fs, and git operations require a HOST compute class "
+                "sandbox; this sandbox uses ComputeClass.K8S."
+            )
+
+    def _require_session(self) -> str:
+        self._check_session_support()
+        return self._require_started()
 
     @property
     def git(self) -> SandboxGit:
@@ -1468,14 +1624,42 @@ class Sandbox:
             Optional environment variables to set for the command.
         auto_reattach
             Reattach and replay buffered output after transient transport
-            disconnects. Disable to handle disconnects yourself.
+            disconnects for HOST sandboxes. K8S commands use one-shot execution
+            and cannot be reattached.
 
         Returns
         -------
         ExecResult
             Result with stdout/stderr and exit code.
         """
-        self._require_started()
+        _set_sandbox_span_id(self._id)
+        sandbox_id = self._require_started()
+        validate_env(env)
+        info = self.info
+        if info is not None and info.compute_class == ComputeClass.K8S:
+            client = self._require_client()
+            request = process_pb.ExecCommandRequest(
+                sandbox_id=sandbox_id,
+                command=command,
+                args=list(args),
+                env_vars=_with_trace_env(env),
+            )
+            if workdir is not None:
+                request.workdir = workdir
+            if timeout_secs is not None:
+                request.timeout = Duration(seconds=timeout_secs)
+            try:
+                response = client._process_stub.exec_command(
+                    request, headers=client._headers
+                )
+            except ConnectRpcError as e:
+                _handle_rpc_error(e, sandbox_id)
+                raise
+            return ExecResult(
+                stdout=response.stdout,
+                stderr=response.stderr,
+                exit_code=response.exit_code,
+            )
         process = self.exec_start(
             command,
             *args,
@@ -1556,8 +1740,8 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
+        sandbox_id = self._require_session()
         client = self._require_client()
-        sandbox_id = self._require_started()
         init = process_pb.NewProcess(
             sandbox_id=sandbox_id,
             command=command,
@@ -1643,6 +1827,7 @@ class Sandbox:
         PythonExecution
             Buffered stdout/stderr, exit status, and persisted artifacts.
         """
+        _set_sandbox_span_id(self._id)
         client = self._require_client()
         sandbox_id = self._require_started()
         spec = runtime_pb.ExecutePythonSpec(
@@ -1792,6 +1977,7 @@ class Sandbox:
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
         """
+        _set_sandbox_span_id(self._id)
         if self._terminated:
             return
         client = self._require_client()
@@ -1858,6 +2044,13 @@ _SandboxSnapshotList = list[SandboxSnapshot]
 # Defined before SandboxClient, which has a ``.list()`` method that would
 # otherwise shadow the builtin ``list`` in class-scope name resolution.
 _StrList = list[str]
+
+
+def _echoes_oidc_token_files(sandbox_info: Any, expected: int) -> bool:
+    """Whether the server's view of the sandbox includes the declared token files."""
+    spec = getattr(sandbox_info, "spec", None)
+    identity = None if spec is None else spec.chalk_workload_identity
+    return identity is not None and len(identity.oidc_token_files) >= expected
 
 
 class SandboxClient:
@@ -2005,11 +2198,12 @@ class SandboxClient:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         resource_detectors: Sequence[ResourceDetector] | None = None,
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
@@ -2063,6 +2257,11 @@ class SandboxClient:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+            When omitted, enables creator identity unless ``CHALK_REMOTE_FUNCTION``
+            is set to a nonempty value. Set ``True`` to explicitly enable creator
+            identity or ``False`` to disable managed Chalk identity. Pass
+            ``ChalkIdentity(mode="sandbox")`` for credentials that identify
+            the sandbox itself, which :class:`OIDCTokenFile` requires.
         managed_ssh
             Optional SSH destinations, as a list of :class:`SSHDest` or a
             mapping of aliases to them. See :class:`Sandbox`.
@@ -2100,6 +2299,7 @@ class SandboxClient:
                 security_policy=security_policy,
                 network_policy=network_policy,
                 compute_class=compute_class,
+                execution_target=execution_target,
                 resource_detectors=resource_detectors,
                 host_pool_id=host_pool_id,
                 tags=tags,
@@ -2178,11 +2378,14 @@ class SandboxClient:
             security_policy=sandbox._security_policy,
             network_policy=network_policy,
             compute_class=sandbox._compute_class,
+            execution_target=sandbox._execution_target,
             resource_detectors=sandbox._resource_detectors,
             host_pool_id=sandbox._host_pool_id,
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
+            oidc_token_files=sandbox._oidc_token_files,
+            allow_sandbox_identity=True,
             managed_ssh=sandbox._managed_ssh,
         ).to_proto()
 
@@ -2192,6 +2395,39 @@ class SandboxClient:
         )
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
+        # Bind the id before polling so a failed poll still leaves the caller a
+        # usable handle (e.g. to call .terminate()) instead of an orphaned sandbox.
+        sandbox._id = resp.sandbox.id
+        _set_sandbox_span_id(resp.sandbox.id)
+        if sandbox._oidc_token_files and not _echoes_oidc_token_files(
+            resp.sandbox, len(sandbox._oidc_token_files)
+        ):
+            # A server that predates OIDC token files drops the field and starts a
+            # sandbox whose env var points nowhere. Fail loudly instead.
+            try:
+                self._stub.terminate_sandbox(
+                    pb.TerminateSandboxRequest(id=resp.sandbox.id),
+                    headers=self._headers,
+                )
+            except ConnectRpcError as e:
+                if e.code not in (Code.NOT_FOUND, Code.FAILED_PRECONDITION):
+                    # Cleanup didn't actually succeed, so keep the handle
+                    # bound: the caller can still retry .terminate().
+                    raise SandboxCreationError(
+                        "The Chalk server does not support OIDCTokenFile, and "
+                        f"terminating sandbox {resp.sandbox.id} also failed: "
+                        f"{rpc_error_message(e)}. The sandbox may still be "
+                        "running; call .terminate() to retry."
+                    ) from e
+            # Terminated above (or already gone), so the handle shouldn't
+            # claim to be running.
+            sandbox._id = None
+            sandbox._info = None
+            raise SandboxCreationError(
+                "The Chalk server does not support OIDCTokenFile; the sandbox was "
+                "terminated. Upgrade the Chalk deployment or remove the OIDCTokenFile "
+                "values from env."
+            )
         info = _pb_to_sandbox_info(resp.sandbox)
 
         if wait and info.status == "pending":
@@ -2201,9 +2437,13 @@ class SandboxClient:
                 timeout=timeout,
             )
         elif wait and info.status in ("failed", "error", "unknown", "terminated"):
+            # The server already reached a terminal, non-running state, so
+            # the handle shouldn't claim to be running either.
+            sandbox._id = None
+            sandbox._info = None
             raise _sandbox_creation_error(info)
 
-        sandbox._id = info.id
+        # info.id is already sandbox._id, bound above before polling.
         sandbox._info = info
 
     def _poll_until_ready(
@@ -2226,7 +2466,10 @@ class SandboxClient:
                 )
             except ConnectRpcError as e:
                 _handle_rpc_error(e, sandbox_id)
-                raise
+                raise SandboxError(
+                    f"Sandbox {sandbox_id} was created and is still running, but "
+                    f"checking its readiness failed: {rpc_error_message(e)}"
+                ) from e
             if resp.sandbox is None:
                 raise SandboxCreationError("GetSandbox returned no sandbox")
             info = _pb_to_sandbox_info(resp.sandbox)
@@ -2261,18 +2504,51 @@ class SandboxClient:
         """
         return Sandbox(client=self, sandbox_id=id)
 
-    def list(self) -> _SandboxInfoList:
-        """List all sandboxes.
+    def list(self, *, limit: int | None = None) -> _SandboxInfoList:
+        """List sandboxes, fetching pages until exhausted or ``limit`` is reached.
+
+        Parameters
+        ----------
+        limit
+            Maximum number of results. ``None`` fetches all pages; zero returns
+            an empty list without making a request. Must be nonnegative.
 
         Returns
         -------
         list of SandboxInfo
             One entry per sandbox.
+
+        Raises
+        ------
+        SandboxError
+            The service repeats a pagination cursor before reaching the limit.
         """
-        resp = self._stub.list_sandboxes(
-            pb.ListSandboxesRequest(), headers=self._headers
-        )
-        return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be >= 0 or None")
+        sandboxes: _SandboxInfoList = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while limit is None or len(sandboxes) < limit:
+            remaining = None if limit is None else limit - len(sandboxes)
+            resp = self._stub.list_sandboxes(
+                pb.ListSandboxesRequest(
+                    cursor=cursor,
+                    limit=None if remaining is None else min(100, remaining),
+                ),
+                headers=self._headers,
+            )
+            sandboxes.extend(_pb_to_sandbox_info(s) for s in resp.sandboxes[:remaining])
+            if limit is not None and len(sandboxes) >= limit:
+                return sandboxes
+            cursor = resp.next_cursor or None
+            if cursor is None:
+                return sandboxes
+            if cursor in seen_cursors:
+                raise SandboxError(
+                    "ListSandboxes returned a repeated pagination cursor"
+                )
+            seen_cursors.add(cursor)
+        return sandboxes
 
     def _snapshot(self, sandbox_id: str) -> SandboxSnapshot:
         try:
@@ -2410,6 +2686,11 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         if info.created_at is not None
         else "",
         name=info.name or None,
+        compute_class=(
+            ComputeClass.__members__.get(info.spec.compute_class.name)
+            if info.spec is not None and info.spec.compute_class is not None
+            else None
+        ),
         status_message=(
             info.status_message if info.has_field("status_message") else None
         ),

@@ -1,0 +1,2 @@
+- `sandbox.fs` gains Daytona-style file operations: `add_file` (usable before `run()`, which uploads queued files once the sandbox is ready), `upload_files`, `download_files`, `list_files`, `get_file_info`, `create_folder`, `delete_file`, `move_files`, `set_file_permissions`, `search_files`, `find_files`, and `replace_in_files`. `upload_file` also accepts `bytes` and creates missing parent directories, and `download_file` returns `bytes` when no local path is given.
+- `GitStatus` now reports `upstream` (for example `origin/main`) and `detached`.

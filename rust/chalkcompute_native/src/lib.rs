@@ -129,7 +129,7 @@ impl PyRemoteCallClient {
     ) -> PyResult<Py<PyList>> {
         let input_ipc = Bytes::copy_from_slice(input_ipc);
         let chunks = py
-            .allow_threads(|| match metadata {
+            .detach(|| match metadata {
                 Some(metadata) => self.inner.call_ipc_with_metadata(name, input_ipc, metadata),
                 None => self.inner.call_ipc(name, input_ipc),
             })
@@ -146,7 +146,7 @@ impl PyRemoteCallClient {
         metadata: Option<Vec<(String, String)>>,
     ) -> PyResult<String> {
         let input_ipc = Bytes::copy_from_slice(input_ipc);
-        py.allow_threads(|| match metadata {
+        py.detach(|| match metadata {
             Some(metadata) => self.inner.enqueue_with_metadata(name, input_ipc, metadata),
             None => self.inner.enqueue(name, input_ipc),
         })
@@ -163,25 +163,25 @@ impl PyRemoteCallClient {
     ) -> PyResult<Py<PyDict>> {
         let cursor = cursor.unwrap_or_default();
         let result = py
-            .allow_threads(|| self.inner.poll_next(call_id, cursor, poll_count))
+            .detach(|| self.inner.poll_next(call_id, cursor, poll_count))
             .map_err(to_py_err)?;
         poll_result_to_pydict(py, result)
     }
 
     fn get_result_chunks(&self, py: Python<'_>, call_id: String) -> PyResult<Py<PyList>> {
         let chunks = py
-            .allow_threads(|| self.inner.get_result_chunks(call_id))
+            .detach(|| self.inner.get_result_chunks(call_id))
             .map_err(to_py_err)?;
         chunks_to_pylist(py, chunks)
     }
 
     fn purge_function(&self, py: Python<'_>, function_name: String) -> PyResult<u64> {
-        py.allow_threads(|| self.inner.purge_function(function_name))
+        py.detach(|| self.inner.purge_function(function_name))
             .map_err(to_py_err)
     }
 
     fn purge_all(&self, py: Python<'_>) -> PyResult<HashMap<String, u64>> {
-        py.allow_threads(|| self.inner.purge_all())
+        py.detach(|| self.inner.purge_all())
             .map_err(to_py_err)
     }
 }

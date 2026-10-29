@@ -24,6 +24,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
+    "ExecutionBackend": ("chalkcompute._containerspec", "ExecutionBackend"),
     "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "SshDest": ("chalkcompute._containerspec", "SshDest"),
     "NetworkPolicy": ("chalkcompute._containerspec", "NetworkPolicy"),
@@ -122,6 +123,19 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._connect",
         "build_image_with_volumes_from_spec",
     ),
+    # _chalk_identity.py
+    "ChalkIdentity": ("chalkcompute._chalk_identity", "ChalkIdentity"),
+    "OIDCTokenFile": ("chalkcompute._chalk_identity", "OIDCTokenFile"),
+    # _workload_identity.py
+    "OIDCToken": ("chalkcompute._workload_identity", "OIDCToken"),
+    "WorkloadIdentityTokenError": (
+        "chalkcompute._workload_identity",
+        "WorkloadIdentityTokenError",
+    ),
+    "WorkloadIdentityTokenSource": (
+        "chalkcompute._workload_identity",
+        "WorkloadIdentityTokenSource",
+    ),
     # _http.py
     "HTTPHeaders": ("chalkcompute._http", "HTTPHeaders"),
     "HTTPResponse": ("chalkcompute._http", "HTTPResponse"),
@@ -163,7 +177,13 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SandboxSnapshotError": ("chalkcompute._sandbox", "SandboxSnapshotError"),
     "SandboxTerminatedError": ("chalkcompute._sandbox", "SandboxTerminatedError"),
     # _sandbox_fs.py
+    "FileDownload": ("chalkcompute._sandbox_fs", "FileDownload"),
+    "FileMatch": ("chalkcompute._sandbox_fs", "FileMatch"),
+    "FileUpload": ("chalkcompute._sandbox_fs", "FileUpload"),
     "FilesystemError": ("chalkcompute._sandbox_fs", "FilesystemError"),
+    "ReplaceResult": ("chalkcompute._sandbox_fs", "ReplaceResult"),
+    "SandboxFileInfo": ("chalkcompute._sandbox_fs", "SandboxFileInfo"),
+    "SandboxFileSystem": ("chalkcompute._sandbox_fs", "SandboxFileSystem"),
     "SandboxFileSystemError": (
         "chalkcompute._sandbox_fs",
         "SandboxFileSystemError",
@@ -185,6 +205,13 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "StartupProbe": ("chalkcompute._scaling_group", "StartupProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
+    # _workflow_worker.py
+    "WorkflowWorker": ("chalkcompute._workflow_worker", "WorkflowWorker"),
+    "deploy_workflow_worker": (
+        "chalkcompute._workflow_worker",
+        "deploy_workflow_worker",
+    ),
+    "run_workflow": ("chalkcompute._workflow_worker", "run_workflow"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "ForkInfo": ("chalkcompute._volume", "ForkInfo"),
@@ -210,6 +237,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "TrainingRunHandle": ("chalkcompute._training", "TrainingRunHandle"),
     "TrainingError": ("chalkcompute._training", "TrainingError"),
     "training": ("chalkcompute._training", "training"),
+    # _workflow.py
+    "WorkflowError": ("chalkcompute._workflow", "WorkflowError"),
+    "trigger_workflow": ("chalkcompute._workflow", "trigger_workflow"),
 }
 
 

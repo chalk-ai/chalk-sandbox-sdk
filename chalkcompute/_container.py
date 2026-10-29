@@ -46,6 +46,7 @@ from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSecurityPolicy,
     ContainerSpec,
+    ExecutionBackend,
     KernelPolicy as KernelPolicy,
     NetworkPolicy,
 )
@@ -714,6 +715,7 @@ class Container:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         tags: dict[str, str] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -747,6 +749,7 @@ class Container:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            execution_target=execution_target,
             tags=tags,
         )
         self._image: _Image | str | None = normalized_image
@@ -768,6 +771,7 @@ class Container:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._execution_target = execution_target
         self._tags: dict[str, str] = dict(tags or {})
 
         # Set after .run()
@@ -894,6 +898,7 @@ class Container:
         *,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
+        progress_parent: str | None = None,
     ) -> str:
         """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
 
@@ -903,6 +908,8 @@ class Container:
             Seconds between build-status polls.
         timeout
             Maximum seconds to wait for the build to complete.
+        progress_parent
+            Optional progress row to nest the "Building image" step under.
 
         Returns
         -------
@@ -924,6 +931,7 @@ class Container:
                 self._image,
                 poll_interval=poll_interval,
                 timeout=timeout,
+                progress_parent=progress_parent,
             )
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
@@ -1051,17 +1059,13 @@ class Container:
         try:
             # 1. Resolve image URI
             if isinstance(self._image, Image):
-                ikey = f"image:{container_name}"
-                progress_add(ikey, "image", "Building image", parent=ckey)
                 logger.info("Building image from %r...", self._image)
                 self._built_image_uri = self._build_image(
                     poll_interval=poll_interval,
                     timeout=build_timeout,
+                    progress_parent=ckey,
                 )
                 logger.info("Image built: %s", self._built_image_uri)
-                progress_done(
-                    ikey, detail="cached" if self._built_image_uri else "built"
-                )
             else:
                 self._built_image_uri = self._image
 
@@ -1142,6 +1146,7 @@ class Container:
                 security_policy=self._security_policy,
                 network_policy=self._network_policy,
                 compute_class=self._compute_class,
+                execution_target=self._execution_target,
                 tags=self._tags,
             ).to_proto()
 

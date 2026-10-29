@@ -12,7 +12,7 @@ from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
 from .datasets_pb import ArchiveDatasetRevisionRequest, ArchiveDatasetRevisionResponse, ArchiveDatasetRevisionsRequest, ArchiveDatasetRevisionsResponse, DeleteDatasetRequest, DeleteDatasetResponse, DeleteMaterializedAggregateTileRequest, DeleteMaterializedAggregateTileResponse, FinalizeDatasetUploadRequest, FinalizeDatasetUploadResponse, GenerateDatasetEdfsRequest, GenerateDatasetEdfsResponse, GenerateDatasetStatsRequest, GenerateDatasetStatsResponse, GetDatasetEdfsRequest, GetDatasetEdfsResponse, GetDatasetRequest, GetDatasetResponse, GetDatasetRevisionDownloadLinksRequest, GetDatasetRevisionDownloadLinksResponse, GetDatasetRevisionPerformanceLinksRequest, GetDatasetRevisionPerformanceLinksResponse, GetDatasetRevisionPreviewRequest, GetDatasetRevisionPreviewResponse, GetDatasetRevisionRequest, GetDatasetRevisionResponse, GetDatasetUploadUrisRequest, GetDatasetUploadUrisResponse, GetMaterializedAggregateTileDownloadLinksRequest, GetMaterializedAggregateTileDownloadLinksResponse, GetMaterializedAggregateTileRowCountChartRequest, GetMaterializedAggregateTileRowCountChartResponse, GetMaterializedAggregateTileValuesRequest, GetMaterializedAggregateTileValuesResponse, ListDatasetRevisionsRequest, ListDatasetRevisionsResponse, ListDatasetsRequest, ListDatasetsResponse, ListMaterializedAggregateTileFilesRequest, ListMaterializedAggregateTileFilesResponse, ListMaterializedAggregateTilesForTimelineRequest, ListMaterializedAggregateTilesForTimelineResponse, ListMaterializedAggregateTilesRequest, ListMaterializedAggregateTilesResponse, RenameDatasetRequest, RenameDatasetResponse, StreamDatasetRevisionDownloadLinksRequest, StreamDatasetRevisionDownloadLinksResponse
-from .materialized_aggregate_tiles_pb import GetMaterializedAggregateTileFacetValuesRequest, GetMaterializedAggregateTileFacetValuesResponse, GetMaterializedAggregateTileFacetsRequest, GetMaterializedAggregateTileFacetsResponse, ListMaterializedAggregateTileTimelinesRequest, ListMaterializedAggregateTileTimelinesResponse
+from .materialized_aggregate_tiles_pb import GetFeatureMaterializedAggregationsRequest, GetFeatureMaterializedAggregationsResponse, GetMaterializedAggregateTileFacetValuesRequest, GetMaterializedAggregateTileFacetValuesResponse, GetMaterializedAggregateTileFacetsRequest, GetMaterializedAggregateTileFacetsResponse, ListMaterializedAggregateTileTimelinesRequest, ListMaterializedAggregateTileTimelinesResponse, ListTileFeatureCoverageRequest, ListTileFeatureCoverageResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -341,6 +341,54 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
                 service_name="chalk.server.v1.DatasetMetadataService",
                 input=GetMaterializedAggregateTileFacetValuesRequest,
                 output=GetMaterializedAggregateTileFacetValuesResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def get_feature_materialized_aggregations(
+        self,
+        request: GetFeatureMaterializedAggregationsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetFeatureMaterializedAggregationsResponse:
+        """
+        The active deployment's materialized aggregations that compute or read one feature.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetFeatureMaterializedAggregations",
+                service_name="chalk.server.v1.DatasetMetadataService",
+                input=GetFeatureMaterializedAggregationsRequest,
+                output=GetFeatureMaterializedAggregationsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def list_tile_feature_coverage(
+        self,
+        request: ListTileFeatureCoverageRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> ListTileFeatureCoverageResponse:
+        """
+        Gaps per windowed feature with offline tiles, paged by fqn; features with no tiles are omitted.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListTileFeatureCoverage",
+                service_name="chalk.server.v1.DatasetMetadataService",
+                input=ListTileFeatureCoverageRequest,
+                output=ListTileFeatureCoverageResponse,
                 idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
             ),
             headers=headers,

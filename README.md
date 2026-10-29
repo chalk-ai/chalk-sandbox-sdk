@@ -381,27 +381,104 @@ token's remaining lifetime from its `exp` claim, then re-reads the file on its
 next authenticated operation. Tokens without `exp` use the one-hour limit.
 Changing the configured file path bypasses the cache. The JWT's
 `environment_id` claim selects the environment unless `CHALK_ENVIRONMENT` or
-`CHALK_ENVIRONMENT_ID` is set explicitly. For queued function calls, the SDK
-uses `CHALK_GRPC_ENGINE` when set; otherwise it discovers the environment's gRPC
-endpoint through the metadata API's `TeamService.GetEnv` RPC. Discovery requires
-`DEPLOY_READ` permission. The endpoint is cached until the identity is refreshed;
-set `CHALK_GRPC_ENGINE` explicitly if the identity cannot read environment metadata.
+`CHALK_ENVIRONMENT_ID` is set explicitly. With token-file authentication, queued
+function calls use the platform-provided `CHALK_DATAPLANE_API_ENDPOINT`. An explicit
+`CHALK_FUNCTION_QUEUE_ENDPOINT` overrides that default; an empty override disables
+queued calls. Client-credential and service authentication use Auth routing metadata.
 
 ### Workload identity federation
 
-Use the authenticated Connect client to mint a short-lived OIDC token for a
-third-party workload identity provider. For example, with Snowflake configured
-to trust Chalk's issuer and JWKS:
+Use `WorkloadIdentityTokenSource` to fetch short-lived OIDC tokens for an
+external service. The source uses ambient Chalk authentication, or accepts an
+initialized `ConnectClient` through `connect_client=`. It caches tokens with
+server-reported expiry and refreshes them when they cannot meet `min_ttl`.
 
 ```python
-from chalkcompute import ConnectClient
+from datetime import timedelta
+from chalkcompute import WorkloadIdentityTokenSource
 
-token = ConnectClient().get_workload_identity_token("snowflakecomputing.com")
+with WorkloadIdentityTokenSource("api.example.com") as source:
+    token = source.get_token(min_ttl=timedelta(seconds=60))
+    # Pass token.value to the external service or its authentication library.
 ```
 
-The token is scoped to the active Chalk environment. Its audience is the value
-passed to `get_workload_identity_token`, and its signing key is published by the
-Chalk API server at `/.well-known/jwks.json`.
+For a CLI that accepts a token file, use `source.token_file()` to create a
+temporary file with `0600` permissions. Run token retrieval and the consuming
+command inside the same workload so the token stays there. For example, inside
+a sandbox started with `chalk_identity=True` and with `chalkcompute` and
+`snowflake-cli` installed:
+
+```python
+import os
+import subprocess
+from datetime import timedelta
+from chalkcompute import WorkloadIdentityTokenSource
+
+with WorkloadIdentityTokenSource("snowflakecomputing.com") as source:
+    with source.token_file(min_ttl=timedelta(seconds=60)) as token_path:
+        subprocess.run(
+            ["snow", "sql", "--temporary-connection", "-q", "select current_user()"],
+            env=os.environ | {
+                "SNOWFLAKE_ACCOUNT": "<account>",
+                "SNOWFLAKE_USER": "<user>",
+                "SNOWFLAKE_AUTHENTICATOR": "WORKLOAD_IDENTITY",
+                "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER": "OIDC",
+                "SNOWFLAKE_TOKEN_FILE_PATH": str(token_path),
+            },
+            check=True,
+        )
+```
+
+The file contains a snapshot of the token and is deleted on context exit,
+including when the command raises. `min_ttl` applies when the token is acquired;
+the file is not refreshed continuously.
+
+The token is scoped to the active Chalk environment and the requested audience.
+The external service must trust Chalk's issuer and validate the token using the
+Chalk API server's `/.well-known/jwks.json` endpoint. The existing
+`ConnectClient.get_workload_identity_token()` string API remains available.
+
+#### Platform-managed token files for sandboxes
+
+For a CLI or entrypoint that you cannot wrap, declare the token file in the
+sandbox's `env` instead. The platform writes the first token before your code
+starts, sets the variable to the file's path, and replaces the file with a fresh
+token before the old one expires for the life of the sandbox:
+
+```python
+import chalkcompute as cc
+
+sandbox = cc.Sandbox(
+    image=cc.Image.sandbox().pip_install(["snowflake-cli"]),
+    chalk_identity=cc.ChalkIdentity(mode="sandbox"),
+    env={
+        "SNOWFLAKE_AUTHENTICATOR": "WORKLOAD_IDENTITY",
+        "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER": "OIDC",
+        "SNOWFLAKE_TOKEN_FILE_PATH": cc.OIDCTokenFile(audience="snowflakecomputing.com"),
+    },
+).run()
+
+sandbox.exec("snow", "sql", "-x", "--account", "<account>", "--user", "<user>",
+             "-q", "select current_user()")
+```
+
+`OIDCTokenFile` is an immutable descriptor; it holds no token and starts no
+background work. A consumer must reopen the file to pick up a rotated token, so
+a credential that a process has already read and cached is not refreshed.
+
+`OIDCTokenFile` requires `ChalkIdentity(mode="sandbox")`, which issues
+credentials that identify the sandbox (`sub` is
+`v1:env:<environment>:sandbox:<sandbox_id>`) instead of the user who created it.
+With the default creator identity (`chalk_identity=True`), every workload a
+developer launches is indistinguishable from that developer to the external
+service. A sandbox can mint tokens only for the audiences it declares. This is
+supported for sandboxes only; functions, classes, containers and scaling groups
+reject `ChalkIdentity(mode="sandbox")`, and `OIDCTokenFile` is rejected in image
+and per-exec `env`.
+
+A sandbox can declare at most 8 token files, must run on host compute (the
+default; `compute_class=cc.ComputeClass.K8S` is rejected), and cannot set a
+token file's variable through `env` or `secrets` as well.
 
 ## Chalk SQL
 
@@ -716,8 +793,11 @@ if use_shared_cache:
 client.run(sandbox)
 ```
 
-Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
-identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
+Sandboxes default to a platform-managed Chalk identity representing the creating
+user or service token. Inside deployed functions and classes, indicated by a
+nonempty `CHALK_REMOTE_FUNCTION`, identity defaults to disabled. Set
+`chalk_identity=True` or `chalk_identity=False` to override the default.
+With identity enabled, the sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
 API/environment settings it needs to authenticate without caller credentials
 being copied into the workload.
 
@@ -845,6 +925,28 @@ Git paths identify the repository root relative to the image working directory.
 Helpers accept `timeout_secs`; multi-command operations apply it to each command.
 See the [sandbox Git guide](docs/sandbox-git.md) for workflows and a method reference.
 See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
+
+### Files inside a sandbox
+
+`sandbox.fs` transfers and manages files. `add_file` can be called before
+`run()`; queued files are uploaded once the sandbox is ready.
+
+```python
+from chalkcompute import Sandbox
+
+sandbox = Sandbox()
+sandbox.fs.add_file("requirements.txt", "/workspace/requirements.txt")
+sandbox.fs.add_file(b"#!/bin/sh\necho ready\n", "/workspace/run.sh", mode=0o755)
+sandbox.run()
+try:
+    for info in sandbox.fs.list_files("/workspace"):
+        print(info.name, info.size, oct(info.mode))
+    print(sandbox.fs.find_files("/workspace", "TODO"))
+finally:
+    sandbox.terminate()
+```
+
+See the [sandbox filesystem guide](docs/sandbox-filesystem.md) for every method.
 
 ### Add tmux to a sandbox image
 

@@ -149,14 +149,14 @@ def _metrics_snapshot_payload(
             "windowPeriod": "1m",
             "series": [
                 {
-                    "metric": "METRIC_KIND_CONTAINER_COUNT",
+                    "metric": "METRIC_KIND_POD_CONTAINER_CPU_UTILIZATION",
                     "filters": [pod_name_filter],
-                    "name": "Container Count",
+                    "name": "Container CPU Utilization",
                     "windowFunction": "WINDOW_FUNCTION_KIND_MAX",
                     "groupBy": [],
                 },
                 {
-                    "metric": "METRIC_KIND_CONTAINER_MEMORY_BYTES",
+                    "metric": "METRIC_KIND_POD_CONTAINER_MEMORY_BYTES",
                     "filters": [pod_name_filter],
                     "name": "Container Memory",
                     "windowFunction": "WINDOW_FUNCTION_KIND_MAX",

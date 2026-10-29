@@ -105,13 +105,15 @@ errors, and an example.
 
 ```python
 status = sandbox.git.status("repo")
-print(status.current_branch, status.ahead, status.behind)
+print(status.current_branch, status.upstream, status.ahead, status.behind)
 for file in status.file_status:
     print(file.name, file.index, file.working_tree, file.original_name)
 ```
 
-`current_branch` is `None` for detached HEAD. `branch_published` means an upstream
-is configured; it does not verify that the branch exists on the server.
+`current_branch` is `None` and `detached` is `True` for detached HEAD.
+`upstream` names the configured upstream branch, such as `origin/main`, or is
+`None`. `branch_published` means an upstream is configured; it does not verify
+that the branch exists on the server.
 `ahead` and `behind` use locally known upstream history and default to zero when
 unavailable. Fetch first when fresh upstream information is needed.
 

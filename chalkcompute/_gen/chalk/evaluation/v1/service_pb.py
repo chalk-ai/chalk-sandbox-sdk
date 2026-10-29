@@ -13,11 +13,14 @@ from protobuf._codegen import file_desc
 from protobuf.wkt import struct_pb, timestamp_pb
 
 from ...auth.v1 import permissions_pb
+from ...common.v1 import archive_pb
 from ...flags.v1 import flags_pb
 
 if TYPE_CHECKING:
     from protobuf import DescFile, Oneof
     from protobuf.wkt import Struct, Timestamp
+
+    from ...common.v1.archive_pb import ArchiveStatus
 
 
 _FunctionScorerFields: TypeAlias = Literal["function_version_id"]
@@ -120,6 +123,42 @@ class SqlExpressionScorer(Message[_SqlExpressionScorerFields]):
             pass
 
         name: str
+        expression: str
+
+_SqlExpressionTaskFields: TypeAlias = Literal["expression"]
+
+class SqlExpressionTask(Message[_SqlExpressionTaskFields]):
+    """
+    A task whose output is a ChalkSQL expression rather than a deployed
+    function's result. Nothing is called: the expression is evaluated as a select
+    item over the evaluation's dataset relation, so it may reference any dataset
+    column by name, and its value is the row's `output`.
+
+    ```proto
+    message chalk.evaluation.v1.SqlExpressionTask
+    ```
+
+    Attributes:
+        expression:
+            Valid wherever a select item is: what you could write between SELECT and
+            FROM against the dataset.
+
+            ```proto
+            string expression = 1;
+            ```
+    """
+
+    __slots__ = ("expression",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            expression: str = "",
+        ) -> None:
+            pass
+
         expression: str
 
 _EvaluationScorerSpecFields: TypeAlias = Literal["function", "builtin", "sql_expression"]
@@ -390,7 +429,7 @@ class EvaluationScoreSummary(Message[_EvaluationScoreSummaryFields]):
         score_distribution: EvaluationValueDistribution | None
         metric_distributions: dict[str, EvaluationValueDistribution]
 
-_EvaluationFields: TypeAlias = Literal["id", "team_id", "environment_id", "name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "created_by", "created_at", "suite_id"]
+_EvaluationFields: TypeAlias = Literal["id", "team_id", "environment_id", "name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "created_by", "created_at", "suite_id", "task_sql_expression", "archive_status"]
 
 class Evaluation(Message[_EvaluationFields]):
     """
@@ -447,9 +486,19 @@ class Evaluation(Message[_EvaluationFields]):
             ```proto
             string suite_id = 12;
             ```
+        task_sql_expression:
+            Set instead of task_function_version_id when the task is a SQL expression.
+
+            ```proto
+            optional chalk.evaluation.v1.SqlExpressionTask task_sql_expression = 13;
+            ```
+        archive_status:
+            ```proto
+            optional chalk.common.v1.ArchiveStatus archive_status = 14;
+            ```
     """
 
-    __slots__ = ("id", "team_id", "environment_id", "name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "created_by", "created_at", "suite_id")
+    __slots__ = ("id", "team_id", "environment_id", "name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "created_by", "created_at", "suite_id", "task_sql_expression", "archive_status")
 
     if TYPE_CHECKING:
 
@@ -468,6 +517,8 @@ class Evaluation(Message[_EvaluationFields]):
             created_by: str | None = None,
             created_at: Timestamp | None = None,
             suite_id: str = "",
+            task_sql_expression: SqlExpressionTask | None = None,
+            archive_status: ArchiveStatus | None = None,
         ) -> None:
             pass
 
@@ -483,8 +534,10 @@ class Evaluation(Message[_EvaluationFields]):
         created_by: str
         created_at: Timestamp | None
         suite_id: str
+        task_sql_expression: SqlExpressionTask | None
+        archive_status: ArchiveStatus | None
 
-_EvaluationRunFields: TypeAlias = Literal["id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline", "execution_mode"]
+_EvaluationRunFields: TypeAlias = Literal["id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline", "execution_mode", "sql_query_id", "suite_id"]
 
 class EvaluationRun(Message[_EvaluationRunFields]):
     """
@@ -555,9 +608,22 @@ class EvaluationRun(Message[_EvaluationRunFields]):
             ```proto
             chalk.evaluation.v1.EvaluationRunExecutionMode execution_mode = 15;
             ```
+        sql_query_id:
+            The ChalkSQL query that computes this run's results. Its streaming preview and trace are
+            readable while the run is still in progress, before a result dataset exists.
+
+            ```proto
+            optional string sql_query_id = 16;
+            ```
+        suite_id:
+            Overrides the definition's suite for this run; unset runs inherit it.
+
+            ```proto
+            optional string suite_id = 17;
+            ```
     """
 
-    __slots__ = ("id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline", "execution_mode")
+    __slots__ = ("id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline", "execution_mode", "sql_query_id", "suite_id")
 
     if TYPE_CHECKING:
 
@@ -579,6 +645,8 @@ class EvaluationRun(Message[_EvaluationRunFields]):
             error_message: str | None = None,
             is_baseline: bool = False,
             execution_mode: EvaluationRunExecutionMode | None = None,
+            sql_query_id: str | None = None,
+            suite_id: str | None = None,
         ) -> None:
             pass
 
@@ -597,8 +665,10 @@ class EvaluationRun(Message[_EvaluationRunFields]):
         error_message: str
         is_baseline: bool
         execution_mode: EvaluationRunExecutionMode
+        sql_query_id: str
+        suite_id: str
 
-_CreateEvaluationRequestFields: TypeAlias = Literal["name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "dataset_name", "suite_id"]
+_CreateEvaluationRequestFields: TypeAlias = Literal["name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "dataset_name", "suite_id", "task_sql_expression"]
 
 class CreateEvaluationRequest(Message[_CreateEvaluationRequestFields]):
     """
@@ -644,9 +714,16 @@ class CreateEvaluationRequest(Message[_CreateEvaluationRequestFields]):
             ```proto
             optional string suite_id = 8;
             ```
+        task_sql_expression:
+            A SQL expression task. Exactly one of this and task_function_version_id is
+            set.
+
+            ```proto
+            optional chalk.evaluation.v1.SqlExpressionTask task_sql_expression = 9;
+            ```
     """
 
-    __slots__ = ("name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "dataset_name", "suite_id")
+    __slots__ = ("name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "dataset_name", "suite_id", "task_sql_expression")
 
     if TYPE_CHECKING:
 
@@ -661,6 +738,7 @@ class CreateEvaluationRequest(Message[_CreateEvaluationRequestFields]):
             metadata: Struct | None = None,
             dataset_name: str = "",
             suite_id: str | None = None,
+            task_sql_expression: SqlExpressionTask | None = None,
         ) -> None:
             pass
 
@@ -672,6 +750,7 @@ class CreateEvaluationRequest(Message[_CreateEvaluationRequestFields]):
         metadata: Struct | None
         dataset_name: str
         suite_id: str
+        task_sql_expression: SqlExpressionTask | None
 
 _CreateEvaluationResponseFields: TypeAlias = Literal["evaluation"]
 
@@ -837,6 +916,118 @@ class ListEvaluationsResponse(Message[_ListEvaluationsResponseFields]):
         next_cursor: str
         score_summaries: list[EvaluationScoreSummary]
 
+_ArchiveEvaluationRequestFields: TypeAlias = Literal["evaluation_id"]
+
+class ArchiveEvaluationRequest(Message[_ArchiveEvaluationRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.ArchiveEvaluationRequest
+    ```
+
+    Attributes:
+        evaluation_id:
+            ```proto
+            string evaluation_id = 1;
+            ```
+    """
+
+    __slots__ = ("evaluation_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation_id: str = "",
+        ) -> None:
+            pass
+
+        evaluation_id: str
+
+_ArchiveEvaluationResponseFields: TypeAlias = Literal["evaluation"]
+
+class ArchiveEvaluationResponse(Message[_ArchiveEvaluationResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.ArchiveEvaluationResponse
+    ```
+
+    Attributes:
+        evaluation:
+            ```proto
+            optional chalk.evaluation.v1.Evaluation evaluation = 1;
+            ```
+    """
+
+    __slots__ = ("evaluation",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation: Evaluation | None = None,
+        ) -> None:
+            pass
+
+        evaluation: Evaluation | None
+
+_UnarchiveEvaluationRequestFields: TypeAlias = Literal["evaluation_id"]
+
+class UnarchiveEvaluationRequest(Message[_UnarchiveEvaluationRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.UnarchiveEvaluationRequest
+    ```
+
+    Attributes:
+        evaluation_id:
+            ```proto
+            string evaluation_id = 1;
+            ```
+    """
+
+    __slots__ = ("evaluation_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation_id: str = "",
+        ) -> None:
+            pass
+
+        evaluation_id: str
+
+_UnarchiveEvaluationResponseFields: TypeAlias = Literal["evaluation"]
+
+class UnarchiveEvaluationResponse(Message[_UnarchiveEvaluationResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.UnarchiveEvaluationResponse
+    ```
+
+    Attributes:
+        evaluation:
+            ```proto
+            optional chalk.evaluation.v1.Evaluation evaluation = 1;
+            ```
+    """
+
+    __slots__ = ("evaluation",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation: Evaluation | None = None,
+        ) -> None:
+            pass
+
+        evaluation: Evaluation | None
+
 _CreateEvaluationRunRequestFields: TypeAlias = Literal["evaluation_id", "metadata", "execution_mode"]
 
 class CreateEvaluationRunRequest(Message[_CreateEvaluationRunRequestFields]):
@@ -855,7 +1046,8 @@ class CreateEvaluationRunRequest(Message[_CreateEvaluationRunRequestFields]):
             optional google.protobuf.Struct metadata = 2;
             ```
         execution_mode:
-            Defaults to EVALUATION_RUN_EXECUTION_MODE_ON_READ.
+            When omitted, EVALUATION_RUN_EXECUTION_MODE_WORKFLOW if the environment has a reachable
+            workflow orchestrator, otherwise EVALUATION_RUN_EXECUTION_MODE_ON_READ.
 
             ```proto
             optional chalk.evaluation.v1.EvaluationRunExecutionMode execution_mode = 3;
@@ -917,8 +1109,8 @@ class RescoreEvaluationRunRequest(Message[_RescoreEvaluationRunRequestFields]):
 
     Attributes:
         evaluation_run_id:
-            The finished run whose task outputs to score again. Its result dataset
-            supplies the `output` every scorer reads, so the task is not re-run.
+            The finished run to score again. Its result dataset supplies the rows, and
+            the task outputs and scores that are still current for the new run.
 
             ```proto
             string evaluation_run_id = 1;
@@ -928,12 +1120,16 @@ class RescoreEvaluationRunRequest(Message[_RescoreEvaluationRunRequestFields]):
             optional google.protobuf.Struct metadata = 2;
             ```
         evaluation_id:
-            The evaluation to record the new run under, and whose scorers score it.
-            Defaults to the rescored run's own evaluation. Naming another one is how a
-            run is scored with scorers it was not created with: create an evaluation
-            with the new scorers and rescore the run into it. That evaluation must use
-            the rescored run's dataset revision and task function version, since the
-            outputs it is credited with are that task's on those rows.
+            The evaluation to record the new run under, whose task and scorers it is
+            run with. Defaults to the rescored run's own evaluation. Naming another one
+            is how a run is scored with scorers, or a task, it was not created with:
+            create an evaluation with them and rescore the run into it. That
+            evaluation must use the rescored run's dataset revision, since the new run
+            reads its rows out of the rescored run's results. When it names the same
+            task, the task's outputs are reused; otherwise the task is called on those
+            rows. A scorer the rescored run already had is reused when it reads
+            nothing the task changed, and is called again only on the rows it failed
+            on. Every other scorer is called.
 
             ```proto
             optional string evaluation_id = 3;
@@ -967,8 +1163,8 @@ class RescoreEvaluationRunResponse(Message[_RescoreEvaluationRunResponseFields])
 
     Attributes:
         evaluation_run:
-            A run of the same evaluation, recorded like any other, whose scores come
-            from the rescored run's outputs rather than from a fresh task.
+            A run of the target evaluation, recorded like any other, whose values are
+            copied from the rescored run wherever they are unchanged.
 
             ```proto
             optional chalk.evaluation.v1.EvaluationRun evaluation_run = 1;
@@ -1016,7 +1212,7 @@ class GetEvaluationRunRequest(Message[_GetEvaluationRunRequestFields]):
 
         evaluation_run_id: str
 
-_GetEvaluationRunResponseFields: TypeAlias = Literal["evaluation_run"]
+_GetEvaluationRunResponseFields: TypeAlias = Literal["evaluation_run", "score_summary"]
 
 class GetEvaluationRunResponse(Message[_GetEvaluationRunResponseFields]):
     """
@@ -1029,9 +1225,15 @@ class GetEvaluationRunResponse(Message[_GetEvaluationRunResponseFields]):
             ```proto
             optional chalk.evaluation.v1.EvaluationRun evaluation_run = 1;
             ```
+        score_summary:
+            The run's aggregates, once it has succeeded and they have been computed; unset until then.
+
+            ```proto
+            optional chalk.evaluation.v1.EvaluationScoreSummary score_summary = 2;
+            ```
     """
 
-    __slots__ = ("evaluation_run",)
+    __slots__ = ("evaluation_run", "score_summary")
 
     if TYPE_CHECKING:
 
@@ -1039,12 +1241,14 @@ class GetEvaluationRunResponse(Message[_GetEvaluationRunResponseFields]):
             self,
             *,
             evaluation_run: EvaluationRun | None = None,
+            score_summary: EvaluationScoreSummary | None = None,
         ) -> None:
             pass
 
         evaluation_run: EvaluationRun | None
+        score_summary: EvaluationScoreSummary | None
 
-_ListEvaluationRunsRequestFields: TypeAlias = Literal["evaluation_id", "cursor", "limit", "suite_id"]
+_ListEvaluationRunsRequestFields: TypeAlias = Literal["evaluation_id", "cursor", "limit", "suite_id", "filters"]
 
 class ListEvaluationRunsRequest(Message[_ListEvaluationRunsRequestFields]):
     """
@@ -1069,9 +1273,13 @@ class ListEvaluationRunsRequest(Message[_ListEvaluationRunsRequestFields]):
             ```proto
             optional string suite_id = 4;
             ```
+        filters:
+            ```proto
+            optional chalk.evaluation.v1.ListEvaluationRunsFilters filters = 5;
+            ```
     """
 
-    __slots__ = ("evaluation_id", "cursor", "limit", "suite_id")
+    __slots__ = ("evaluation_id", "cursor", "limit", "suite_id", "filters")
 
     if TYPE_CHECKING:
 
@@ -1082,6 +1290,7 @@ class ListEvaluationRunsRequest(Message[_ListEvaluationRunsRequestFields]):
             cursor: str | None = None,
             limit: int | None = None,
             suite_id: str | None = None,
+            filters: ListEvaluationRunsFilters | None = None,
         ) -> None:
             pass
 
@@ -1089,6 +1298,47 @@ class ListEvaluationRunsRequest(Message[_ListEvaluationRunsRequestFields]):
         cursor: str
         limit: int
         suite_id: str
+        filters: ListEvaluationRunsFilters | None
+
+_ListEvaluationRunsFiltersFields: TypeAlias = Literal["exclude_post_training_runs", "exclude_experiment_runs"]
+
+class ListEvaluationRunsFilters(Message[_ListEvaluationRunsFiltersFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.ListEvaluationRunsFilters
+    ```
+
+    Attributes:
+        exclude_post_training_runs:
+            Deprecated: use exclude_experiment_runs, which it means.
+
+            ```proto
+            bool exclude_post_training_runs = 1 [deprecated = true];
+            ```
+        exclude_experiment_runs:
+            Leave out runs an experiment started: its rollouts and any run of its trained model. They
+            call a different model than the evaluation's task, so they say nothing about the evaluation
+            itself. Such runs carry `experiment_id` in their metadata.
+
+            ```proto
+            bool exclude_experiment_runs = 2;
+            ```
+    """
+
+    __slots__ = ("exclude_post_training_runs", "exclude_experiment_runs")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            exclude_post_training_runs: bool = False,
+            exclude_experiment_runs: bool = False,
+        ) -> None:
+            pass
+
+        exclude_post_training_runs: bool
+        exclude_experiment_runs: bool
 
 _ListEvaluationRunsResponseFields: TypeAlias = Literal["evaluation_runs", "next_cursor", "score_summaries", "evaluations"]
 
@@ -1192,6 +1442,68 @@ class SetEvaluationRunBaselineResponse(Message[_SetEvaluationRunBaselineResponse
 
         evaluation_run: EvaluationRun | None
 
+_MoveEvaluationRunRequestFields: TypeAlias = Literal["evaluation_run_id", "suite_id"]
+
+class MoveEvaluationRunRequest(Message[_MoveEvaluationRunRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.MoveEvaluationRunRequest
+    ```
+
+    Attributes:
+        evaluation_run_id:
+            ```proto
+            string evaluation_run_id = 1;
+            ```
+        suite_id:
+            ```proto
+            string suite_id = 2;
+            ```
+    """
+
+    __slots__ = ("evaluation_run_id", "suite_id")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation_run_id: str = "",
+            suite_id: str = "",
+        ) -> None:
+            pass
+
+        evaluation_run_id: str
+        suite_id: str
+
+_MoveEvaluationRunResponseFields: TypeAlias = Literal["evaluation_run"]
+
+class MoveEvaluationRunResponse(Message[_MoveEvaluationRunResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.MoveEvaluationRunResponse
+    ```
+
+    Attributes:
+        evaluation_run:
+            ```proto
+            optional chalk.evaluation.v1.EvaluationRun evaluation_run = 1;
+            ```
+    """
+
+    __slots__ = ("evaluation_run",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation_run: EvaluationRun | None = None,
+        ) -> None:
+            pass
+
+        evaluation_run: EvaluationRun | None
+
 _ArchiveEvaluationRunRequestFields: TypeAlias = Literal["evaluation_run_id"]
 
 class ArchiveEvaluationRunRequest(Message[_ArchiveEvaluationRunRequestFields]):
@@ -1248,7 +1560,7 @@ class ArchiveEvaluationRunResponse(Message[_ArchiveEvaluationRunResponseFields])
 
         evaluation_run_id: str
 
-_EvaluationSuiteFields: TypeAlias = Literal["id", "team_id", "environment_id", "name", "created_by", "created_at"]
+_EvaluationSuiteFields: TypeAlias = Literal["id", "team_id", "environment_id", "name", "created_by", "created_at", "evaluation_count", "dataset_count"]
 
 class EvaluationSuite(Message[_EvaluationSuiteFields]):
     """
@@ -1281,9 +1593,21 @@ class EvaluationSuite(Message[_EvaluationSuiteFields]):
             ```proto
             optional google.protobuf.Timestamp created_at = 6;
             ```
+        evaluation_count:
+            Counts across all definitions in the suite, populated by ListEvaluationSuites.
+
+            ```proto
+            optional int64 evaluation_count = 7;
+            ```
+        dataset_count:
+            Distinct input dataset IDs; revisions of the same dataset count once.
+
+            ```proto
+            optional int64 dataset_count = 8;
+            ```
     """
 
-    __slots__ = ("id", "team_id", "environment_id", "name", "created_by", "created_at")
+    __slots__ = ("id", "team_id", "environment_id", "name", "created_by", "created_at", "evaluation_count", "dataset_count")
 
     if TYPE_CHECKING:
 
@@ -1296,6 +1620,8 @@ class EvaluationSuite(Message[_EvaluationSuiteFields]):
             name: str = "",
             created_by: str | None = None,
             created_at: Timestamp | None = None,
+            evaluation_count: int | None = None,
+            dataset_count: int | None = None,
         ) -> None:
             pass
 
@@ -1305,6 +1631,8 @@ class EvaluationSuite(Message[_EvaluationSuiteFields]):
         name: str
         created_by: str
         created_at: Timestamp | None
+        evaluation_count: int
+        dataset_count: int
 
 _CreateEvaluationSuiteRequestFields: TypeAlias = Literal["name"]
 
@@ -1408,6 +1736,585 @@ class ListEvaluationSuitesResponse(Message[_ListEvaluationSuitesResponseFields])
 
         suites: list[EvaluationSuite]
 
+_OnlineEvaluatorPredicateFields: TypeAlias = Literal["sql_expression"]
+
+class OnlineEvaluatorPredicate(Message[_OnlineEvaluatorPredicateFields]):
+    """
+    Selects which units of the evaluator's scope are scored.
+
+    ```proto
+    message chalk.evaluation.v1.OnlineEvaluatorPredicate
+    ```
+
+    Attributes:
+        sql_expression:
+            A ChalkSQL boolean expression over the scope's telemetry table, written as
+            it would appear after WHERE: for span scope, any `telemetry.spans` column
+            by name, e.g. `openinference_span_kind = 'LLM' AND llm_model_name LIKE
+            'claude-%'`. Empty matches every unit.
+
+            ```proto
+            string sql_expression = 1;
+            ```
+    """
+
+    __slots__ = ("sql_expression",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            sql_expression: str = "",
+        ) -> None:
+            pass
+
+        sql_expression: str
+
+_OnlineEvaluatorScorerFields: TypeAlias = Literal["name", "spec", "depends_on"]
+
+class OnlineEvaluatorScorer(Message[_OnlineEvaluatorScorerFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.OnlineEvaluatorScorer
+    ```
+
+    Attributes:
+        name:
+            Unique within the evaluator. Names the scorer's result, and is how another
+            scorer names this one in `depends_on`.
+
+            ```proto
+            string name = 1;
+            ```
+        spec:
+            A SQL expression spec's own name must be empty or equal `name`.
+
+            ```proto
+            optional chalk.evaluation.v1.EvaluationScorerSpec spec = 2;
+            ```
+        depends_on:
+            Scorers whose outputs this one receives. A function scorer receives each
+            as the argument of the same name; a SQL expression scorer may reference
+            each as a column of the same name. Its other inputs are columns of the
+            scope's telemetry table. The dependency graph must be acyclic.
+
+            ```proto
+            repeated string depends_on = 3;
+            ```
+    """
+
+    __slots__ = ("name", "spec", "depends_on")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            name: str = "",
+            spec: EvaluationScorerSpec | None = None,
+            depends_on: list[str] | None = None,
+        ) -> None:
+            pass
+
+        name: str
+        spec: EvaluationScorerSpec | None
+        depends_on: list[str]
+
+_OnlineEvaluatorSpecFields: TypeAlias = Literal["name", "scorers", "predicate", "scope", "sample_rate", "enabled", "metadata"]
+
+class OnlineEvaluatorSpec(Message[_OnlineEvaluatorSpecFields]):
+    """
+    What an online evaluator does, as written by its author. Telemetry that
+    matches `predicate` is sampled at `sample_rate`, then scored by `scorers`.
+
+    ```proto
+    message chalk.evaluation.v1.OnlineEvaluatorSpec
+    ```
+
+    Attributes:
+        name:
+            ```proto
+            string name = 1;
+            ```
+        scorers:
+            ```proto
+            repeated chalk.evaluation.v1.OnlineEvaluatorScorer scorers = 2;
+            ```
+        predicate:
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluatorPredicate predicate = 3;
+            ```
+        scope:
+            Defaults to ONLINE_EVALUATOR_SCOPE_SPAN.
+
+            ```proto
+            chalk.evaluation.v1.OnlineEvaluatorScope scope = 4;
+            ```
+        sample_rate:
+            Fraction of matching units to score, in (0, 1]. Defaults to 1. Sampling is
+            decided per unit id, so a unit is either always or never in the sample.
+
+            ```proto
+            optional double sample_rate = 5;
+            ```
+        enabled:
+            A disabled evaluator keeps its definition but scores nothing.
+
+            ```proto
+            bool enabled = 6;
+            ```
+        metadata:
+            ```proto
+            optional google.protobuf.Struct metadata = 7;
+            ```
+    """
+
+    __slots__ = ("name", "scorers", "predicate", "scope", "sample_rate", "enabled", "metadata")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            name: str = "",
+            scorers: list[OnlineEvaluatorScorer] | None = None,
+            predicate: OnlineEvaluatorPredicate | None = None,
+            scope: OnlineEvaluatorScope | None = None,
+            sample_rate: float | None = None,
+            enabled: bool = False,
+            metadata: Struct | None = None,
+        ) -> None:
+            pass
+
+        name: str
+        scorers: list[OnlineEvaluatorScorer]
+        predicate: OnlineEvaluatorPredicate | None
+        scope: OnlineEvaluatorScope
+        sample_rate: float
+        enabled: bool
+        metadata: Struct | None
+
+_OnlineEvaluatorFields: TypeAlias = Literal["id", "team_id", "environment_id", "spec", "revision", "created_by", "created_at", "updated_at"]
+
+class OnlineEvaluator(Message[_OnlineEvaluatorFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.OnlineEvaluator
+    ```
+
+    Attributes:
+        id:
+            ```proto
+            string id = 1;
+            ```
+        team_id:
+            ```proto
+            string team_id = 2;
+            ```
+        environment_id:
+            ```proto
+            string environment_id = 3;
+            ```
+        spec:
+            Stored with defaults applied: scope and sample_rate are always set.
+
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluatorSpec spec = 4;
+            ```
+        revision:
+            Starts at 1 and increments on every update, so a score can be attributed
+            to the definition that produced it.
+
+            ```proto
+            int64 revision = 5;
+            ```
+        created_by:
+            ```proto
+            optional string created_by = 6;
+            ```
+        created_at:
+            ```proto
+            optional google.protobuf.Timestamp created_at = 7;
+            ```
+        updated_at:
+            ```proto
+            optional google.protobuf.Timestamp updated_at = 8;
+            ```
+    """
+
+    __slots__ = ("id", "team_id", "environment_id", "spec", "revision", "created_by", "created_at", "updated_at")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            id: str = "",
+            team_id: str = "",
+            environment_id: str = "",
+            spec: OnlineEvaluatorSpec | None = None,
+            revision: int = 0,
+            created_by: str | None = None,
+            created_at: Timestamp | None = None,
+            updated_at: Timestamp | None = None,
+        ) -> None:
+            pass
+
+        id: str
+        team_id: str
+        environment_id: str
+        spec: OnlineEvaluatorSpec | None
+        revision: int
+        created_by: str
+        created_at: Timestamp | None
+        updated_at: Timestamp | None
+
+_CreateOnlineEvaluatorRequestFields: TypeAlias = Literal["spec"]
+
+class CreateOnlineEvaluatorRequest(Message[_CreateOnlineEvaluatorRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.CreateOnlineEvaluatorRequest
+    ```
+
+    Attributes:
+        spec:
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluatorSpec spec = 1;
+            ```
+    """
+
+    __slots__ = ("spec",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            spec: OnlineEvaluatorSpec | None = None,
+        ) -> None:
+            pass
+
+        spec: OnlineEvaluatorSpec | None
+
+_CreateOnlineEvaluatorResponseFields: TypeAlias = Literal["online_evaluator"]
+
+class CreateOnlineEvaluatorResponse(Message[_CreateOnlineEvaluatorResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.CreateOnlineEvaluatorResponse
+    ```
+
+    Attributes:
+        online_evaluator:
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluator online_evaluator = 1;
+            ```
+    """
+
+    __slots__ = ("online_evaluator",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator: OnlineEvaluator | None = None,
+        ) -> None:
+            pass
+
+        online_evaluator: OnlineEvaluator | None
+
+_GetOnlineEvaluatorRequestFields: TypeAlias = Literal["online_evaluator_id"]
+
+class GetOnlineEvaluatorRequest(Message[_GetOnlineEvaluatorRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.GetOnlineEvaluatorRequest
+    ```
+
+    Attributes:
+        online_evaluator_id:
+            ```proto
+            string online_evaluator_id = 1;
+            ```
+    """
+
+    __slots__ = ("online_evaluator_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator_id: str = "",
+        ) -> None:
+            pass
+
+        online_evaluator_id: str
+
+_GetOnlineEvaluatorResponseFields: TypeAlias = Literal["online_evaluator"]
+
+class GetOnlineEvaluatorResponse(Message[_GetOnlineEvaluatorResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.GetOnlineEvaluatorResponse
+    ```
+
+    Attributes:
+        online_evaluator:
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluator online_evaluator = 1;
+            ```
+    """
+
+    __slots__ = ("online_evaluator",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator: OnlineEvaluator | None = None,
+        ) -> None:
+            pass
+
+        online_evaluator: OnlineEvaluator | None
+
+_ListOnlineEvaluatorsFiltersFields: TypeAlias = Literal["enabled"]
+
+class ListOnlineEvaluatorsFilters(Message[_ListOnlineEvaluatorsFiltersFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.ListOnlineEvaluatorsFilters
+    ```
+
+    Attributes:
+        enabled:
+            When set, only evaluators whose `enabled` matches.
+
+            ```proto
+            optional bool enabled = 1;
+            ```
+    """
+
+    __slots__ = ("enabled",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            enabled: bool | None = None,
+        ) -> None:
+            pass
+
+        enabled: bool
+
+_ListOnlineEvaluatorsRequestFields: TypeAlias = Literal["cursor", "limit", "filters"]
+
+class ListOnlineEvaluatorsRequest(Message[_ListOnlineEvaluatorsRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.ListOnlineEvaluatorsRequest
+    ```
+
+    Attributes:
+        cursor:
+            ```proto
+            optional string cursor = 1;
+            ```
+        limit:
+            ```proto
+            optional int32 limit = 2;
+            ```
+        filters:
+            ```proto
+            optional chalk.evaluation.v1.ListOnlineEvaluatorsFilters filters = 3;
+            ```
+    """
+
+    __slots__ = ("cursor", "limit", "filters")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            cursor: str | None = None,
+            limit: int | None = None,
+            filters: ListOnlineEvaluatorsFilters | None = None,
+        ) -> None:
+            pass
+
+        cursor: str
+        limit: int
+        filters: ListOnlineEvaluatorsFilters | None
+
+_ListOnlineEvaluatorsResponseFields: TypeAlias = Literal["online_evaluators", "next_cursor"]
+
+class ListOnlineEvaluatorsResponse(Message[_ListOnlineEvaluatorsResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.ListOnlineEvaluatorsResponse
+    ```
+
+    Attributes:
+        online_evaluators:
+            ```proto
+            repeated chalk.evaluation.v1.OnlineEvaluator online_evaluators = 1;
+            ```
+        next_cursor:
+            ```proto
+            optional string next_cursor = 2;
+            ```
+    """
+
+    __slots__ = ("online_evaluators", "next_cursor")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluators: list[OnlineEvaluator] | None = None,
+            next_cursor: str | None = None,
+        ) -> None:
+            pass
+
+        online_evaluators: list[OnlineEvaluator]
+        next_cursor: str
+
+_UpdateOnlineEvaluatorRequestFields: TypeAlias = Literal["online_evaluator_id", "spec", "expected_revision"]
+
+class UpdateOnlineEvaluatorRequest(Message[_UpdateOnlineEvaluatorRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.UpdateOnlineEvaluatorRequest
+    ```
+
+    Attributes:
+        online_evaluator_id:
+            ```proto
+            string online_evaluator_id = 1;
+            ```
+        spec:
+            Replaces the evaluator's whole spec and increments its revision.
+
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluatorSpec spec = 2;
+            ```
+        expected_revision:
+            When set, the update applies only if the evaluator is still at this
+            revision, so concurrent editors cannot silently overwrite each other.
+
+            ```proto
+            optional int64 expected_revision = 3;
+            ```
+    """
+
+    __slots__ = ("online_evaluator_id", "spec", "expected_revision")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator_id: str = "",
+            spec: OnlineEvaluatorSpec | None = None,
+            expected_revision: int | None = None,
+        ) -> None:
+            pass
+
+        online_evaluator_id: str
+        spec: OnlineEvaluatorSpec | None
+        expected_revision: int
+
+_UpdateOnlineEvaluatorResponseFields: TypeAlias = Literal["online_evaluator"]
+
+class UpdateOnlineEvaluatorResponse(Message[_UpdateOnlineEvaluatorResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.UpdateOnlineEvaluatorResponse
+    ```
+
+    Attributes:
+        online_evaluator:
+            ```proto
+            optional chalk.evaluation.v1.OnlineEvaluator online_evaluator = 1;
+            ```
+    """
+
+    __slots__ = ("online_evaluator",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator: OnlineEvaluator | None = None,
+        ) -> None:
+            pass
+
+        online_evaluator: OnlineEvaluator | None
+
+_DeleteOnlineEvaluatorRequestFields: TypeAlias = Literal["online_evaluator_id"]
+
+class DeleteOnlineEvaluatorRequest(Message[_DeleteOnlineEvaluatorRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.DeleteOnlineEvaluatorRequest
+    ```
+
+    Attributes:
+        online_evaluator_id:
+            ```proto
+            string online_evaluator_id = 1;
+            ```
+    """
+
+    __slots__ = ("online_evaluator_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator_id: str = "",
+        ) -> None:
+            pass
+
+        online_evaluator_id: str
+
+_DeleteOnlineEvaluatorResponseFields: TypeAlias = Literal["online_evaluator_id"]
+
+class DeleteOnlineEvaluatorResponse(Message[_DeleteOnlineEvaluatorResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.DeleteOnlineEvaluatorResponse
+    ```
+
+    Attributes:
+        online_evaluator_id:
+            ```proto
+            string online_evaluator_id = 1;
+            ```
+    """
+
+    __slots__ = ("online_evaluator_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            online_evaluator_id: str = "",
+        ) -> None:
+            pass
+
+        online_evaluator_id: str
+
 class EvaluationRunStatus(Enum):
     """
     ```proto
@@ -1488,11 +2395,53 @@ class EvaluationRunExecutionMode(Enum):
     ON_READ = 1
     WORKFLOW = 2
 
+class OnlineEvaluatorScope(Enum):
+    """
+    The unit of telemetry an online evaluator judges. Each matching unit is
+    scored once, as one row.
+
+    ```proto
+    enum chalk.evaluation.v1.OnlineEvaluatorScope
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            Treated as ONLINE_EVALUATOR_SCOPE_SPAN.
+
+            ```proto
+            ONLINE_EVALUATOR_SCOPE_UNSPECIFIED = 0
+            ```
+        SPAN:
+            One row of `telemetry.spans`.
+
+            ```proto
+            ONLINE_EVALUATOR_SCOPE_SPAN = 1
+            ```
+        TRACE:
+            One row of `telemetry.traces`. Not yet supported.
+
+            ```proto
+            ONLINE_EVALUATOR_SCOPE_TRACE = 2
+            ```
+        SESSION:
+            One row of `telemetry.sessions`. Not yet supported.
+
+            ```proto
+            ONLINE_EVALUATOR_SCOPE_SESSION = 3
+            ```
+    """
+
+    UNSPECIFIED = 0
+    SPAN = 1
+    TRACE = 2
+    SESSION = 3
+
 
 _DESC = file_desc(
-    b'\n!chalk/evaluation/v1/service.proto\x12\x13chalk.evaluation.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"@\n\x0eFunctionScorer\x12.\n\x13function_version_id\x18\x01 \x01(\tR\x11functionVersionId"\x1f\n\rBuiltinScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"I\n\x13SqlExpressionScorer\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n\nexpression\x18\x02 \x01(\tR\nexpression"\xfe\x01\n\x14EvaluationScorerSpec\x12A\n\x08function\x18\x01 \x01(\x0b2#.chalk.evaluation.v1.FunctionScorerH\x00R\x08function\x12>\n\x07builtin\x18\x02 \x01(\x0b2".chalk.evaluation.v1.BuiltinScorerH\x00R\x07builtin\x12Q\n\x0esql_expression\x18\x03 \x01(\x0b2(.chalk.evaluation.v1.SqlExpressionScorerH\x00R\rsqlExpressionB\x10\n\x0eimplementation"a\n\x10EvaluationScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12=\n\x04spec\x18\x02 \x01(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x04spec"T\n\x11EvaluationScorers\x12?\n\x07scorers\x18\x01 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers"\xef\x01\n\x1cEvaluationScorerScoreSummary\x12=\n\x06scorer\x18\x01 \x01(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x06scorer\x12(\n\raverage_score\x18\x02 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12T\n\x0cdistribution\x18\x03 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x0cdistributionB\x10\n\x0e_average_score"\xb5\x01\n\x1bEvaluationValueDistribution\x12\x13\n\x02p5\x18\x01 \x01(\x01H\x00R\x02p5\x88\x01\x01\x12\x15\n\x03p25\x18\x02 \x01(\x01H\x01R\x03p25\x88\x01\x01\x12\x15\n\x03p50\x18\x03 \x01(\x01H\x02R\x03p50\x88\x01\x01\x12\x15\n\x03p75\x18\x04 \x01(\x01H\x03R\x03p75\x88\x01\x01\x12\x15\n\x03p95\x18\x05 \x01(\x01H\x04R\x03p95\x88\x01\x01B\x05\n\x03_p5B\x06\n\x04_p25B\x06\n\x04_p50B\x06\n\x04_p75B\x06\n\x04_p95"\xd1\x06\n\x16EvaluationScoreSummary\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x12*\n\x11evaluation_run_id\x18\x02 \x01(\tR\x0fevaluationRunId\x12(\n\raverage_score\x18\x03 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12V\n\rscorer_scores\x18\x04 \x03(\x0b21.chalk.evaluation.v1.EvaluationScorerScoreSummaryR\x0cscorerScores\x129\n\ncreated_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12R\n\x07metrics\x18\x07 \x03(\x0b28.chalk.evaluation.v1.EvaluationScoreSummary.MetricsEntryR\x07metrics\x12_\n\x12score_distribution\x18\x08 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x11scoreDistribution\x12w\n\x14metric_distributions\x18\t \x03(\x0b2D.chalk.evaluation.v1.EvaluationScoreSummary.MetricDistributionsEntryR\x13metricDistributions\x1a:\n\x0cMetricsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1ax\n\x18MetricDistributionsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12F\n\x05value\x18\x02 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x05value:\x028\x01B\x10\n\x0e_average_score"\xf7\x03\n\nEvaluation\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x05 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x06 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x07 \x01(\tR\x15taskFunctionVersionId\x12?\n\x07scorers\x18\x08 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers\x123\n\x08metadata\x18\t \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\n \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x19\n\x08suite_id\x18\x0c \x01(\tR\x07suiteIdB\r\n\x0b_created_by"\xea\x06\n\rEvaluationRun\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12#\n\revaluation_id\x18\x04 \x01(\tR\x0cevaluationId\x12@\n\x06status\x18\x05 \x01(\x0e2(.chalk.evaluation.v1.EvaluationRunStatusR\x06status\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\x07 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstarted_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0ccompleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bcompletedAt\x88\x01\x01\x12/\n\x11result_dataset_id\x18\x0b \x01(\tH\x03R\x0fresultDatasetId\x88\x01\x01\x12@\n\x1aresult_dataset_revision_id\x18\x0c \x01(\tH\x04R\x17resultDatasetRevisionId\x88\x01\x01\x12(\n\rerror_message\x18\r \x01(\tH\x05R\x0cerrorMessage\x88\x01\x01\x12\x1f\n\x0bis_baseline\x18\x0e \x01(\x08R\nisBaseline\x12V\n\x0eexecution_mode\x18\x0f \x01(\x0e2/.chalk.evaluation.v1.EvaluationRunExecutionModeR\rexecutionModeB\r\n\x0b_created_byB\r\n\x0b_started_atB\x0f\n\r_completed_atB\x14\n\x12_result_dataset_idB\x1d\n\x1b_result_dataset_revision_idB\x10\n\x0e_error_message"\xff\x02\n\x17CreateEvaluationRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x02 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x03 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x04 \x01(\tR\x15taskFunctionVersionId\x12C\n\x07scorers\x18\x05 \x03(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x07scorers\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12!\n\x0cdataset_name\x18\x07 \x01(\tR\x0bdatasetName\x12\x1e\n\x08suite_id\x18\x08 \x01(\tH\x00R\x07suiteId\x88\x01\x01B\x0b\n\t_suite_id"[\n\x18CreateEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation";\n\x14GetEvaluationRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId"X\n\x15GetEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation"\x92\x01\n\x16ListEvaluationsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x03 \x01(\tH\x02R\x07suiteId\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xe8\x01\n\x17ListEvaluationsResponse\x12A\n\x0bevaluations\x18\x01 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluations\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummariesB\x0e\n\x0c_next_cursor"\xe6\x01\n\x1aCreateEvaluationRunRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12[\n\x0eexecution_mode\x18\x03 \x01(\x0e2/.chalk.evaluation.v1.EvaluationRunExecutionModeH\x00R\rexecutionMode\x88\x01\x01B\x11\n\x0f_execution_mode"h\n\x1bCreateEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"\xba\x01\n\x1bRescoreEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12(\n\revaluation_id\x18\x03 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01B\x10\n\x0e_evaluation_id"i\n\x1cRescoreEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"E\n\x17GetEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"e\n\x18GetEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"\xd1\x01\n\x19ListEvaluationRunsRequest\x12(\n\revaluation_id\x18\x01 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x04 \x01(\tH\x03R\x07suiteId\x88\x01\x01B\x10\n\x0e_evaluation_idB\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xb8\x02\n\x1aListEvaluationRunsResponse\x12K\n\x0fevaluation_runs\x18\x01 \x03(\x0b2".chalk.evaluation.v1.EvaluationRunR\x0eevaluationRuns\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummaries\x12A\n\x0bevaluations\x18\x04 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluationsB\x0e\n\x0c_next_cursor"M\n\x1fSetEvaluationRunBaselineRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"m\n SetEvaluationRunBaselineResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"I\n\x1bArchiveEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"J\n\x1cArchiveEvaluationRunResponse\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"\xe3\x01\n\x0fEvaluationSuite\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12"\n\ncreated_by\x18\x05 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\r\n\x0b_created_by"2\n\x1cCreateEvaluationSuiteRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"[\n\x1dCreateEvaluationSuiteResponse\x12:\n\x05suite\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x05suite"\x1d\n\x1bListEvaluationSuitesRequest"\\\n\x1cListEvaluationSuitesResponse\x12<\n\x06suites\x18\x01 \x03(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x06suites*\x93\x02\n\x13EvaluationRunStatus\x12%\n!EVALUATION_RUN_STATUS_UNSPECIFIED\x10\x00\x12!\n\x1dEVALUATION_RUN_STATUS_PENDING\x10\x01\x12!\n\x1dEVALUATION_RUN_STATUS_RUNNING\x10\x02\x12#\n\x1fEVALUATION_RUN_STATUS_SUCCEEDED\x10\x03\x12 \n\x1cEVALUATION_RUN_STATUS_FAILED\x10\x04\x12"\n\x1eEVALUATION_RUN_STATUS_CANCELED\x10\x05\x12$\n EVALUATION_RUN_STATUS_FINALIZING\x10\x06*\xa2\x01\n\x1aEvaluationRunExecutionMode\x12-\n)EVALUATION_RUN_EXECUTION_MODE_UNSPECIFIED\x10\x00\x12)\n%EVALUATION_RUN_EXECUTION_MODE_ON_READ\x10\x01\x12*\n&EVALUATION_RUN_EXECUTION_MODE_WORKFLOW\x10\x022\x9e\x11\n\x11EvaluationService\x12\xc8\x01\n\x15CreateEvaluationSuite\x121.chalk.evaluation.v1.CreateEvaluationSuiteRequest\x1a2.chalk.evaluation.v1.CreateEvaluationSuiteResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xcc\x01\n\x14ListEvaluationSuites\x120.chalk.evaluation.v1.ListEvaluationSuitesRequest\x1a1.chalk.evaluation.v1.ListEvaluationSuitesResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb9\x01\n\x10CreateEvaluation\x12,.chalk.evaluation.v1.CreateEvaluationRequest\x1a-.chalk.evaluation.v1.CreateEvaluationResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb7\x01\n\rGetEvaluation\x12).chalk.evaluation.v1.GetEvaluationRequest\x1a*.chalk.evaluation.v1.GetEvaluationResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xbd\x01\n\x0fListEvaluations\x12+.chalk.evaluation.v1.ListEvaluationsRequest\x1a,.chalk.evaluation.v1.ListEvaluationsResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc2\x01\n\x13CreateEvaluationRun\x12/.chalk.evaluation.v1.CreateEvaluationRunRequest\x1a0.chalk.evaluation.v1.CreateEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc5\x01\n\x14RescoreEvaluationRun\x120.chalk.evaluation.v1.RescoreEvaluationRunRequest\x1a1.chalk.evaluation.v1.RescoreEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc0\x01\n\x10GetEvaluationRun\x12,.chalk.evaluation.v1.GetEvaluationRunRequest\x1a-.chalk.evaluation.v1.GetEvaluationRunResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc6\x01\n\x12ListEvaluationRuns\x12..chalk.evaluation.v1.ListEvaluationRunsRequest\x1a/.chalk.evaluation.v1.ListEvaluationRunsResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xd4\x01\n\x18SetEvaluationRunBaseline\x124.chalk.evaluation.v1.SetEvaluationRunBaselineRequest\x1a5.chalk.evaluation.v1.SetEvaluationRunBaselineResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc8\x01\n\x14ArchiveEvaluationRun\x120.chalk.evaluation.v1.ArchiveEvaluationRunRequest\x1a1.chalk.evaluation.v1.ArchiveEvaluationRunResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.B\xb1\x01\n\x17com.chalk.evaluation.v1B\x0cServiceProtoP\x01Z\x1aevaluation/v1;evaluationv1\xa2\x02\x03CEX\xaa\x02\x13Chalk.Evaluation.V1\xca\x02\x13Chalk\\Evaluation\\V1\xe2\x02\x1fChalk\\Evaluation\\V1\\GPBMetadata\xea\x02\x15Chalk::Evaluation::V1b\x06proto3',
+    b'\n!chalk/evaluation/v1/service.proto\x12\x13chalk.evaluation.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1dchalk/common/v1/archive.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"@\n\x0eFunctionScorer\x12.\n\x13function_version_id\x18\x01 \x01(\tR\x11functionVersionId"\x1f\n\rBuiltinScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"I\n\x13SqlExpressionScorer\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n\nexpression\x18\x02 \x01(\tR\nexpression"3\n\x11SqlExpressionTask\x12\x1e\n\nexpression\x18\x01 \x01(\tR\nexpression"\xfe\x01\n\x14EvaluationScorerSpec\x12A\n\x08function\x18\x01 \x01(\x0b2#.chalk.evaluation.v1.FunctionScorerH\x00R\x08function\x12>\n\x07builtin\x18\x02 \x01(\x0b2".chalk.evaluation.v1.BuiltinScorerH\x00R\x07builtin\x12Q\n\x0esql_expression\x18\x03 \x01(\x0b2(.chalk.evaluation.v1.SqlExpressionScorerH\x00R\rsqlExpressionB\x10\n\x0eimplementation"a\n\x10EvaluationScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12=\n\x04spec\x18\x02 \x01(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x04spec"T\n\x11EvaluationScorers\x12?\n\x07scorers\x18\x01 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers"\xef\x01\n\x1cEvaluationScorerScoreSummary\x12=\n\x06scorer\x18\x01 \x01(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x06scorer\x12(\n\raverage_score\x18\x02 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12T\n\x0cdistribution\x18\x03 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x0cdistributionB\x10\n\x0e_average_score"\xb5\x01\n\x1bEvaluationValueDistribution\x12\x13\n\x02p5\x18\x01 \x01(\x01H\x00R\x02p5\x88\x01\x01\x12\x15\n\x03p25\x18\x02 \x01(\x01H\x01R\x03p25\x88\x01\x01\x12\x15\n\x03p50\x18\x03 \x01(\x01H\x02R\x03p50\x88\x01\x01\x12\x15\n\x03p75\x18\x04 \x01(\x01H\x03R\x03p75\x88\x01\x01\x12\x15\n\x03p95\x18\x05 \x01(\x01H\x04R\x03p95\x88\x01\x01B\x05\n\x03_p5B\x06\n\x04_p25B\x06\n\x04_p50B\x06\n\x04_p75B\x06\n\x04_p95"\xd1\x06\n\x16EvaluationScoreSummary\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x12*\n\x11evaluation_run_id\x18\x02 \x01(\tR\x0fevaluationRunId\x12(\n\raverage_score\x18\x03 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12V\n\rscorer_scores\x18\x04 \x03(\x0b21.chalk.evaluation.v1.EvaluationScorerScoreSummaryR\x0cscorerScores\x129\n\ncreated_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12R\n\x07metrics\x18\x07 \x03(\x0b28.chalk.evaluation.v1.EvaluationScoreSummary.MetricsEntryR\x07metrics\x12_\n\x12score_distribution\x18\x08 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x11scoreDistribution\x12w\n\x14metric_distributions\x18\t \x03(\x0b2D.chalk.evaluation.v1.EvaluationScoreSummary.MetricDistributionsEntryR\x13metricDistributions\x1a:\n\x0cMetricsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1ax\n\x18MetricDistributionsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12F\n\x05value\x18\x02 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x05value:\x028\x01B\x10\n\x0e_average_score"\xae\x05\n\nEvaluation\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x05 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x06 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x07 \x01(\tR\x15taskFunctionVersionId\x12?\n\x07scorers\x18\x08 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers\x123\n\x08metadata\x18\t \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\n \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x19\n\x08suite_id\x18\x0c \x01(\tR\x07suiteId\x12V\n\x13task_sql_expression\x18\r \x01(\x0b2&.chalk.evaluation.v1.SqlExpressionTaskR\x11taskSqlExpression\x12J\n\x0earchive_status\x18\x0e \x01(\x0b2\x1e.chalk.common.v1.ArchiveStatusH\x01R\rarchiveStatus\x88\x01\x01B\r\n\x0b_created_byB\x11\n\x0f_archive_status"\xcf\x07\n\rEvaluationRun\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12#\n\revaluation_id\x18\x04 \x01(\tR\x0cevaluationId\x12@\n\x06status\x18\x05 \x01(\x0e2(.chalk.evaluation.v1.EvaluationRunStatusR\x06status\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\x07 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstarted_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0ccompleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bcompletedAt\x88\x01\x01\x12/\n\x11result_dataset_id\x18\x0b \x01(\tH\x03R\x0fresultDatasetId\x88\x01\x01\x12@\n\x1aresult_dataset_revision_id\x18\x0c \x01(\tH\x04R\x17resultDatasetRevisionId\x88\x01\x01\x12(\n\rerror_message\x18\r \x01(\tH\x05R\x0cerrorMessage\x88\x01\x01\x12\x1f\n\x0bis_baseline\x18\x0e \x01(\x08R\nisBaseline\x12V\n\x0eexecution_mode\x18\x0f \x01(\x0e2/.chalk.evaluation.v1.EvaluationRunExecutionModeR\rexecutionMode\x12%\n\x0csql_query_id\x18\x10 \x01(\tH\x06R\nsqlQueryId\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x11 \x01(\tH\x07R\x07suiteId\x88\x01\x01B\r\n\x0b_created_byB\r\n\x0b_started_atB\x0f\n\r_completed_atB\x14\n\x12_result_dataset_idB\x1d\n\x1b_result_dataset_revision_idB\x10\n\x0e_error_messageB\x0f\n\r_sql_query_idB\x0b\n\t_suite_id"\xd7\x03\n\x17CreateEvaluationRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x02 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x03 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x04 \x01(\tR\x15taskFunctionVersionId\x12C\n\x07scorers\x18\x05 \x03(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x07scorers\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12!\n\x0cdataset_name\x18\x07 \x01(\tR\x0bdatasetName\x12\x1e\n\x08suite_id\x18\x08 \x01(\tH\x00R\x07suiteId\x88\x01\x01\x12V\n\x13task_sql_expression\x18\t \x01(\x0b2&.chalk.evaluation.v1.SqlExpressionTaskR\x11taskSqlExpressionB\x0b\n\t_suite_id"[\n\x18CreateEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation";\n\x14GetEvaluationRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId"X\n\x15GetEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation"\x92\x01\n\x16ListEvaluationsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x03 \x01(\tH\x02R\x07suiteId\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xe8\x01\n\x17ListEvaluationsResponse\x12A\n\x0bevaluations\x18\x01 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluations\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummariesB\x0e\n\x0c_next_cursor"?\n\x18ArchiveEvaluationRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId"\\\n\x19ArchiveEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation"A\n\x1aUnarchiveEvaluationRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId"^\n\x1bUnarchiveEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation"\xe6\x01\n\x1aCreateEvaluationRunRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12[\n\x0eexecution_mode\x18\x03 \x01(\x0e2/.chalk.evaluation.v1.EvaluationRunExecutionModeH\x00R\rexecutionMode\x88\x01\x01B\x11\n\x0f_execution_mode"h\n\x1bCreateEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"\xba\x01\n\x1bRescoreEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12(\n\revaluation_id\x18\x03 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01B\x10\n\x0e_evaluation_id"i\n\x1cRescoreEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"E\n\x17GetEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"\xb7\x01\n\x18GetEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun\x12P\n\rscore_summary\x18\x02 \x01(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0cscoreSummary"\x9b\x02\n\x19ListEvaluationRunsRequest\x12(\n\revaluation_id\x18\x01 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x04 \x01(\tH\x03R\x07suiteId\x88\x01\x01\x12H\n\x07filters\x18\x05 \x01(\x0b2..chalk.evaluation.v1.ListEvaluationRunsFiltersR\x07filtersB\x10\n\x0e_evaluation_idB\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\x94\x01\n\x19ListEvaluationRunsFilters\x12?\n\x1aexclude_post_training_runs\x18\x01 \x01(\x08R\x17excludePostTrainingRunsB\x02\x18\x01\x126\n\x17exclude_experiment_runs\x18\x02 \x01(\x08R\x15excludeExperimentRuns"\xb8\x02\n\x1aListEvaluationRunsResponse\x12K\n\x0fevaluation_runs\x18\x01 \x03(\x0b2".chalk.evaluation.v1.EvaluationRunR\x0eevaluationRuns\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummaries\x12A\n\x0bevaluations\x18\x04 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluationsB\x0e\n\x0c_next_cursor"M\n\x1fSetEvaluationRunBaselineRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"m\n SetEvaluationRunBaselineResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"a\n\x18MoveEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId\x12\x19\n\x08suite_id\x18\x02 \x01(\tR\x07suiteId"f\n\x19MoveEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"I\n\x1bArchiveEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"J\n\x1cArchiveEvaluationRunResponse\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"\xe4\x02\n\x0fEvaluationSuite\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12"\n\ncreated_by\x18\x05 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12.\n\x10evaluation_count\x18\x07 \x01(\x03H\x01R\x0fevaluationCount\x88\x01\x01\x12(\n\rdataset_count\x18\x08 \x01(\x03H\x02R\x0cdatasetCount\x88\x01\x01B\r\n\x0b_created_byB\x13\n\x11_evaluation_countB\x10\n\x0e_dataset_count"2\n\x1cCreateEvaluationSuiteRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"[\n\x1dCreateEvaluationSuiteResponse\x12:\n\x05suite\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x05suite"\x1d\n\x1bListEvaluationSuitesRequest"\\\n\x1cListEvaluationSuitesResponse\x12<\n\x06suites\x18\x01 \x03(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x06suites"A\n\x18OnlineEvaluatorPredicate\x12%\n\x0esql_expression\x18\x01 \x01(\tR\rsqlExpression"\x89\x01\n\x15OnlineEvaluatorScorer\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12=\n\x04spec\x18\x02 \x01(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x04spec\x12\x1d\n\ndepends_on\x18\x03 \x03(\tR\tdependsOn"\x82\x03\n\x13OnlineEvaluatorSpec\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12D\n\x07scorers\x18\x02 \x03(\x0b2*.chalk.evaluation.v1.OnlineEvaluatorScorerR\x07scorers\x12K\n\tpredicate\x18\x03 \x01(\x0b2-.chalk.evaluation.v1.OnlineEvaluatorPredicateR\tpredicate\x12?\n\x05scope\x18\x04 \x01(\x0e2).chalk.evaluation.v1.OnlineEvaluatorScopeR\x05scope\x12$\n\x0bsample_rate\x18\x05 \x01(\x01H\x00R\nsampleRate\x88\x01\x01\x12\x18\n\x07enabled\x18\x06 \x01(\x08R\x07enabled\x123\n\x08metadata\x18\x07 \x01(\x0b2\x17.google.protobuf.StructR\x08metadataB\x0e\n\x0c_sample_rate"\xe4\x02\n\x0fOnlineEvaluator\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12<\n\x04spec\x18\x04 \x01(\x0b2(.chalk.evaluation.v1.OnlineEvaluatorSpecR\x04spec\x12\x1a\n\x08revision\x18\x05 \x01(\x03R\x08revision\x12"\n\ncreated_by\x18\x06 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\r\n\x0b_created_by"\\\n\x1cCreateOnlineEvaluatorRequest\x12<\n\x04spec\x18\x01 \x01(\x0b2(.chalk.evaluation.v1.OnlineEvaluatorSpecR\x04spec"p\n\x1dCreateOnlineEvaluatorResponse\x12O\n\x10online_evaluator\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.OnlineEvaluatorR\x0fonlineEvaluator"K\n\x19GetOnlineEvaluatorRequest\x12.\n\x13online_evaluator_id\x18\x01 \x01(\tR\x11onlineEvaluatorId"m\n\x1aGetOnlineEvaluatorResponse\x12O\n\x10online_evaluator\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.OnlineEvaluatorR\x0fonlineEvaluator"H\n\x1bListOnlineEvaluatorsFilters\x12\x1d\n\x07enabled\x18\x01 \x01(\x08H\x00R\x07enabled\x88\x01\x01B\n\n\x08_enabled"\xb6\x01\n\x1bListOnlineEvaluatorsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12J\n\x07filters\x18\x03 \x01(\x0b20.chalk.evaluation.v1.ListOnlineEvaluatorsFiltersR\x07filtersB\t\n\x07_cursorB\x08\n\x06_limit"\xa7\x01\n\x1cListOnlineEvaluatorsResponse\x12Q\n\x11online_evaluators\x18\x01 \x03(\x0b2$.chalk.evaluation.v1.OnlineEvaluatorR\x10onlineEvaluators\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xd4\x01\n\x1cUpdateOnlineEvaluatorRequest\x12.\n\x13online_evaluator_id\x18\x01 \x01(\tR\x11onlineEvaluatorId\x12<\n\x04spec\x18\x02 \x01(\x0b2(.chalk.evaluation.v1.OnlineEvaluatorSpecR\x04spec\x120\n\x11expected_revision\x18\x03 \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01B\x14\n\x12_expected_revision"p\n\x1dUpdateOnlineEvaluatorResponse\x12O\n\x10online_evaluator\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.OnlineEvaluatorR\x0fonlineEvaluator"N\n\x1cDeleteOnlineEvaluatorRequest\x12.\n\x13online_evaluator_id\x18\x01 \x01(\tR\x11onlineEvaluatorId"O\n\x1dDeleteOnlineEvaluatorResponse\x12.\n\x13online_evaluator_id\x18\x01 \x01(\tR\x11onlineEvaluatorId*\x93\x02\n\x13EvaluationRunStatus\x12%\n!EVALUATION_RUN_STATUS_UNSPECIFIED\x10\x00\x12!\n\x1dEVALUATION_RUN_STATUS_PENDING\x10\x01\x12!\n\x1dEVALUATION_RUN_STATUS_RUNNING\x10\x02\x12#\n\x1fEVALUATION_RUN_STATUS_SUCCEEDED\x10\x03\x12 \n\x1cEVALUATION_RUN_STATUS_FAILED\x10\x04\x12"\n\x1eEVALUATION_RUN_STATUS_CANCELED\x10\x05\x12$\n EVALUATION_RUN_STATUS_FINALIZING\x10\x06*\xa2\x01\n\x1aEvaluationRunExecutionMode\x12-\n)EVALUATION_RUN_EXECUTION_MODE_UNSPECIFIED\x10\x00\x12)\n%EVALUATION_RUN_EXECUTION_MODE_ON_READ\x10\x01\x12*\n&EVALUATION_RUN_EXECUTION_MODE_WORKFLOW\x10\x02*\xa5\x01\n\x14OnlineEvaluatorScope\x12&\n"ONLINE_EVALUATOR_SCOPE_UNSPECIFIED\x10\x00\x12\x1f\n\x1bONLINE_EVALUATOR_SCOPE_SPAN\x10\x01\x12 \n\x1cONLINE_EVALUATOR_SCOPE_TRACE\x10\x02\x12"\n\x1eONLINE_EVALUATOR_SCOPE_SESSION\x10\x032\xe6\x1d\n\x11EvaluationService\x12\xc8\x01\n\x15CreateEvaluationSuite\x121.chalk.evaluation.v1.CreateEvaluationSuiteRequest\x1a2.chalk.evaluation.v1.CreateEvaluationSuiteResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xcc\x01\n\x14ListEvaluationSuites\x120.chalk.evaluation.v1.ListEvaluationSuitesRequest\x1a1.chalk.evaluation.v1.ListEvaluationSuitesResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb9\x01\n\x10CreateEvaluation\x12,.chalk.evaluation.v1.CreateEvaluationRequest\x1a-.chalk.evaluation.v1.CreateEvaluationResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb7\x01\n\rGetEvaluation\x12).chalk.evaluation.v1.GetEvaluationRequest\x1a*.chalk.evaluation.v1.GetEvaluationResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xbd\x01\n\x0fListEvaluations\x12+.chalk.evaluation.v1.ListEvaluationsRequest\x1a,.chalk.evaluation.v1.ListEvaluationsResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xbf\x01\n\x11ArchiveEvaluation\x12-.chalk.evaluation.v1.ArchiveEvaluationRequest\x1a..chalk.evaluation.v1.ArchiveEvaluationResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc5\x01\n\x13UnarchiveEvaluation\x12/.chalk.evaluation.v1.UnarchiveEvaluationRequest\x1a0.chalk.evaluation.v1.UnarchiveEvaluationResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc2\x01\n\x13CreateEvaluationRun\x12/.chalk.evaluation.v1.CreateEvaluationRunRequest\x1a0.chalk.evaluation.v1.CreateEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc5\x01\n\x14RescoreEvaluationRun\x120.chalk.evaluation.v1.RescoreEvaluationRunRequest\x1a1.chalk.evaluation.v1.RescoreEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc0\x01\n\x10GetEvaluationRun\x12,.chalk.evaluation.v1.GetEvaluationRunRequest\x1a-.chalk.evaluation.v1.GetEvaluationRunResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc6\x01\n\x12ListEvaluationRuns\x12..chalk.evaluation.v1.ListEvaluationRunsRequest\x1a/.chalk.evaluation.v1.ListEvaluationRunsResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xd4\x01\n\x18SetEvaluationRunBaseline\x124.chalk.evaluation.v1.SetEvaluationRunBaselineRequest\x1a5.chalk.evaluation.v1.SetEvaluationRunBaselineResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xbf\x01\n\x11MoveEvaluationRun\x12-.chalk.evaluation.v1.MoveEvaluationRunRequest\x1a..chalk.evaluation.v1.MoveEvaluationRunResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc8\x01\n\x14ArchiveEvaluationRun\x120.chalk.evaluation.v1.ArchiveEvaluationRunRequest\x1a1.chalk.evaluation.v1.ArchiveEvaluationRunResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc8\x01\n\x15CreateOnlineEvaluator\x121.chalk.evaluation.v1.CreateOnlineEvaluatorRequest\x1a2.chalk.evaluation.v1.CreateOnlineEvaluatorResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc6\x01\n\x12GetOnlineEvaluator\x12..chalk.evaluation.v1.GetOnlineEvaluatorRequest\x1a/.chalk.evaluation.v1.GetOnlineEvaluatorResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xcc\x01\n\x14ListOnlineEvaluators\x120.chalk.evaluation.v1.ListOnlineEvaluatorsRequest\x1a1.chalk.evaluation.v1.ListOnlineEvaluatorsResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc8\x01\n\x15UpdateOnlineEvaluator\x121.chalk.evaluation.v1.UpdateOnlineEvaluatorRequest\x1a2.chalk.evaluation.v1.UpdateOnlineEvaluatorResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xcb\x01\n\x15DeleteOnlineEvaluator\x121.chalk.evaluation.v1.DeleteOnlineEvaluatorRequest\x1a2.chalk.evaluation.v1.DeleteOnlineEvaluatorResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.B\xb1\x01\n\x17com.chalk.evaluation.v1B\x0cServiceProtoP\x01Z\x1aevaluation/v1;evaluationv1\xa2\x02\x03CEX\xaa\x02\x13Chalk.Evaluation.V1\xca\x02\x13Chalk\\Evaluation\\V1\xe2\x02\x1fChalk\\Evaluation\\V1\\GPBMetadata\xea\x02\x15Chalk::Evaluation::V1b\x06proto3',
     [
         permissions_pb.desc(),
+        archive_pb.desc(),
         flags_pb.desc(),
         struct_pb.desc(),
         timestamp_pb.desc(),
@@ -1501,6 +2450,7 @@ _DESC = file_desc(
         "FunctionScorer": FunctionScorer,
         "BuiltinScorer": BuiltinScorer,
         "SqlExpressionScorer": SqlExpressionScorer,
+        "SqlExpressionTask": SqlExpressionTask,
         "EvaluationScorerSpec": EvaluationScorerSpec,
         "EvaluationScorer": EvaluationScorer,
         "EvaluationScorers": EvaluationScorers,
@@ -1515,6 +2465,10 @@ _DESC = file_desc(
         "GetEvaluationResponse": GetEvaluationResponse,
         "ListEvaluationsRequest": ListEvaluationsRequest,
         "ListEvaluationsResponse": ListEvaluationsResponse,
+        "ArchiveEvaluationRequest": ArchiveEvaluationRequest,
+        "ArchiveEvaluationResponse": ArchiveEvaluationResponse,
+        "UnarchiveEvaluationRequest": UnarchiveEvaluationRequest,
+        "UnarchiveEvaluationResponse": UnarchiveEvaluationResponse,
         "CreateEvaluationRunRequest": CreateEvaluationRunRequest,
         "CreateEvaluationRunResponse": CreateEvaluationRunResponse,
         "RescoreEvaluationRunRequest": RescoreEvaluationRunRequest,
@@ -1522,9 +2476,12 @@ _DESC = file_desc(
         "GetEvaluationRunRequest": GetEvaluationRunRequest,
         "GetEvaluationRunResponse": GetEvaluationRunResponse,
         "ListEvaluationRunsRequest": ListEvaluationRunsRequest,
+        "ListEvaluationRunsFilters": ListEvaluationRunsFilters,
         "ListEvaluationRunsResponse": ListEvaluationRunsResponse,
         "SetEvaluationRunBaselineRequest": SetEvaluationRunBaselineRequest,
         "SetEvaluationRunBaselineResponse": SetEvaluationRunBaselineResponse,
+        "MoveEvaluationRunRequest": MoveEvaluationRunRequest,
+        "MoveEvaluationRunResponse": MoveEvaluationRunResponse,
         "ArchiveEvaluationRunRequest": ArchiveEvaluationRunRequest,
         "ArchiveEvaluationRunResponse": ArchiveEvaluationRunResponse,
         "EvaluationSuite": EvaluationSuite,
@@ -1532,8 +2489,24 @@ _DESC = file_desc(
         "CreateEvaluationSuiteResponse": CreateEvaluationSuiteResponse,
         "ListEvaluationSuitesRequest": ListEvaluationSuitesRequest,
         "ListEvaluationSuitesResponse": ListEvaluationSuitesResponse,
+        "OnlineEvaluatorPredicate": OnlineEvaluatorPredicate,
+        "OnlineEvaluatorScorer": OnlineEvaluatorScorer,
+        "OnlineEvaluatorSpec": OnlineEvaluatorSpec,
+        "OnlineEvaluator": OnlineEvaluator,
+        "CreateOnlineEvaluatorRequest": CreateOnlineEvaluatorRequest,
+        "CreateOnlineEvaluatorResponse": CreateOnlineEvaluatorResponse,
+        "GetOnlineEvaluatorRequest": GetOnlineEvaluatorRequest,
+        "GetOnlineEvaluatorResponse": GetOnlineEvaluatorResponse,
+        "ListOnlineEvaluatorsFilters": ListOnlineEvaluatorsFilters,
+        "ListOnlineEvaluatorsRequest": ListOnlineEvaluatorsRequest,
+        "ListOnlineEvaluatorsResponse": ListOnlineEvaluatorsResponse,
+        "UpdateOnlineEvaluatorRequest": UpdateOnlineEvaluatorRequest,
+        "UpdateOnlineEvaluatorResponse": UpdateOnlineEvaluatorResponse,
+        "DeleteOnlineEvaluatorRequest": DeleteOnlineEvaluatorRequest,
+        "DeleteOnlineEvaluatorResponse": DeleteOnlineEvaluatorResponse,
         "EvaluationRunStatus": EvaluationRunStatus,
         "EvaluationRunExecutionMode": EvaluationRunExecutionMode,
+        "OnlineEvaluatorScope": OnlineEvaluatorScope,
     },
 )
 

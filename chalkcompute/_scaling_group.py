@@ -42,11 +42,14 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
+from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
+    NetworkPolicy,
+    ExecutionBackend,
     validate_replica_and_utilization,
 )
 from chalkcompute._env import normalize_env
@@ -74,6 +77,19 @@ from chalkcompute._volume import (
 logger = logging.getLogger(__name__)
 
 _OWNED_VOLUME_PREFIX = "chalkcompute-sg-files"
+
+# The gateway answers 503 while a group scales up from zero, and briefly after a
+# replica goes ready, until it can connect to the new endpoint. These bodies come
+# from the gateway, never from the app, so retrying them is safe for any method.
+_GATEWAY_UNAVAILABLE_MARKERS = (
+    b"scaling up from zero",
+    b"upstream connect error",
+    b"no healthy upstream",
+)
+_COLD_START_INITIAL_BACKOFF_SECONDS = 0.25
+_COLD_START_MAX_BACKOFF_SECONDS = 5.0
+_COLD_START_STATUS_CHECK_SECONDS = 10.0
+_FAILED_STATUSES = ("Failed", "Error", "Unhealthy")
 
 
 class ScaleFromZeroRequestPolicy(Enum):
@@ -234,6 +250,22 @@ class CronScalingTrigger:
         }
 
 
+def validate_workflow_task_queue(
+    task_queue: str, *, min_replicas: int, has_keda_trigger: bool
+) -> None:
+    """Reject a task queue trigger the server would refuse, before any image is built."""
+    if not task_queue:
+        raise ValueError("workflow_task_queue must be a non-empty string")
+    if any(c in task_queue for c in "'\"\\"):
+        raise ValueError("workflow_task_queue must not contain quotes or backslashes")
+    if min_replicas != 0:
+        raise ValueError("workflow_task_queue requires min_replicas=0")
+    if has_keda_trigger:
+        raise ValueError(
+            "workflow_task_queue cannot be combined with target_gpu_utilization_percentage or cron_scaling_trigger"
+        )
+
+
 @dataclass
 class ScalingGroupInfo:
     """Metadata about a scaling group."""
@@ -292,6 +324,9 @@ class ScalingGroup:
     ``StartupProbe.grpc(...)``. External startup probes are not supported with
     ``authenticated=True``.
 
+    ``network_policy`` configures host egress. Omit it for the server default;
+    ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
+
     Examples
     --------
     >>> from chalkcompute import ScalingGroup, Image
@@ -317,6 +352,8 @@ class ScalingGroup:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        network_policy: NetworkPolicy | None = None,
+        execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -336,8 +373,9 @@ class ScalingGroup:
         target_gpu_utilization_percentage: int | None = None,
         cron_scaling_trigger: CronScalingTrigger | None = None,
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
+        workflow_task_queue: str | None = None,
         tags: dict[str, str] | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:
@@ -358,6 +396,8 @@ class ScalingGroup:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            network_policy=network_policy,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -385,6 +425,8 @@ class ScalingGroup:
         self._name = name
         self._cpu = cpu
         self._compute_class = compute_class
+        self._network_policy = network_policy
+        self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -416,6 +458,16 @@ class ScalingGroup:
                 "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
             )
         self._scale_from_zero_request_policy = scale_from_zero_request_policy
+        if workflow_task_queue is not None:
+            validate_workflow_task_queue(
+                workflow_task_queue,
+                min_replicas=min_replicas,
+                has_keda_trigger=(
+                    target_gpu_utilization_percentage is not None
+                    or cron_scaling_trigger is not None
+                ),
+            )
+        self._workflow_task_queue = workflow_task_queue
         self._tags = dict(tags or {})
         self._chalk_identity = chalk_identity
 
@@ -496,6 +548,8 @@ class ScalingGroup:
         sg._name = None
         sg._cpu = None
         sg._compute_class = None
+        sg._network_policy = None
+        sg._execution_target = None
         sg._memory = None
         sg._gpu = None
         sg._env = {}
@@ -517,6 +571,7 @@ class ScalingGroup:
         sg._target_cpu_utilization_percentage = None
         sg._target_gpu_utilization_percentage = None
         sg._cron_scaling_trigger = None
+        sg._workflow_task_queue = None
         sg._scale_from_zero_request_policy = None
         sg._tags = {}
         sg._chalk_identity = False
@@ -566,9 +621,13 @@ class ScalingGroup:
         )
 
         key = f"scaling_group:{id(self)}"
-        progress_add(key, "scaling_group", self._name or "Scaling group")
+        # Resolve the final name up front so the progress heading never changes
+        # (and reprints as "continued") once rows have been printed under it.
+        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
+        progress_add(key, "scaling_group", f'Scaling group "{sg_name}"')
         try:
             self._deploy(
+                sg_name=sg_name,
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 ready_timeout=ready_timeout,
@@ -583,7 +642,12 @@ class ScalingGroup:
         return self
 
     def _deploy(
-        self, *, poll_interval: float, build_timeout: float, ready_timeout: float
+        self,
+        *,
+        sg_name: str,
+        poll_interval: float,
+        build_timeout: float,
+        ready_timeout: float,
     ) -> ScalingGroup:
         from chalkcompute._image import Image
         from chalkcompute._progress import progress_update
@@ -592,20 +656,17 @@ class ScalingGroup:
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
-            progress_update(key, detail="Building image")
             logger.info("Building image from %r...", self._image)
             self._built_image_uri = build_image(
                 self._client,
                 self._image,
                 poll_interval=poll_interval,
                 timeout=build_timeout,
+                progress_parent=key,
             )
             logger.info("Image built: %s", self._built_image_uri)
-            progress_update(key, detail="Image built")
         else:
             self._built_image_uri = self._image
-
-        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
 
         # 2a. A missing user-referenced volume fails the deploy.
         self._volumes = [
@@ -648,6 +709,8 @@ class ScalingGroup:
             entrypoint=self._entrypoint,
             cpu=self._cpu,
             compute_class=self._compute_class,
+            network_policy=self._network_policy,
+            execution_target=self._execution_target,
             memory=self._memory,
             gpu=self._gpu,
             env=self._env,
@@ -685,11 +748,12 @@ class ScalingGroup:
                 ),
                 cron_scaling_trigger=self._cron_scaling_trigger,
                 scale_from_zero_request_policy=self._scale_from_zero_request_policy,
+                workflow_task_queue=self._workflow_task_queue,
             ),
         )
 
         logger.info("Deploying scaling group '%s'...", sg_name)
-        progress_update(key, label=f'Scaling group "{sg_name}"', detail="Deploying")
+        progress_update(key, detail="Deploying")
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
         try:
             if self._scaling_group_id is None:
@@ -892,8 +956,16 @@ class ScalingGroup:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
+        cold_start_timeout: float = 300.0,
     ) -> HTTPResponse[bytes]:
         """Make an HTTP request to the scaling group's endpoint.
+
+        While the group has no ready replica (for example, it is scaling up
+        from zero), the gateway responds with HTTP 503. ``call`` retries those
+        gateway responses with backoff until a replica serves the request or
+        ``cold_start_timeout`` elapses. A 503 returned by your application is
+        not retried. Retrying stops early if the group enters a failed or
+        unhealthy state, and the last 503 is returned.
 
         Parameters
         ----------
@@ -910,7 +982,10 @@ class ScalingGroup:
             receive the current Chalk bearer token unless this contains an
             ``Authorization`` header.
         timeout
-            Request timeout in seconds.
+            Request timeout in seconds, per attempt.
+        cold_start_timeout
+            Seconds to keep retrying while the gateway reports that the group
+            has no ready replica. ``0`` disables retrying.
 
         Returns
         -------
@@ -940,13 +1015,50 @@ class ScalingGroup:
                 **(request_headers or {}),
                 "Authorization": f"Bearer {self._client._access_token}",
             }
-        return SYNC_HTTP_CLIENT.execute(
-            method,
-            url,
-            headers=request_headers,
-            content=data if data is not None else json,
-            timeout=timeout,
-        )
+        content = data if data is not None else json
+        deadline = time.monotonic() + cold_start_timeout
+        next_status_check = time.monotonic() + _COLD_START_STATUS_CHECK_SECONDS
+        delay = _COLD_START_INITIAL_BACKOFF_SECONDS
+        while True:
+            response = SYNC_HTTP_CLIENT.execute(
+                method,
+                url,
+                headers=request_headers,
+                content=content,
+                timeout=timeout,
+            )
+            if not _is_gateway_unavailable(response):
+                return response
+            now = time.monotonic()
+            if now >= deadline:
+                return response
+            if now >= next_status_check:
+                next_status_check = now + _COLD_START_STATUS_CHECK_SECONDS
+                if self._has_failed():
+                    return response
+            retry_delay = min(delay, deadline - now)
+            logger.debug(
+                "Scaling group %s has no ready replica; retrying in %.2fs",
+                self._name,
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+            delay = min(delay * 2, _COLD_START_MAX_BACKOFF_SECONDS)
+
+    def _has_failed(self) -> bool:
+        try:
+            info = self.refresh()
+        except Exception:
+            logger.debug("Could not refresh scaling group status", exc_info=True)
+            return False
+        if info.status in _FAILED_STATUSES:
+            logger.warning(
+                "Scaling group %s is %s; not retrying the request",
+                self._name,
+                info.status,
+            )
+            return True
+        return False
 
     def wait_ready(
         self,
@@ -1002,7 +1114,7 @@ class ScalingGroup:
         if self._scaling_group_id is not None:
             try:
                 owned_volumes.update(self._owned_volumes_from_revisions())
-            except ScalingGroupError as exc:
+            except Exception as exc:
                 logger.warning(
                     "Could not inspect revision volumes before delete: %s", exc
                 )
@@ -1059,8 +1171,13 @@ class ScalingGroup:
                         result[volume.name] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,
-                            version_id=volume.version_id,
-                            ref_name=volume.ref_name,
+                            version_id=(
+                                volume.version_id
+                                if volume.has_field("version_id")
+                                else None
+                            ),
+                            # The API reports an unset fork as "", which VolumeMount rejects.
+                            ref_name=volume.ref_name or None,
                         )
             cursor = response.next_cursor or None
             if cursor is None:
@@ -1172,6 +1289,13 @@ def _scaling_group_response_is_authenticated(data: sg_pb.ScalingGroupResponse) -
         and data.spec.container_spec is not None
         and data.spec.container_spec.authentication == "AUTHENTICATED"
     )
+
+
+def _is_gateway_unavailable(response: HTTPResponse[bytes]) -> bool:
+    if response.status != 503:
+        return False
+    body = bytes(response.content[:512]).lower()
+    return any(marker in body for marker in _GATEWAY_UNAVAILABLE_MARKERS)
 
 
 def _scaling_group_info_is_ready(

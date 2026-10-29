@@ -1,0 +1,1 @@
+- Record sandbox IDs on creation, run, exec, Python execution, and termination spans so trace views can link to the target sandbox, including failed creation and execution.

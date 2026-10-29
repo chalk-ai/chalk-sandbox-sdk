@@ -1,9 +1,11 @@
 import contextlib
 import base64
 import json
+import subprocess
 import sys
 import types
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,11 +14,14 @@ from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
+    ImageBuildTimeoutError,
     chalk_client_from_env,
     grpc_engine_target_from_url,
     grpc_target_from_url,
+    wait_for_image_build,
 )
 from chalkcompute._gen.chalk.server.v1 import auth_pb, team_pb
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from chalkcompute._http import SYNC_HTTP_CLIENT
@@ -209,6 +214,58 @@ class TestConnectClientGrpcEngineTarget:
     def teardown_method(self) -> None:
         _auth_config._load_global_config.cache_clear()
 
+    @pytest.mark.parametrize("selected_environment", ["env-1", "Staging", None])
+    def test_scoped_credentials_preserve_queue_routing(
+        self, monkeypatch: pytest.MonkeyPatch, selected_environment
+    ):
+        monkeypatch.setattr(
+            "chalkcompute._connect.load_token",
+            lambda *a: _auth_config.TokenConfig(
+                clientId="client-id",
+                clientSecret="client-secret",
+                apiServer="https://api.chalk.test",
+                activeEnvironment=selected_environment,
+            ),
+        )
+        requests = []
+
+        class AuthClient:
+            def __init__(self, address, **kwargs):
+                assert address == "https://api.chalk.test"
+
+            def get_token(self, request, **kwargs):
+                requests.append(request)
+                if request.scope:
+                    assert request.scope == "env:env-1"
+                    return auth_pb.GetTokenResponse(
+                        access_token="scoped-token",
+                        environment_id_to_authority={"env-1": "services.chalk.test"},
+                        service_prefixes={
+                            auth_pb.ServiceKind.DATAPLANE_API_SERVER.value: "dataplane-api-server"
+                        },
+                    )
+                return auth_pb.GetTokenResponse(
+                    access_token="unscoped-token",
+                    primary_environment="env-1",
+                    environment_id_to_name={"env-1": "Staging"},
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.auth_connect.AuthServiceClientSync", AuthClient
+        )
+        client = ConnectClient()
+        assert client.dataplane_api_server_target() == (
+            "dataplane-api-server.services.chalk.test",
+            True,
+        )
+        assert ("authorization", "Bearer scoped-token") in client._rpc_metadata()
+        assert ("x-chalk-env-id", "env-1") in client._rpc_metadata()
+        assert len(requests) == 2
+        assert not requests[0].scope
+
     def test_uses_grpc_engine_from_token_response(self, monkeypatch):
         monkeypatch.setenv("CHALK_API_SERVER", "https://api.staging.chalk.dev")
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
@@ -287,6 +344,7 @@ tokens:
             client_id="config-client",
             client_secret="config-secret",
             grant_type="client_credentials",
+            scope="env:env-1",
         )
         assert posted["closed"] is True
         assert client._env_id == "env-1"
@@ -1039,6 +1097,209 @@ class TestConnectClientServiceAuth:
         assert use_tls is True
 
 
+class TestDataplaneApiServerTarget:
+    @pytest.mark.parametrize("auth_mode", ["credentials", "internal"])
+    def test_uses_token_service_uri_metadata(self, monkeypatch, auth_mode):
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", "https://wrong.chalk.test")
+        response = {
+            "accessToken": "token",
+            "primaryEnvironment": "env-1",
+            "environmentIdToAuthority": {"env-1": "region.chalk.test:8443"},
+            "servicePrefixes": {
+                str(
+                    auth_pb.ServiceKind.DATAPLANE_API_SERVER.value
+                ): "dataplane-api-server"
+            },
+        }
+        if auth_mode == "credentials":
+            monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
+            monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
+            monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
+            monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
+            monkeypatch.setattr("chalkcompute._connect.load_token", lambda *a: None)
+            monkeypatch.setattr(
+                "chalkcompute._connect.service_auth_context_from_env", lambda: None
+            )
+            _install_token_client(monkeypatch, response)
+        else:
+            response.pop("primaryEnvironment")
+            monkeypatch.setattr(
+                "chalkcompute._connect.service_auth_context_from_env",
+                lambda: ServiceAuthContext(
+                    auth_endpoint="https://api.chalk.test",
+                    exchange_token="exchange-token",
+                    environment_id="env-1",
+                    requested_permissions=(2,),
+                    grpc_engine=None,
+                ),
+            )
+            _install_auth_client(monkeypatch, response, {})
+        client = ConnectClient()
+
+        assert client.dataplane_api_server_target() == (
+            "dataplane-api-server.region.chalk.test:8443",
+            True,
+        )
+
+    def test_does_not_fall_back_to_engine_target(self):
+        client = ConnectClient()
+        client._access_token = "token"
+        client._env_id = "env-1"
+        client._grpc_engines = {"env-1": "engine.region.chalk.test:8443"}
+
+        with pytest.raises(
+            ConnectError, match="auth did not provide service URI metadata"
+        ):
+            client.dataplane_api_server_target()
+
+
+class TestWebIdentityDataplaneRouting:
+    @pytest.fixture(autouse=True)
+    def identity(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(_identity_jwt("env-identity"))
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.delenv("CHALK_DATAPLANE_API_ENDPOINT", raising=False)
+        monkeypatch.delenv("CHALK_FUNCTION_QUEUE_ENDPOINT", raising=False)
+        monkeypatch.setenv("CHALK_CLIENT_ID", "ambient-client")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "ambient-secret")
+        monkeypatch.setattr(
+            "chalkcompute._connect.load_token",
+            lambda *a, **kw: pytest.fail(
+                "token files take precedence over credentials"
+            ),
+        )
+        monkeypatch.setattr(
+            "chalkcompute._connect.service_auth_context_from_env",
+            lambda: pytest.fail("token files take precedence over internal exchange"),
+        )
+        monkeypatch.setattr(
+            ConnectClient,
+            "stub",
+            lambda *a: pytest.fail("injected routing must not make discovery RPCs"),
+        )
+        return token_file
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            ("https://dataplane.chalk.test:8443/", ("dataplane.chalk.test:8443", True)),
+            ("http://localhost:50051", ("localhost:50051", False)),
+            ("HTTP://localhost:50051", ("localhost:50051", False)),
+            ("HTTPS://dataplane.chalk.test:443", ("dataplane.chalk.test:443", True)),
+            ("dataplane.chalk.test:443", ("dataplane.chalk.test:443", True)),
+            ("10.0.0.1:50051", ("10.0.0.1:50051", False)),
+        ],
+    )
+    def test_uses_injected_endpoint_without_discovery(
+        self, monkeypatch, endpoint, expected
+    ):
+        monkeypatch.setenv("CHALK_DATAPLANE_API_ENDPOINT", endpoint)
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "wrong-engine.chalk.test:443")
+        client = ConnectClient()
+        assert client.dataplane_api_server_target() == expected
+        assert client._env_id == "env-identity"
+
+    @pytest.mark.parametrize("endpoint", [None, "", "   "])
+    def test_requires_injected_endpoint(self, monkeypatch, endpoint):
+        if endpoint is not None:
+            monkeypatch.setenv("CHALK_DATAPLANE_API_ENDPOINT", endpoint)
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "wrong-engine.chalk.test:443")
+        with pytest.raises(ConnectError, match="require CHALK_DATAPLANE_API_ENDPOINT"):
+            ConnectClient().dataplane_api_server_target()
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://",
+            "ftp://dataplane.chalk.test",
+            "https://host:bad",
+            "https://host:70000",
+            "https://host/path",
+            "https://host?",
+            "https://host#",
+            "https://host:",
+            "https://host?query",
+            "https://host#fragment",
+            "https://user:password@host",
+            "invalid host:443",
+            "http://[invalid",
+        ],
+    )
+    def test_rejects_malformed_endpoint(self, monkeypatch, endpoint):
+        monkeypatch.setenv("CHALK_DATAPLANE_API_ENDPOINT", endpoint)
+        with pytest.raises(ConnectError, match="Invalid CHALK_DATAPLANE_API_ENDPOINT"):
+            ConnectClient().dataplane_api_server_target()
+
+    def test_rotation_keeps_injected_routing_and_refreshes_bearer(
+        self, monkeypatch, identity
+    ):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://dataplane.chalk.test"
+        )
+        client = ConnectClient()
+        assert client.dataplane_api_server_target() == ("dataplane.chalk.test", True)
+        identity.write_text(_identity_jwt("env-identity", subject="rotated"))
+        assert client._web_identity_cached_at is not None
+        client._web_identity_cached_at -= 3600
+        assert client.dataplane_api_server_target() == ("dataplane.chalk.test", True)
+        assert (
+            dict(client._rpc_metadata())["authorization"]
+            == f"Bearer {identity.read_text()}"
+        )
+
+    def test_subprocess_inherits_token_file_and_dataplane_route(self, monkeypatch):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://owner.chalk.test:443"
+        )
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "wrong-engine.chalk.test:443")
+        output = subprocess.check_output(
+            [
+                sys.executable,
+                "-c",
+                "import json; from unittest.mock import patch; "
+                "from chalkcompute._connect import ConnectClient; "
+                "\n"
+                "with patch('chalkcompute._connect.load_token', side_effect=AssertionError('unexpected credential auth')), "
+                "patch.object(ConnectClient, 'stub', side_effect=AssertionError('unexpected discovery')):\n"
+                "    client = ConnectClient()\n"
+                "    print(json.dumps([client.dataplane_api_server_target(), client._env_id]))\n",
+            ],
+            text=True,
+            timeout=15,
+        )
+        assert json.loads(output) == [["owner.chalk.test:443", True], "env-identity"]
+
+    def test_explicit_queue_endpoint_overrides_platform_route(self, monkeypatch):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://platform.chalk.test"
+        )
+        monkeypatch.setenv(
+            "CHALK_FUNCTION_QUEUE_ENDPOINT", "http://custom.chalk.test:8080"
+        )
+        assert ConnectClient().dataplane_api_server_target() == (
+            "custom.chalk.test:8080",
+            False,
+        )
+
+    @pytest.mark.parametrize("endpoint", ["", "   ", "https://host/path"])
+    def test_invalid_explicit_override_does_not_fall_back(self, monkeypatch, endpoint):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://platform.chalk.test"
+        )
+        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", endpoint)
+        with pytest.raises(ConnectError, match="CHALK_FUNCTION_QUEUE_ENDPOINT"):
+            ConnectClient().dataplane_api_server_target()
+
+    def test_explicit_queue_endpoint_works_without_platform_route(self, monkeypatch):
+        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", "custom.chalk.test:443")
+        assert ConnectClient().dataplane_api_server_target() == (
+            "custom.chalk.test:443",
+            True,
+        )
+
+
 class _FakeChalkClient:
     calls: list[dict[str, Any]] = []
 
@@ -1232,3 +1493,80 @@ class TestStubAndCall:
             "http_client": SYNC_HTTP_CLIENT,
             "read_max_bytes": RPC_READ_MAX_BYTES,
         }
+
+
+def test_wait_for_image_build_uses_server_status_without_client_timeout() -> None:
+    client = MagicMock()
+    client.call.return_value = image_pb.GetCustomImageResponse(
+        status="succeeded", image="registry/image:built"
+    )
+
+    image_uri = wait_for_image_build(client, "build-123", poll_interval=0, timeout=None)
+
+    assert image_uri == "registry/image:built"
+    client.call.assert_called_once()
+
+
+def test_wait_for_image_build_timeout_identifies_running_build() -> None:
+    client = MagicMock()
+
+    with pytest.raises(ImageBuildTimeoutError) as raised:
+        wait_for_image_build(client, "build-456", poll_interval=0, timeout=0)
+
+    assert raised.value.build_id == "build-456"
+    assert "client wait timeout" in str(raised.value)
+    assert "may still be running" in str(raised.value)
+    assert "was not cancelled" in str(raised.value)
+    client.call.assert_not_called()
+
+
+def _building_then_succeeded() -> list[image_pb.GetCustomImageResponse]:
+    return [
+        image_pb.GetCustomImageResponse(status="building"),
+        image_pb.GetCustomImageResponse(status="succeeded", image="registry/img:1"),
+    ]
+
+
+def test_wait_for_image_build_shows_started_building_done(capsys) -> None:
+    client = MagicMock()
+    client.call.side_effect = _building_then_succeeded()
+
+    wait_for_image_build(client, "build-9", poll_interval=0, timeout=None)
+
+    out = capsys.readouterr().out
+    assert "Building image" in out
+    assert "Build started (build-9)" in out
+    assert "Building" in out.split("Build started (build-9)")[1]
+    assert "built in" in out
+
+
+def test_wait_for_image_build_nests_under_parent_row(capsys) -> None:
+    from chalkcompute._progress import progress_add, progress_done, reset_progress
+
+    reset_progress()
+    client = MagicMock()
+    client.call.side_effect = _building_then_succeeded()
+
+    progress_add("function:f", "function", 'Function "f"')
+    wait_for_image_build(
+        client, "build-7", poll_interval=0, timeout=None, progress_parent="function:f"
+    )
+    progress_done("function:f", detail="ready")
+
+    out = capsys.readouterr().out
+    assert out.count('Function "f"') == 1
+    assert "(continued)" not in out
+    assert "Building image" in out
+    reset_progress()
+
+
+def test_wait_for_image_build_failure_marks_row_failed(capsys) -> None:
+    client = MagicMock()
+    client.call.return_value = image_pb.GetCustomImageResponse(
+        status="failed", error="boom"
+    )
+
+    with pytest.raises(ConnectError, match="boom"):
+        wait_for_image_build(client, "build-8", poll_interval=0, timeout=None)
+
+    assert "Failed" in capsys.readouterr().out

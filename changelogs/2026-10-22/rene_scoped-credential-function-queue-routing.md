@@ -1,0 +1,1 @@
+Client-credential authentication now requests an environment-scoped token after resolving the selected environment, retaining Auth’s service routing metadata. Integration tests use this normal authentication flow instead of converting the response into a JWT file that loses queue routing metadata.

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import BuildCustomImageRequest, BuildCustomImageResponse, CreateSandboxRequest, CreateSandboxResponse, ExecRequest, ExecResponse, GetCustomImageBuildLogsRequest, GetCustomImageBuildLogsResponse, GetCustomImageBuildRequest, GetCustomImageBuildResponse, GetCustomImageBuildUsageRequest, GetCustomImageBuildUsageResponse, GetCustomImageBuildWorkflowRequest, GetCustomImageBuildWorkflowResponse, GetCustomImageRequest, GetCustomImageResponse, GetOrBuildCustomImageRequest, GetOrBuildCustomImageResponse, GetSandboxRequest, GetSandboxResponse, ListCustomImageBuildsRequest, ListCustomImageBuildsResponse, ListSandboxesRequest, ListSandboxesResponse, StreamCustomImageBuildUpdatesRequest, StreamCustomImageBuildUpdatesResponse, TerminateSandboxRequest, TerminateSandboxResponse
+from .service_pb import BuildCustomImageRequest, BuildCustomImageResponse, CreateSandboxRequest, CreateSandboxResponse, ExecRequest, ExecResponse, GetCustomImageBuildLogsRequest, GetCustomImageBuildLogsResponse, GetCustomImageBuildRequest, GetCustomImageBuildResponse, GetCustomImageBuildUsageRequest, GetCustomImageBuildUsageResponse, GetCustomImageBuildWorkflowRequest, GetCustomImageBuildWorkflowResponse, GetCustomImageRequest, GetCustomImageResponse, GetImagePullCredentialsRequest, GetImagePullCredentialsResponse, GetOrBuildCustomImageRequest, GetOrBuildCustomImageResponse, GetSandboxRequest, GetSandboxResponse, ListCustomImageBuildsRequest, ListCustomImageBuildsResponse, ListSandboxesRequest, ListSandboxesResponse, StreamCustomImageBuildUpdatesRequest, StreamCustomImageBuildUpdatesResponse, TerminateSandboxRequest, TerminateSandboxResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -140,6 +140,25 @@ class CustomImageServiceClientSync(ConnectClientSync):
     """
     CustomImageService manages custom container image builds independently of sandboxes.
     """
+    def get_image_pull_credentials(
+        self,
+        request: GetImagePullCredentialsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> GetImagePullCredentialsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetImagePullCredentials",
+                service_name="chalk.sandbox.v1.CustomImageService",
+                input=GetImagePullCredentialsRequest,
+                output=GetImagePullCredentialsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def build_custom_image(
         self,
         request: BuildCustomImageRequest,

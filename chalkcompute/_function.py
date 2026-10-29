@@ -68,6 +68,7 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._async_utils import _has_running_event_loop, _run_in_worker_thread
 from chalkcompute._client_cache import ClientCache
 from chalkcompute._gather import gather_handles
@@ -90,6 +91,8 @@ from chalkcompute._connect import (
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
+    NetworkPolicy,
+    ExecutionBackend,
     validate_replica_and_utilization,
 )
 from chalkcompute._env import normalize_env
@@ -99,6 +102,7 @@ from chalkcompute._function_deployment import (
     resolve_function_volumes,
     function_source_root,
 )
+from chalkcompute._function_source_location import function_source_location
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
 )
@@ -636,6 +640,7 @@ def _generate_handler_shim(
             bootstrap
             + serde_runtime
             + textwrap.dedent(f"""\
+            import contextvars
             import inspect
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -751,8 +756,11 @@ def _generate_handler_shim(
                     return asyncio.run(_run_all())
                 bucket = {{}}
                 with ThreadPoolExecutor(max_workers=max(1, len(work))) as ex:
+                    # Pool threads start with an empty context, so each row runs in a copy of
+                    # the caller's: it carries the invocation span the runtime made current,
+                    # which spans opened in the function body must parent to.
                     futures = {{
-                        ex.submit(_call_one, kw, cx, rm): (ci, ri)
+                        ex.submit(contextvars.copy_context().run, _call_one, kw, cx, rm): (ci, ri)
                         for ci, ri, kw, cx, rm in work
                     }}
                     for fut in as_completed(futures):
@@ -2316,13 +2324,15 @@ class RemoteFunction:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        network_policy: NetworkPolicy | None = None,
+        execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         authenticated: bool = False,
         readiness_probe: _ReadinessProbe | None = None,
         min_replicas: int = 1,
@@ -2392,6 +2402,8 @@ class RemoteFunction:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            network_policy=network_policy,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -2410,6 +2422,8 @@ class RemoteFunction:
         self._image = normalized_image
         self._cpu = cpu
         self._compute_class = compute_class
+        self._network_policy = network_policy
+        self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -2507,6 +2521,7 @@ class RemoteFunction:
         self._port: int = 8080
         self._temp_files: list[str] = []
         self._handler_module: str = "handler"
+        self._source_location: catalog_pb.FunctionSourceLocation | None = None
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
@@ -2663,6 +2678,8 @@ class RemoteFunction:
         f._image = None
         f._cpu = None
         f._compute_class = None
+        f._network_policy = None
+        f._execution_target = None
         f._memory = None
         f._gpu = None
         f._env = {}
@@ -2728,6 +2745,14 @@ class RemoteFunction:
         )
         if dir_is_temp:
             temp_files.append(prepared_dir)
+        relative_path = Path(_source_file_for_deploy(self._func)).relative_to(
+            package_dir
+        )
+        self._source_location = function_source_location(
+            (Path(prepared_dir) / relative_path).read_text(),
+            f"{source_root}/{module_name.split('.')[0]}/{relative_path.as_posix()}",
+            getattr(inspect.unwrap(self._func), "__qualname__", None),
+        )
         return base_image.add_local_dir(
             prepared_dir,
             f"{source_root}/{module_name.split('.')[0]}",
@@ -2760,6 +2785,13 @@ class RemoteFunction:
             )
         if source_is_temp:
             temp_files.append(source_file)
+        self._source_location = function_source_location(
+            Path(source_file).read_text(),
+            f"{source_root}/{module_name}.py",
+            self._func_name
+            if self._notebook_source is not None
+            else getattr(inspect.unwrap(self._func), "__qualname__", None),
+        )
         return base_image.add_local_file(source_file, f"{source_root}/{module_name}.py")
 
     def _add_handler_shim(
@@ -3049,6 +3081,8 @@ class RemoteFunction:
                 ),
                 cpu=self._cpu,
                 compute_class=self._compute_class,
+                network_policy=self._network_policy,
+                execution_target=self._execution_target,
                 memory=self._memory,
                 gpu=self._gpu,
                 volumes=deploy_volumes,
@@ -3099,6 +3133,8 @@ class RemoteFunction:
                 tracing=self._tracing,
             )
 
+            config.source_location = self._source_location
+
             # 6. Create the stable function or append and select a new version.
             rkey = f"register:{registered_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
@@ -3114,6 +3150,7 @@ class RemoteFunction:
                 force_new_version=force_new_version,
                 poll_interval=poll_interval,
                 timeout=build_timeout,
+                progress_parent=fkey,
                 version_spec=catalog_pb.ExternalFunctionVersionSpec(
                     input_arrow_schema=input_schema_proto,
                     output_arrow_schema=output_schema_proto,
@@ -3483,25 +3520,19 @@ class RemoteFunction:
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
-    def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+    def _remote_call_metadata(self) -> list[tuple[str, str]]:
         uses_web_identity = (
             getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
         )
         service_auth = None if uses_web_identity else service_auth_context_from_env()
         if service_auth is not None:
-            metadata = [("x-chalk-env-id", service_auth.environment_id)]
-            if queue:
-                metadata.append(("x-chalk-deployment-type", "function-queue"))
-            return metadata
+            return [("x-chalk-env-id", service_auth.environment_id)]
 
         self._client._ensure_auth()
-        metadata = [
+        return [
             ("authorization", f"Bearer {self._client._access_token}"),
             ("x-chalk-env-id", self._client._env_id or ""),
         ]
-        if queue:
-            metadata.append(("x-chalk-deployment-type", "function-queue"))
-        return metadata
 
     def _per_call_metadata(self) -> list[tuple[str, str]]:
         metadata = current_trace_metadata()
@@ -3545,13 +3576,7 @@ class RemoteFunction:
 
         service_auth = None if uses_web_identity else service_auth_context_from_env()
         if queue:
-            if service_auth is None:
-                target, use_tls = self._client.grpc_engine_target()
-            else:
-                if service_auth.grpc_engine is None:
-                    target, use_tls = self._client.grpc_engine_target()
-                else:
-                    target, use_tls = service_auth.grpc_engine
+            target, use_tls = self._client.dataplane_api_server_target()
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,
@@ -3559,7 +3584,7 @@ class RemoteFunction:
             )
         client = RemoteCallClient(
             target,
-            metadata=self._remote_call_metadata(queue=queue),
+            metadata=self._remote_call_metadata(),
             use_tls=use_tls,
             auth_endpoint=service_auth.auth_endpoint if service_auth else None,
             exchange_token=service_auth.exchange_token if service_auth else None,
@@ -3619,7 +3644,7 @@ class RemoteFunction:
             if callable(getattr(client, "call_ipc", None)):
                 return client.call_ipc(function_name, feather_bytes, metadata=metadata)
             fallback_metadata = [
-                *self._remote_call_metadata(queue=False),
+                *self._remote_call_metadata(),
                 *metadata,
             ]
             timeout_ms = (
@@ -4185,6 +4210,8 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -4192,7 +4219,7 @@ def function(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -4225,6 +4252,8 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -4232,7 +4261,7 @@ def function(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -4266,6 +4295,8 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -4273,7 +4304,7 @@ def function(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -4333,6 +4364,11 @@ def function(
     compute_class
         Where to run replicas. Omit to use the server default; HOST requires fixed,
         positive replica counts.
+    network_policy
+        Optional host egress policy. Omit for the server default;
+        ``NetworkPolicy()`` denies all egress. Kubernetes does not support it.
+    execution_target
+        Optional :class:`ExecutionBackend`; defaults to the environment cluster.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
@@ -4460,6 +4496,8 @@ def function(
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            network_policy=network_policy,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
