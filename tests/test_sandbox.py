@@ -925,6 +925,49 @@ def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None
     assert sandbox.info.status_details is None
 
 
+class _PermissionDeniedOnGetStub:
+    def __init__(self) -> None:
+        self.terminate_request: pb.TerminateSandboxRequest | None = None
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        raise ConnectRpcError(Code.PERMISSION_DENIED, "deploy.read required")
+
+    def terminate_sandbox(self, request: pb.TerminateSandboxRequest, **_kwargs: object):
+        self.terminate_request = request
+        return pb.TerminateSandboxResponse()
+
+
+def test_sandbox_id_survives_permission_denied_during_readiness_poll() -> None:
+    client = SandboxClient()
+    stub = _PermissionDeniedOnGetStub()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
+    try:
+        with pytest.raises(
+            SandboxError, match="sandbox-123 was created and is still running"
+        ):
+            with patch("chalkcompute._sandbox.time.sleep"):
+                sandbox.run(poll_interval=0, timeout=30)
+
+        # run() lost the handle before this fix: the id below was None, and
+        # terminate() raised "Sandbox is not running" instead of cleaning up.
+        assert sandbox.id == "sandbox-123"
+        sandbox.terminate()
+        assert stub.terminate_request is not None
+        assert stub.terminate_request.id == "sandbox-123"
+    finally:
+        client.close()
+
+
 class _ProcessStub:
     def __init__(self) -> None:
         self.request: process_pb.OpenSessionRequest | None = None

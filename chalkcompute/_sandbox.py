@@ -48,6 +48,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     raise_for_rpc_error,
     rpc_address_from_target,
+    rpc_error_message,
 )
 from chalkcompute._containerspec import (
     ContainerSpec,
@@ -2146,7 +2147,9 @@ class SandboxClient:
         )
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
-        # Keep the created identity even when readiness polling fails before the handle is bound.
+        # Bind the id before polling so a failed poll still leaves the caller a
+        # usable handle (e.g. to call .terminate()) instead of an orphaned sandbox.
+        sandbox._id = resp.sandbox.id
         _set_sandbox_span_id(resp.sandbox.id)
         if sandbox._oidc_token_files and not _echoes_oidc_token_files(
             resp.sandbox, len(sandbox._oidc_token_files)
@@ -2199,7 +2202,10 @@ class SandboxClient:
                 )
             except ConnectRpcError as e:
                 _handle_rpc_error(e, sandbox_id)
-                raise
+                raise SandboxError(
+                    f"Sandbox {sandbox_id} was created and is still running, but "
+                    f"checking its readiness failed: {rpc_error_message(e)}"
+                ) from e
             if resp.sandbox is None:
                 raise SandboxCreationError("GetSandbox returned no sandbox")
             info = _pb_to_sandbox_info(resp.sandbox)
