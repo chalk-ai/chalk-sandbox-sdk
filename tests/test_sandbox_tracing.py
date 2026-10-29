@@ -77,7 +77,9 @@ def test_creation_span_keeps_identity_when_readiness_fails(recorded_spans):
         sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
         with pytest.raises(SandboxCreationError):
             sandbox.run(poll_interval=0, timeout=1)
-        assert sandbox.id is None
+        # The id is bound before readiness polling, so a failed poll still
+        # leaves the caller a usable handle (e.g. to call .terminate()).
+        assert sandbox.id == "sandbox-traced"
 
     span = next(
         span

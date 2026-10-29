@@ -925,6 +925,128 @@ def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None
     assert sandbox.info.status_details is None
 
 
+class _PermissionDeniedOnGetStub:
+    def __init__(self) -> None:
+        self.terminate_request: pb.TerminateSandboxRequest | None = None
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        raise ConnectRpcError(Code.PERMISSION_DENIED, "deploy.read required")
+
+    def terminate_sandbox(self, request: pb.TerminateSandboxRequest, **_kwargs: object):
+        self.terminate_request = request
+        return pb.TerminateSandboxResponse()
+
+
+def test_sandbox_id_survives_permission_denied_during_readiness_poll() -> None:
+    client = SandboxClient()
+    stub = _PermissionDeniedOnGetStub()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
+    try:
+        with pytest.raises(
+            SandboxError, match="sandbox-123 was created and is still running"
+        ):
+            with patch("chalkcompute._sandbox.time.sleep"):
+                sandbox.run(poll_interval=0, timeout=30)
+
+        # run() lost the handle before this fix: the id below was None, and
+        # terminate() raised "Sandbox is not running" instead of cleaning up.
+        assert sandbox.id == "sandbox-123"
+        sandbox.terminate()
+        assert stub.terminate_request is not None
+        assert stub.terminate_request.id == "sandbox-123"
+    finally:
+        client.close()
+
+
+def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
+    # Unlike the test above, this sandbox has no sandbox_client= at
+    # construction, so run() must resolve one via SandboxClient.from_env().
+    # terminate() should reuse that same client rather than resolving a
+    # second, differently-authenticated one through _require_client().
+    fake_client = SandboxClient()
+    fake_client._stub = _PermissionDeniedOnGetStub()  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest")
+
+    try:
+        with patch.object(
+            SandboxClient, "from_env", return_value=fake_client
+        ) as from_env:
+            with pytest.raises(SandboxError, match="still running"):
+                with patch("chalkcompute._sandbox.time.sleep"):
+                    sandbox.run(poll_interval=0, timeout=30)
+
+            sandbox.terminate()
+
+        from_env.assert_called_once_with(chalk_client=None)
+        assert fake_client._stub.terminate_request is not None
+        assert fake_client._stub.terminate_request.id == "sandbox-123"
+    finally:
+        fake_client.close()
+
+
+class _RerunPermissionDeniedStub:
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.terminate_calls: list[str] = []
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        self.create_calls += 1
+        sandbox_id = f"sandbox-{self.create_calls}"
+        status = (
+            pb.SandboxStatus.RUNNING
+            if self.create_calls == 1
+            else pb.SandboxStatus.PENDING
+        )
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id=sandbox_id, status=status, created_at=Timestamp(seconds=1)
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        raise ConnectRpcError(Code.PERMISSION_DENIED, "deploy.read required")
+
+    def terminate_sandbox(self, request: pb.TerminateSandboxRequest, **_kwargs: object):
+        self.terminate_calls.append(request.id)
+        return pb.TerminateSandboxResponse()
+
+
+def test_sandbox_terminate_flag_resets_before_a_retried_run() -> None:
+    client = SandboxClient()
+    stub = _RerunPermissionDeniedStub()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
+    try:
+        sandbox.run()
+        assert sandbox.id == "sandbox-1"
+        sandbox.terminate()
+        assert sandbox.id is None
+        assert stub.terminate_calls == ["sandbox-1"]
+
+        with pytest.raises(SandboxError, match="still running"):
+            with patch("chalkcompute._sandbox.time.sleep"):
+                sandbox.run(poll_interval=0, timeout=30)
+        assert sandbox.id == "sandbox-2"
+
+        # Before the fix, _terminated stayed True from the earlier
+        # terminate() call (only reset after _instantiate returns), so this
+        # silently no-op'd instead of terminating the new sandbox.
+        sandbox.terminate()
+        assert stub.terminate_calls == ["sandbox-1", "sandbox-2"]
+    finally:
+        client.close()
+
+
 class _ProcessStub:
     def __init__(self) -> None:
         self.request: process_pb.OpenSessionRequest | None = None
@@ -1051,6 +1173,24 @@ def test_terminated_during_creation_includes_status_message() -> None:
     try:
         with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
             client.create("python:3.14-slim", wait=True)
+    finally:
+        client.close()
+
+
+def test_sandbox_id_cleared_when_creation_is_immediately_terminal() -> None:
+    from chalkcompute._sandbox import SandboxTerminatedError
+
+    client = SandboxClient()
+    client._stub = _TerminatedStub()  # type: ignore[assignment]
+    sandbox = Sandbox(image="python:3.14-slim", sandbox_client=client)
+    try:
+        with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
+            sandbox.run()
+        # Before the fix, sandbox.id stayed bound to a sandbox the server
+        # already reported terminated, so a retried .run() raised "already
+        # running" with no way to recover the handle.
+        assert sandbox.id is None
+        assert sandbox.info is None
     finally:
         client.close()
 
