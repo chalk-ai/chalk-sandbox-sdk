@@ -36,12 +36,24 @@ cancellation returns. The first successful cancellation fixes the termination
 choice. Repeating the same choice is idempotent; changing it is rejected.
 
 Cancellation requires a Stream-backed queue and cancellation-capable consumers.
-Queued calls are removed. Running calls retain their concurrency reservation until
-execution finishes or their consumer dies. `get()` and `stream()` raise
+Calls cancelled before acquisition are removed. Acquisition is the execution
+boundary: buffered inputs and deliveries whose acquisition response was lost count
+as acquired. With the default cancellation, their handlers may run and retain
+their concurrency reservations until execution finishes or their consumer dies. `get()` and `stream()` raise
 `CallCancelledError` and never resubmit cancelled work. Output already delivered
 by a stream cannot be retracted. A result timeout does not cancel the call.
-Terminating a container can interrupt other calls executing in that container;
-those calls follow their normal crash/retry policy.
+Terminating a replica also interrupts unrelated acquired calls. For Stream-backed
+inputs, these calls are rescheduled with the original call ID and input, a fresh
+work handle, and no charge to their handler retry budget. The replica stops
+acquiring work before termination; recovery starts after termination is confirmed
+and survives API-server restarts. Legacy List inputs retain their existing
+crash behavior.
+
+Recovered generators restart from the beginning. Default generators continue to
+stream incrementally; positive retry policies retain their existing per-attempt
+buffering. Either can replay an already-published prefix if termination interrupts
+publication. Streaming is at-least-once across recovery, with no checkpointing or
+chunk deduplication.
 
 Generated function/class images advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`.
 Set it to `false` in the deployment environment to opt out. Custom images must
