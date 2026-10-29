@@ -1046,7 +1046,9 @@ class Sandbox:
             )
         except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
-            raise
+            raise SandboxError(
+                f"Checking sandbox {sandbox_id} failed: {rpc_error_message(e)}"
+            ) from e
         return _pb_to_sandbox_info(resp.sandbox)
 
     def mount_volume(self, name: str | Volume, mount_path: str) -> Sandbox:
@@ -1369,9 +1371,11 @@ class Sandbox:
                                 secret_name = resolved._secret_name
                                 resolved_credentials.append((secret, secret_name))
                             transform.headers_secrets[placeholder] = secret_name
-        # Bind the client before instantiating so a handle still has one to
-        # call .terminate() with if readiness polling fails mid-_instantiate.
+        # Bind the client and clear _terminated before instantiating so a
+        # handle still behaves like a fresh run (not a no-op .terminate()) if
+        # readiness polling fails mid-_instantiate.
         self._client = client
+        self._terminated = False
         client._instantiate(
             self,
             image,
@@ -1381,7 +1385,6 @@ class Sandbox:
             poll_interval=poll_interval,
             timeout=timeout,
         )
-        self._terminated = False
         _set_sandbox_span_id(self._id)
         if self._pending_files:
             try:
@@ -2166,9 +2169,18 @@ class SandboxClient:
                     pb.TerminateSandboxRequest(id=resp.sandbox.id),
                     headers=self._headers,
                 )
-            except ConnectRpcError:
-                pass
-            # Already terminated above, so the handle shouldn't claim to be running.
+            except ConnectRpcError as e:
+                if e.code not in (Code.NOT_FOUND, Code.FAILED_PRECONDITION):
+                    # Cleanup didn't actually succeed, so keep the handle
+                    # bound: the caller can still retry .terminate().
+                    raise SandboxCreationError(
+                        "The Chalk server does not support OIDCTokenFile, and "
+                        f"terminating sandbox {resp.sandbox.id} also failed: "
+                        f"{rpc_error_message(e)}. The sandbox may still be "
+                        "running; call .terminate() to retry."
+                    ) from e
+            # Terminated above (or already gone), so the handle shouldn't
+            # claim to be running.
             sandbox._id = None
             sandbox._info = None
             raise SandboxCreationError(
@@ -2185,6 +2197,10 @@ class SandboxClient:
                 timeout=timeout,
             )
         elif wait and info.status in ("failed", "error", "unknown", "terminated"):
+            # The server already reached a terminal, non-running state, so
+            # the handle shouldn't claim to be running either.
+            sandbox._id = None
+            sandbox._info = None
             raise _sandbox_creation_error(info)
 
         # info.id is already sandbox._id, bound above before polling.

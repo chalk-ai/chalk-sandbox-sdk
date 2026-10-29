@@ -4,6 +4,8 @@ from typing import Any
 
 import chalkcompute as cc
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from chalkcompute import ChalkIdentity, Image, OIDCTokenFile, Sandbox
 from chalkcompute._chalk_identity import (
     normalize_chalk_identity,
@@ -63,6 +65,13 @@ class _OldServerStub(_EchoStub):
                 spec=spec,
             )
         )
+
+
+class _OldServerCleanupFailsStub(_OldServerStub):
+    """Like _OldServerStub, but the best-effort cleanup terminate also fails."""
+
+    def terminate_sandbox(self, request: pb.TerminateSandboxRequest, **_kwargs: object):
+        raise ConnectRpcError(Code.UNAVAILABLE, "backend unreachable")
 
 
 def _create(stub: _EchoStub, **kwargs: Any) -> Sandbox:
@@ -384,6 +393,35 @@ def test_sandbox_handle_is_reusable_after_server_drops_token_files() -> None:
             sandbox.run(wait=False)
         assert sandbox.id is None
         assert sandbox.info is None
+
+        # The handle must actually be reusable, not just cleared: retry
+        # against a server that does support OIDC token files.
+        client._stub = _EchoStub()  # type: ignore[assignment]
+        sandbox.run(wait=False)
+        assert sandbox.id == "sandbox-123"
+    finally:
+        client.close()
+
+
+def test_sandbox_handle_keeps_id_when_cleanup_terminate_fails() -> None:
+    # If the best-effort cleanup terminate doesn't actually succeed, the real
+    # sandbox is still running server-side, so the handle must keep claiming
+    # it -- otherwise the caller has no way to retry .terminate() on it.
+    stub = _OldServerCleanupFailsStub()
+    client = SandboxClient()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(
+        image="python:3.14-slim",
+        chalk_identity=SANDBOX_IDENTITY,
+        env={"TOKEN": SNOWFLAKE},
+        sandbox_client=client,
+    )
+    try:
+        with pytest.raises(
+            SandboxCreationError, match="terminating sandbox sandbox-old also failed"
+        ):
+            sandbox.run(wait=False)
+        assert sandbox.id == "sandbox-old"
     finally:
         client.close()
 
