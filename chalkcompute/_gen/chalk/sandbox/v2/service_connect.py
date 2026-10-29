@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, RecordSandboxResourceRequest, RecordSandboxResourceResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
+from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, RecordSandboxResourceRequest, RecordSandboxResourceResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse, WaitForSandboxReadinessRequest, WaitForSandboxReadinessResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -55,6 +55,30 @@ class SandboxServiceClientSync(ConnectClientSync):
                 service_name="chalk.sandbox.v2.SandboxService",
                 input=GetSandboxRequest,
                 output=GetSandboxResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def wait_for_sandbox_readiness(
+        self,
+        request: WaitForSandboxReadinessRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> WaitForSandboxReadinessResponse:
+        """
+        Waits until every requested sandbox leaves PENDING. RUNNING is the ready
+        outcome; any other returned status means readiness resolved without the
+        sandbox reaching RUNNING. Results preserve request order.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="WaitForSandboxReadiness",
+                service_name="chalk.sandbox.v2.SandboxService",
+                input=WaitForSandboxReadinessRequest,
+                output=WaitForSandboxReadinessResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

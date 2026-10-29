@@ -172,6 +172,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SandboxClient": ("chalkcompute._sandbox", "SandboxClient"),
     "SandboxError": ("chalkcompute._sandbox", "SandboxError"),
     "SandboxInfo": ("chalkcompute._sandbox", "SandboxInfo"),
+    "SandboxReadinessResult": ("chalkcompute._sandbox", "SandboxReadinessResult"),
     "SandboxNotFoundError": ("chalkcompute._sandbox", "SandboxNotFoundError"),
     "SandboxTerminatedError": ("chalkcompute._sandbox", "SandboxTerminatedError"),
     # _sandbox_fs.py

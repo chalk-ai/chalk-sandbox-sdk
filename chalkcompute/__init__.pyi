@@ -120,6 +120,7 @@ from chalkcompute._sandbox_fs import ReplaceResult as ReplaceResult
 from chalkcompute._sandbox_fs import SandboxFileInfo as SandboxFileInfo
 from chalkcompute._sandbox_fs import SandboxFileSystem as SandboxFileSystem
 from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
+from chalkcompute._sandbox import SandboxReadinessResult as SandboxReadinessResult
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
 from chalkcompute._workflow_worker import WorkflowWorker as WorkflowWorker
 from chalkcompute._workflow_worker import (
@@ -310,6 +311,7 @@ __all__ = [
     "SandboxFileInfo",
     "SandboxFileSystem",
     "SandboxFileSystemError",
+    "SandboxReadinessResult",
     "ScalingGroup",
     "ScalingGroupBuildError",
     "ScalingGroupError",
