@@ -350,6 +350,7 @@ class FakeRemoteCallClient:
         self.calls: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.enqueues: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.purges: list[str] = []
+        self.polls: list[tuple[str, str, int]] = []
         self.closed = False
         FakeRemoteCallClient.instances.append(self)
 
@@ -389,6 +390,7 @@ class FakeRemoteCallClient:
         poll_count: int = 0,
     ) -> RemoteCallPollResult:
         assert call_id == "call-1"
+        self.polls.append((call_id, cursor, poll_count))
         if self.poll_errors:
             raise self.poll_errors.pop(0)
         return self.poll_results.pop(0)
@@ -693,10 +695,6 @@ def test_direct_call_does_not_retry_deadline_exceeded() -> None:
     assert len(FakeRemoteCallClient.instances) == 1
 
 
-async def _no_sleep(_seconds) -> None:
-    return None
-
-
 def _err(exc_type: str, message: str) -> str:
     """Build a failed-call error payload as the queue surfaces it (flattened
     chalk.common.v1.ChalkError -> JSON ``{"exc_type", "message"}``)."""
@@ -719,25 +717,86 @@ def _poll(status_name, *, chunks=None, error_message=None):
     )
 
 
-def test_deferred_get_retries_transient_failure_then_succeeds(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+@pytest.mark.parametrize("retries", [None, 0, 3])
+@pytest.mark.parametrize("partial_output", [False, True])
+def test_deferred_failure_does_not_resubmit(
+    async_context, mode, retries, partial_output
+) -> None:
     FakeRemoteCallClient.poll_results = [
+        _poll("pending"),
+        _poll("running", chunks=[_result_ipc([0])] if partial_output else []),
         _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
-        _poll("completed", chunks=[_result_ipc([99])]),
     ]
+    fn = _async_remote_function() if async_context else _remote_function()
+    fn._retries = (
+        function_mod.RetryPolicy.from_int_or_policy(retries)
+        if retries is not None
+        else None
+    )
+    handle = fn.defer(98)
+    original_call_id = handle.call_id
 
-    fn = _remote_function()
+    async def collect():
+        if mode == "stream":
+            return [batch async for batch in handle.stream(timeout=60)]
+        if mode == "gather":
+            return await function_mod.gather([handle], timeout=60)
+        return await handle.get(timeout=60)
+
+    with pytest.raises(FunctionError, match="CallFunction RPC failed"):
+        if async_context:
+            asyncio.run(collect())
+        elif mode == "stream":
+            list(handle.stream(timeout=60))
+        elif mode == "gather":
+            function_mod.gather([handle], timeout=60)
+        else:
+            handle.get(timeout=60)
+
+    assert handle.call_id == original_call_id
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+    assert FakeRemoteCallClient.instances[0].polls == [(original_call_id, "", 0)] * 3
+
+
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_result_collection_polls_until_completed(async_context, mode) -> None:
+    FakeRemoteCallClient.poll_results = [
+        _poll("pending"),
+        _poll("running", chunks=[_result_ipc([0])]),
+        _poll("completed", chunks=[_result_ipc([1])]),
+    ]
+    fn = _async_remote_function() if async_context else _remote_function()
     handle = fn.defer(98)
 
-    assert handle.get(timeout=60) == 99
-    # One initial enqueue + one resubmit after the transient failure.
-    client = FakeRemoteCallClient.instances[0]
-    assert len(client.enqueues) == 2
-    assert all(_read_input(e[1]) == {"x": [98]} for e in client.enqueues)
+    async def collect():
+        if mode == "stream":
+            return [
+                batch.column("result").to_pylist() async for batch in handle.stream()
+            ]
+        if mode == "gather":
+            return await function_mod.gather([handle])
+        return await handle.get()
+
+    if async_context:
+        result = asyncio.run(collect())
+    elif mode == "stream":
+        result = [batch.column("result").to_pylist() for batch in handle.stream()]
+    elif mode == "gather":
+        result = function_mod.gather([handle])
+    else:
+        result = handle.get()
+
+    expected = {"get": [0, 1], "stream": [[0], [1]], "gather": [[0, 1]]}
+    assert result == expected[mode]
+    assert handle.call_id == "call-1"
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+    assert FakeRemoteCallClient.instances[0].polls == [("call-1", "", 0)] * 3
 
 
-def test_deferred_get_does_not_retry_genuine_user_error(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+def test_deferred_get_raises_user_error() -> None:
     # The in-pod runtime wraps a user handler exception as RuntimeError; its
     # message mentions the original error but the exc_type is not infra.
     FakeRemoteCallClient.poll_results = [
@@ -783,11 +842,8 @@ def test_deferred_get_fails_when_call_is_no_longer_retained() -> None:
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
-def test_deferred_get_does_not_retry_unstructured_error(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
-    # A plain (non-JSON) error string can't be positively classified as infra,
-    # so it is conservatively treated as non-retryable — even though it mentions
-    # "ProxyError" in free text.
+def test_deferred_get_raises_unstructured_error() -> None:
+    # Preserve the raw failure even when its message mentions "ProxyError".
     FakeRemoteCallClient.poll_results = [
         _poll("failed", error_message="ProxyError: CallFunction RPC failed"),
     ]
@@ -800,41 +856,7 @@ def test_deferred_get_does_not_retry_unstructured_error(monkeypatch) -> None:
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
-def test_deferred_get_stops_retrying_after_max_attempts(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
-
-    def transient():
-        return _poll("failed", error_message=_err("ProxyError", "connection reset"))
-
-    FakeRemoteCallClient.poll_results = [transient(), transient(), transient()]
-
-    fn = _remote_function()
-    handle = fn.defer(98)  # default _max_attempts == 3
-
-    with pytest.raises(FunctionError, match="connection reset"):
-        handle.get(timeout=60)
-    # 3 attempts total -> initial enqueue + 2 resubmissions.
-    assert len(FakeRemoteCallClient.instances[0].enqueues) == 3
-
-
-def test_sync_stream_retries_when_failure_precedes_any_output(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
-    FakeRemoteCallClient.poll_results = [
-        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
-        _poll("running", chunks=[_result_ipc([0])]),
-        _poll("completed", chunks=[_result_ipc([1])]),
-    ]
-
-    fn = _remote_function()
-    handle = fn.defer(3)
-
-    batches = [b.column("result").to_pylist() for b in handle.stream()]
-    assert batches == [[0], [1]]
-    assert len(FakeRemoteCallClient.instances[0].enqueues) == 2
-
-
-def test_sync_stream_does_not_retry_after_yielding(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+def test_sync_stream_raises_failure_after_yielding() -> None:
     FakeRemoteCallClient.poll_results = [
         _poll("running", chunks=[_result_ipc([0])]),
         _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
@@ -847,7 +869,26 @@ def test_sync_stream_does_not_retry_after_yielding(monkeypatch) -> None:
     with pytest.raises(FunctionError, match="CallFunction RPC failed"):
         for batch in handle.stream():
             collected.append(batch.column("result").to_pylist())
-    # The first batch reached the caller, so the stream is not restarted.
+    # Delivered batches remain visible before the terminal failure is raised.
+    assert collected == [[0]]
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_async_stream_raises_failure_after_yielding() -> None:
+    FakeRemoteCallClient.poll_results = [
+        _poll("running", chunks=[_result_ipc([0])]),
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+    ]
+    handle = _async_remote_function().defer(3)
+    collected = []
+
+    async def collect():
+        async for batch in handle.stream():
+            collected.append(batch.column("result").to_pylist())
+
+    with pytest.raises(FunctionError, match="CallFunction RPC failed"):
+        asyncio.run(collect())
+
     assert collected == [[0]]
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
@@ -860,23 +901,6 @@ def test_sync_stream_fails_when_results_have_expired() -> None:
     with pytest.raises(FunctionError, match="results have expired"):
         list(handle.stream())
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
-
-
-def test_async_stream_retries_when_failure_precedes_any_output(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.asyncio.sleep", _no_sleep)
-    FakeRemoteCallClient.poll_results = [
-        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
-        _poll("completed", chunks=[_result_ipc([0])]),
-    ]
-
-    fn = _async_remote_function()
-    handle = fn.defer(3)
-
-    async def _collect() -> list[list[int]]:
-        return [b.column("result").to_pylist() async for b in handle.stream()]
-
-    assert asyncio.run(_collect()) == [[0]]
-    assert len(FakeRemoteCallClient.instances[0].enqueues) == 2
 
 
 def test_async_stream_fails_when_results_have_expired() -> None:
@@ -929,7 +953,8 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert client.purges == ["catalog-add"]
 
 
-def test_poll_refreshes_stale_queue_client_and_retries() -> None:
+@pytest.mark.parametrize("failure_kind", ["result", "exception"])
+def test_poll_refreshes_stale_queue_client_and_retries(failure_kind) -> None:
     FakeRemoteCallClient.poll_results = [
         RemoteCallPollResult(
             status=4,
@@ -949,11 +974,21 @@ def test_poll_refreshes_stale_queue_client_and_retries() -> None:
         ),
     ]
 
+    if failure_kind == "exception":
+        FakeRemoteCallClient.poll_results.pop(0)
+        FakeRemoteCallClient.poll_errors = [RemoteCallTransportError("disconnected")]
+
     fn = _remote_function()
     handle = fn.defer(98)
 
     assert handle.get() == 99
 
+    assert handle.call_id == "call-1"
+    assert [client.polls for client in FakeRemoteCallClient.instances] == [
+        [("call-1", "", 0)],
+        [("call-1", "", 0)],
+    ]
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
     assert len(FakeRemoteCallClient.instances) == 2
     assert FakeRemoteCallClient.instances[0].closed is True
     assert (
