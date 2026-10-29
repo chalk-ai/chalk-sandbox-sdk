@@ -332,7 +332,7 @@ def test_sandbox_snapshot_from_id_and_list_snapshots() -> None:
     )
 
 
-def test_sandbox_suspend_and_resume_refresh_info() -> None:
+def test_sandbox_suspend_and_restore_refresh_info() -> None:
     client = SandboxClient()
     stub = MagicMock()
     stub.get_sandbox.side_effect = [
@@ -356,7 +356,7 @@ def test_sandbox_suspend_and_resume_refresh_info() -> None:
 
     sandbox.suspend()
     assert sandbox.info is not None and sandbox.info.status == "suspended"
-    sandbox.resume()
+    sandbox.restore()
 
     assert sandbox.info is not None and sandbox.info.status == "running"
     stub.suspend_sandbox.assert_called_once_with(
@@ -367,7 +367,7 @@ def test_sandbox_suspend_and_resume_refresh_info() -> None:
     )
 
 
-def test_sandbox_resume_retries_conflict_while_suspended_resource_deletes() -> None:
+def test_sandbox_restore_retries_conflict_while_suspended_resource_deletes() -> None:
     client = SandboxClient()
     stub = MagicMock()
     stub.resume_sandbox.side_effect = [
@@ -389,7 +389,7 @@ def test_sandbox_resume_retries_conflict_while_suspended_resource_deletes() -> N
     sandbox = client.get("sandbox-123")
 
     with patch("chalkcompute._sandbox.time.sleep") as sleep:
-        sandbox.resume()
+        sandbox.restore()
 
     assert stub.resume_sandbox.call_count == 2
     sleep.assert_called_once_with(0.25)

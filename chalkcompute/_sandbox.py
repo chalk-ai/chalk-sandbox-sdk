@@ -1740,7 +1740,7 @@ class Sandbox:
 
     @_instrumented("chalkcompute.sandbox.suspend")
     def suspend(self) -> None:
-        """Suspend this sandbox while preserving its identity for later resume."""
+        """Suspend this sandbox while preserving its identity for later restore."""
         client = self._require_client()
         sandbox_id = self._require_started()
         try:
@@ -1753,9 +1753,9 @@ class Sandbox:
             raise
         self.refresh()
 
-    @_instrumented("chalkcompute.sandbox.resume")
-    def resume(self) -> None:
-        """Resume this sandbox after it has been suspended."""
+    @_instrumented("chalkcompute.sandbox.restore")
+    def restore(self) -> None:
+        """Restore this suspended sandbox in place, preserving its identity."""
         client = self._require_client()
         sandbox_id = self._require_started()
         deadline = time.monotonic() + _RESUME_CONFLICT_RETRY_TIMEOUT_SECONDS

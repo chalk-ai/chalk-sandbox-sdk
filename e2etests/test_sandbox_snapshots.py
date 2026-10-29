@@ -1,4 +1,4 @@
-"""End-to-end tests for HOST sandbox snapshots and suspend/resume on FTQA."""
+"""End-to-end tests for HOST sandbox snapshots and suspend/restore on FTQA."""
 
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def _wait_for_status(
 
 
 @needs_staging
-def test_sandbox_snapshot_fork_suspend_resume() -> None:
-    """Snapshots fork state into independent sandboxes; suspend/resume keeps the ID."""
+def test_sandbox_snapshot_fork_suspend_restore() -> None:
+    """Snapshots fork state; restoring a suspended sandbox keeps its ID."""
     client = SandboxClient.from_env()
     sandboxes: list[Sandbox] = []
     snapshot: SandboxSnapshot | None = None
@@ -85,7 +85,7 @@ def test_sandbox_snapshot_fork_suspend_resume() -> None:
 
         source.suspend()
         _wait_for_status(source, {"suspended"})
-        source.resume()
+        source.restore()
         _wait_for_status(source, {"running", "succeeded"})
         assert source.id == original_id
         _assert_file(source, marker)

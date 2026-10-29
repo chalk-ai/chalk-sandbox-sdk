@@ -43,15 +43,20 @@ loads a previously saved handle, and `client.list_snapshots(sandbox.id)` lists
 snapshots created from that sandbox. Use `snapshot.delete()` or
 `client.delete_snapshot(snapshot.id)` to delete one.
 
-## Suspend and resume
+## Suspend and restore in place
 
 Suspending a sandbox captures its state and releases its running resources while
-keeping its identity. Resume restores that state under the same sandbox ID:
+keeping its identity. Calling `restore()` on that sandbox restores the saved state
+in place and keeps the same sandbox ID:
 
 ```python
 sandbox.suspend()
-sandbox.resume()
+sandbox.restore()
 ```
+
+This differs from `snapshot.restore()`, which creates a new sandbox from a saved
+snapshot. `sandbox.restore()` brings a suspended sandbox back under its existing
+identity.
 
 Snapshot capture currently requires a HOST-compute sandbox. The CLI defaults
 sandbox creation to HOST compute; the SDK preserves its existing compute-class
