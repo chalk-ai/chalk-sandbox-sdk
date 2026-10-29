@@ -187,3 +187,26 @@ def test_sql_execution_and_polling_are_not_retried_by_transport(method) -> None:
     with pytest.raises(ConnectError):
         _rpc.RetryInterceptor().intercept_unary_sync(execute, "query", ctx)
     assert len(attempts) == 1
+
+
+def test_function_invocation_is_not_retried_by_connect_interceptor():
+    ctx = RequestContext(
+        method=MethodInfo(
+            name="CallExternalFunction",
+            service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+            input=object,
+            output=object,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        ),
+        http_method="POST",
+        request_headers=Headers(),
+    )
+    attempts = []
+
+    def execute(request, context):
+        attempts.append(request)
+        raise ConnectError(Code.UNAVAILABLE, "response lost")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(execute, "call", ctx)
+    assert attempts == ["call"]
