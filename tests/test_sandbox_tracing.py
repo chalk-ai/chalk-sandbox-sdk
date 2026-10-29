@@ -42,6 +42,17 @@ class _SandboxStub:
             )
         )
 
+    def wait_for_sandbox_readiness(self, request, **kwargs):
+        return pb.WaitForSandboxReadinessResponse(
+            results=[
+                pb.SandboxReadinessResult(
+                    id="sandbox-traced",
+                    status=pb.SandboxStatus.FAILED,
+                    status_message="readiness failed",
+                )
+            ]
+        )
+
     def get_sandbox(self, request, **kwargs):
         return pb.GetSandboxResponse(
             sandbox=pb.SandboxInfo(

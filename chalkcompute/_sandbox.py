@@ -25,13 +25,14 @@ Usage:
 from __future__ import annotations
 
 import copy
+import math
 import os
 import queue
 import signal
 import time
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 
 from connectrpc.code import Code
@@ -215,6 +216,15 @@ class SandboxInfo:
 
     status_details: str | None = None
     """Additional diagnostic output for the current lifecycle status."""
+
+
+@dataclass(frozen=True)
+class SandboxReadinessResult:
+    """Terminal readiness result for one sandbox in a batch wait."""
+
+    id: str
+    status: str
+    status_message: str | None = None
 
 
 @dataclass
@@ -1032,6 +1042,28 @@ class Sandbox:
         self._info = self._fetch_info()
         return self._info
 
+    def wait_until_ready(self, timeout: float = 300.0) -> Sandbox:
+        """Wait until the sandbox is running or reaches another terminal state."""
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        result = client._wait_until_ready_one(sandbox_id, timeout=timeout)
+        if self._info is not None:
+            self._info = replace(
+                self._info,
+                status=result.status,
+                status_message=result.status_message,
+            )
+        if result.status == "running":
+            return self
+        raise _sandbox_creation_error(
+            SandboxInfo(
+                id=result.id,
+                status=result.status,
+                created_at="",
+                status_message=result.status_message,
+            )
+        )
+
     def _fetch_info(self) -> SandboxInfo:
         client = self._require_client()
         sandbox_id = self._require_started()
@@ -1244,8 +1276,9 @@ class Sandbox:
         Parameters
         ----------
         wait
-            If ``True``, poll until the sandbox is ready (default ``True``).
+            If ``True``, wait until the sandbox is ready (default ``True``).
         poll_interval
+            Used only when the server does not implement the readiness RPC.
             Initial delay between readiness polls. When omitted, polling starts
             at 25ms and backs off by 50% to 250ms. Image builds retain their
             500ms default polling interval.
@@ -1803,6 +1836,7 @@ _SandboxInfoList = list[SandboxInfo]
 # Defined before SandboxClient, which has a ``.list()`` method that would
 # otherwise shadow the builtin ``list`` in class-scope name resolution.
 _StrList = list[str]
+_SandboxReadinessResultList = list[SandboxReadinessResult]
 
 
 def _echoes_oidc_token_files(sandbox_info: Any, expected: int) -> bool:
@@ -1965,7 +1999,7 @@ class SandboxClient:
 
         If ``image`` is an ``Image`` spec, this method builds it first and sends
         the resulting image URI to the sandbox service. If ``wait`` is ``True``
-        (the default), this method polls ``GetSandbox`` until the sandbox
+        (the default), this method calls ``WaitForSandboxReadiness`` until the sandbox
         reaches "ready" (or "error").
 
         Parameters
@@ -2021,8 +2055,9 @@ class SandboxClient:
             :class:`~chalkcompute.TracingPolicy` sets the root sample rate,
             ``False`` turns tracing off. See :class:`Sandbox`.
         wait
-            If ``True``, poll until the sandbox is ready (default ``True``).
+            If ``True``, wait until the sandbox is ready (default ``True``).
         poll_interval
+            Used only when the server does not implement the readiness RPC.
             Initial delay between readiness polls. When omitted, polling starts
             at 25ms and backs off by 50% to 250ms.
         timeout
@@ -2079,8 +2114,9 @@ class SandboxClient:
         sandbox
             A configured sandbox that has not been run.
         wait
-            If ``True``, poll until the sandbox is ready (default ``True``).
+            If ``True``, wait until the sandbox is ready (default ``True``).
         poll_interval
+            Used only when the server does not implement the readiness RPC.
             Initial delay between readiness polls. When omitted, polling starts
             at 25ms and backs off by 50% to 250ms.
         timeout
@@ -2168,16 +2204,134 @@ class SandboxClient:
         info = _pb_to_sandbox_info(resp.sandbox)
 
         if wait and info.status == "pending":
-            info = self._poll_until_ready(
-                info.id,
-                poll_interval=poll_interval,
-                timeout=timeout,
+            result = self._wait_until_ready_one(
+                info.id, timeout=timeout, poll_interval=poll_interval
             )
+            info = SandboxInfo(
+                id=result.id,
+                status=result.status,
+                created_at=info.created_at,
+                name=info.name,
+                status_message=result.status_message,
+            )
+            if info.status not in ("running", "succeeded"):
+                # Read the full terminal record when possible so create() keeps
+                # exposing diagnostics that are not part of the readiness result.
+                try:
+                    terminal = self._stub.get_sandbox(
+                        pb.GetSandboxRequest(id=info.id),
+                        headers=self._headers,
+                    )
+                except ConnectRpcError:
+                    pass
+                else:
+                    if terminal.sandbox is not None:
+                        info = _pb_to_sandbox_info(terminal.sandbox)
+                raise _sandbox_creation_error(info)
         elif wait and info.status in ("failed", "error", "unknown", "terminated"):
             raise _sandbox_creation_error(info)
 
         sandbox._id = info.id
         sandbox._info = info
+
+    def wait_until_ready(
+        self,
+        ids: Iterable[str],
+        *,
+        timeout: float = 300.0,
+    ) -> _SandboxReadinessResultList:
+        """Wait for one batch of at most 1,000 sandbox IDs."""
+        requested = list(ids)
+        if not requested:
+            raise ValueError("at least one sandbox id is required")
+        if len(requested) > 1000:
+            raise ValueError("at most 1000 sandbox ids are allowed")
+        if len(set(requested)) != len(requested):
+            raise ValueError("sandbox ids must be unique")
+        if any(not sandbox_id for sandbox_id in requested):
+            raise ValueError("sandbox ids must not be empty")
+        return self._wait_until_ready_batch(
+            requested, timeout=timeout, poll_interval=0.5
+        )
+
+    def _wait_until_ready_batch(
+        self,
+        requested: _StrList,
+        *,
+        timeout: float,
+        poll_interval: float | None,
+    ) -> _SandboxReadinessResultList:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        if timeout > 600:
+            raise ValueError("timeout must not exceed 600 seconds")
+
+        deadline = time.monotonic() + timeout
+        whole_seconds = int(timeout)
+        try:
+            response = self._stub.wait_for_sandbox_readiness(
+                pb.WaitForSandboxReadinessRequest(
+                    ids=requested,
+                    timeout=Duration(
+                        seconds=whole_seconds,
+                        nanos=int((timeout - whole_seconds) * 1_000_000_000),
+                    ),
+                ),
+                headers=self._headers,
+                timeout_ms=int(timeout * 1000) + 5000,
+            )
+        except ConnectRpcError as error:
+            if error.code == Code.UNIMPLEMENTED:
+                results: list[SandboxReadinessResult] = []
+                for sandbox_id in requested:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SandboxError(
+                            f"Timed out after {timeout}s waiting for sandbox readiness"
+                        ) from error
+                    try:
+                        info = self._poll_until_ready(
+                            sandbox_id,
+                            poll_interval=poll_interval,
+                            timeout=remaining,
+                        )
+                    except SandboxStatusError as status_error:
+                        if status_error.status is None:
+                            raise
+                        results.append(
+                            SandboxReadinessResult(
+                                id=status_error.sandbox_id or sandbox_id,
+                                status=status_error.status,
+                                status_message=status_error.status_message,
+                            )
+                        )
+                    else:
+                        results.append(
+                            SandboxReadinessResult(
+                                id=info.id,
+                                status=info.status,
+                                status_message=info.status_message,
+                            )
+                        )
+                return results
+            _handle_readiness_rpc_error(error, requested)
+            raise
+
+        outcomes = {
+            result.id: SandboxReadinessResult(
+                id=result.id,
+                status=result.status.name.removeprefix("SANDBOX_STATUS_").lower(),
+                status_message=(
+                    result.status_message
+                    if result.has_field("status_message")
+                    else None
+                ),
+            )
+            for result in response.results
+        }
+        if set(outcomes) != set(requested):
+            raise SandboxError("readiness response did not match requested sandbox ids")
+        return [outcomes[sandbox_id] for sandbox_id in requested]
 
     def _poll_until_ready(
         self,
@@ -2186,7 +2340,7 @@ class SandboxClient:
         poll_interval: float | None,
         timeout: float,
     ) -> SandboxInfo:
-        """Poll GetSandbox until the sandbox reaches a terminal state."""
+        """Poll GetSandbox for compatibility with servers without the readiness RPC."""
         deadline = time.monotonic() + timeout
         use_default_backoff = poll_interval is None
         if poll_interval is None:
@@ -2216,6 +2370,18 @@ class SandboxClient:
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
         )
+
+    def _wait_until_ready_one(
+        self,
+        sandbox_id: str,
+        *,
+        timeout: float,
+        poll_interval: float | None = None,
+    ) -> SandboxReadinessResult:
+        """Adapt the object-oriented single-sandbox API to the batch RPC."""
+        return self._wait_until_ready_batch(
+            [sandbox_id], timeout=timeout, poll_interval=poll_interval
+        )[0]
 
     def get(self, id: str) -> Sandbox:
         """Get a sandbox handle by ID.
@@ -2401,6 +2567,21 @@ def _handle_rpc_error(e: ConnectRpcError, sandbox_id: str) -> None:
             Code.FAILED_PRECONDITION: (
                 SandboxTerminatedError,
                 f"Sandbox {sandbox_id} has terminated",
+            ),
+        },
+    )
+
+
+def _handle_readiness_rpc_error(
+    error: ConnectRpcError, sandbox_ids: Sequence[str]
+) -> None:
+    subject = sandbox_ids[0] if len(sandbox_ids) == 1 else "batch"
+    raise_for_rpc_error(
+        error,
+        {
+            Code.NOT_FOUND: (
+                SandboxNotFoundError,
+                f"Sandbox {subject} not found",
             ),
         },
     )

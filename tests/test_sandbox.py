@@ -12,7 +12,13 @@ from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
-from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
+from chalkcompute._sandbox import (
+    SandboxClient,
+    SandboxCreationError,
+    SandboxError,
+    SandboxInfo,
+    SandboxNotFoundError,
+)
 from chalkcompute._volume import VolumeMount
 
 
@@ -213,6 +219,20 @@ class _ErrorAfterBuildStub:
             )
         )
 
+    def wait_for_sandbox_readiness(
+        self, request: pb.WaitForSandboxReadinessRequest, **_kwargs: object
+    ):
+        assert list(request.ids) == ["sandbox-123"]
+        return pb.WaitForSandboxReadinessResponse(
+            results=[
+                pb.SandboxReadinessResult(
+                    id="sandbox-123",
+                    status=pb.SandboxStatus.FAILED,
+                    status_message="pod failed readiness probe: connection refused",
+                )
+            ]
+        )
+
 
 class _SucceededDuringCreationStub:
     def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
@@ -224,15 +244,20 @@ class _SucceededDuringCreationStub:
             )
         )
 
-    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
-        assert request.id == "sandbox-123"
-        return pb.GetSandboxResponse(
-            sandbox=pb.SandboxInfo(
-                id="sandbox-123",
-                status=pb.SandboxStatus.SUCCEEDED,
-                created_at=Timestamp(seconds=1),
-                status_message="Exit code 0",
-            )
+    def wait_for_sandbox_readiness(
+        self, request: pb.WaitForSandboxReadinessRequest, **_kwargs: object
+    ):
+        assert list(request.ids) == ["sandbox-123"]
+        assert request.timeout is not None
+        assert request.timeout.seconds == 600
+        return pb.WaitForSandboxReadinessResponse(
+            results=[
+                pb.SandboxReadinessResult(
+                    id="sandbox-123",
+                    status=pb.SandboxStatus.SUCCEEDED,
+                    status_message="Exit code 0",
+                )
+            ]
         )
 
 
@@ -248,6 +273,9 @@ class _ReadinessSequenceStub:
                 created_at=Timestamp(seconds=1),
             )
         )
+
+    def wait_for_sandbox_readiness(self, request, **_kwargs: object):
+        raise ConnectRpcError(Code.UNIMPLEMENTED, "older server")
 
     def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
         assert request.id == "sandbox-123"
@@ -894,8 +922,7 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
     client._stub = _ErrorAfterBuildStub()  # type: ignore[assignment]
     try:
         with pytest.raises(SandboxCreationError) as exc_info:
-            with patch("chalkcompute._sandbox.time.sleep"):
-                client.create("python:3.14-slim", poll_interval=0, timeout=30)
+            client.create("python:3.14-slim", poll_interval=0, timeout=30)
     finally:
         client.close()
 
@@ -912,17 +939,309 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
     assert error.build_id is None
 
 
-def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None:
+def test_sandbox_client_create_accepts_succeeded_during_readiness_wait() -> None:
     client = SandboxClient()
     client._stub = _SucceededDuringCreationStub()  # type: ignore[assignment]
     try:
-        sandbox = client.create("python:3.14-slim", poll_interval=0, timeout=30)
+        sandbox = client.create("python:3.14-slim", poll_interval=0)
     finally:
         client.close()
 
     assert sandbox.info is not None
     assert sandbox.info.status == "succeeded"
-    assert sandbox.info.status_details is None
+
+
+@pytest.mark.parametrize("batch_size", [1, 1000])
+def test_wait_until_ready_sends_one_rpc_and_preserves_order(batch_size: int) -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+
+    def wait(request: pb.WaitForSandboxReadinessRequest, **_kwargs: object):
+        return pb.WaitForSandboxReadinessResponse(
+            results=[
+                pb.SandboxReadinessResult(id=id, status=pb.SandboxStatus.RUNNING)
+                for id in request.ids
+            ]
+        )
+
+    stub.wait_for_sandbox_readiness.side_effect = wait
+    client._stub = stub
+    ids = [f"sandbox-{index}" for index in range(batch_size)]
+    try:
+        outcomes = client.wait_until_ready(ids, timeout=30)
+    finally:
+        client.close()
+
+    assert [outcome.id for outcome in outcomes] == ids
+    assert all(outcome.status == "running" for outcome in outcomes)
+    stub.wait_for_sandbox_readiness.assert_called_once()
+    assert stub.wait_for_sandbox_readiness.call_args.kwargs["timeout_ms"] == 35_000
+
+
+@pytest.mark.parametrize(
+    ("ids", "timeout", "message"),
+    [
+        ([], 30, "at least one sandbox id is required"),
+        ([""], 30, "sandbox ids must not be empty"),
+        (["same", "same"], 30, "sandbox ids must be unique"),
+        ([f"sandbox-{index}" for index in range(1001)], 30, "at most 1000"),
+        (["sandbox"], 0, "timeout must be greater than zero"),
+        (["sandbox"], 601, "timeout must not exceed 600 seconds"),
+    ],
+)
+def test_wait_until_ready_validates_locally(
+    ids: list[str], timeout: float, message: str
+) -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    client._stub = stub
+    try:
+        with pytest.raises(ValueError, match=message):
+            client.wait_until_ready(ids, timeout=timeout)
+    finally:
+        client.close()
+
+    stub.wait_for_sandbox_readiness.assert_not_called()
+
+
+def test_wait_until_ready_unimplemented_falls_back_for_whole_batch() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.wait_for_sandbox_readiness.side_effect = ConnectRpcError(
+        Code.UNIMPLEMENTED, "old server"
+    )
+    responses = {
+        "first": [pb.SandboxStatus.PENDING, pb.SandboxStatus.FAILED],
+        "second": [pb.SandboxStatus.RUNNING],
+    }
+
+    def get_sandbox(request: pb.GetSandboxRequest, **_kwargs: object):
+        status = responses[request.id].pop(0)
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(id=request.id, status=status)
+        )
+
+    stub.get_sandbox.side_effect = get_sandbox
+    client._stub = stub
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            outcomes = client.wait_until_ready(["first", "second"], timeout=30)
+    finally:
+        client.close()
+
+    assert [outcome.id for outcome in outcomes] == ["first", "second"]
+    assert [outcome.status for outcome in outcomes] == ["failed", "running"]
+    assert [call.args[0].id for call in stub.get_sandbox.call_args_list] == [
+        "first",
+        "first",
+        "second",
+    ]
+    sleep.assert_called_once_with(0.5)
+
+
+def test_poll_until_ready_preserves_legacy_contract() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.get_sandbox.side_effect = [
+        pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(id="sandbox", status=pb.SandboxStatus.PENDING)
+        ),
+        pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox",
+                status=pb.SandboxStatus.SUCCEEDED,
+                status_message="completed",
+                status_details="details",
+            )
+        ),
+    ]
+    client._stub = stub
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            info = client._poll_until_ready("sandbox", poll_interval=0.25, timeout=30)
+    finally:
+        client.close()
+
+    assert isinstance(info, SandboxInfo)
+    assert info.id == "sandbox"
+    assert info.status == "succeeded"
+    assert info.status_message == "completed"
+    assert info.status_details == "details"
+    sleep.assert_called_once_with(0.25)
+
+
+def test_wait_until_ready_does_not_cache_unimplemented_capability() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.wait_for_sandbox_readiness.side_effect = ConnectRpcError(
+        Code.UNIMPLEMENTED, "rolling fleet"
+    )
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox", status=pb.SandboxStatus.RUNNING)
+    )
+    client._stub = stub
+    try:
+        client.wait_until_ready(["sandbox"], timeout=30)
+        client.wait_until_ready(["sandbox"], timeout=30)
+    finally:
+        client.close()
+
+    assert stub.wait_for_sandbox_readiness.call_count == 2
+
+
+def test_wait_until_ready_handles_mixed_old_and_new_replicas() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    ready = pb.WaitForSandboxReadinessResponse(
+        results=[
+            pb.SandboxReadinessResult(id="sandbox", status=pb.SandboxStatus.RUNNING)
+        ]
+    )
+    stub.wait_for_sandbox_readiness.side_effect = [
+        ConnectRpcError(Code.UNIMPLEMENTED, "old replica"),
+        ready,
+    ]
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox", status=pb.SandboxStatus.RUNNING)
+    )
+    client._stub = stub
+    try:
+        first = client.wait_until_ready(["sandbox"], timeout=30)
+        second = client.wait_until_ready(["sandbox"], timeout=30)
+    finally:
+        client.close()
+
+    assert first == second
+    assert stub.wait_for_sandbox_readiness.call_count == 2
+    stub.get_sandbox.assert_called_once()
+
+
+def test_create_uses_poll_interval_for_unimplemented_fallback() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.create_sandbox.return_value = pb.CreateSandboxResponse(
+        sandbox=pb.SandboxInfo(
+            id="sandbox",
+            status=pb.SandboxStatus.PENDING,
+            created_at=Timestamp(seconds=1),
+        )
+    )
+    stub.wait_for_sandbox_readiness.side_effect = ConnectRpcError(
+        Code.UNIMPLEMENTED, "old server"
+    )
+    stub.get_sandbox.side_effect = [
+        pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(id="sandbox", status=pb.SandboxStatus.PENDING)
+        ),
+        pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(id="sandbox", status=pb.SandboxStatus.SUCCEEDED)
+        ),
+    ]
+    client._stub = stub
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            sandbox = client.create("python:3.14-slim", poll_interval=0)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "succeeded"
+    sleep.assert_called_once_with(0)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        Code.DEADLINE_EXCEEDED,
+        Code.CANCELED,
+        Code.PERMISSION_DENIED,
+        Code.UNAVAILABLE,
+        Code.INTERNAL,
+        Code.FAILED_PRECONDITION,
+    ],
+)
+def test_wait_until_ready_does_not_fallback_for_other_codes(code: Code) -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.wait_for_sandbox_readiness.side_effect = ConnectRpcError(code, "failure")
+    client._stub = stub
+    try:
+        with pytest.raises(ConnectRpcError) as exc_info:
+            client.wait_until_ready(["sandbox"], timeout=30)
+    finally:
+        client.close()
+
+    assert exc_info.value.code == code
+    stub.get_sandbox.assert_not_called()
+
+
+def test_wait_until_ready_maps_not_found_without_fallback() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.wait_for_sandbox_readiness.side_effect = ConnectRpcError(
+        Code.NOT_FOUND, "missing"
+    )
+    client._stub = stub
+    try:
+        with pytest.raises(SandboxNotFoundError):
+            client.wait_until_ready(["sandbox"], timeout=30)
+    finally:
+        client.close()
+
+    stub.get_sandbox.assert_not_called()
+
+
+def test_wait_until_ready_fallback_uses_original_deadline() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.wait_for_sandbox_readiness.side_effect = ConnectRpcError(
+        Code.UNIMPLEMENTED, "old server"
+    )
+    client._stub = stub
+    try:
+        with (
+            patch(
+                "chalkcompute._sandbox.time.monotonic",
+                side_effect=[100.0, 101.0],
+            ),
+            patch.object(
+                client,
+                "_poll_until_ready",
+                return_value=SandboxInfo(id="sandbox", status="running", created_at=""),
+            ) as poll,
+        ):
+            result = client.wait_until_ready(["sandbox"], timeout=3)
+    finally:
+        client.close()
+
+    assert result[0].status == "running"
+    poll.assert_called_once_with("sandbox", poll_interval=0.5, timeout=2.0)
+
+
+def test_sandbox_wait_until_ready_hides_singleton_batch() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.wait_for_sandbox_readiness.return_value = pb.WaitForSandboxReadinessResponse(
+        results=[
+            pb.SandboxReadinessResult(
+                id="sandbox-123",
+                status=pb.SandboxStatus.RUNNING,
+            )
+        ]
+    )
+    client._stub = stub
+    sandbox = Sandbox(client=client, sandbox_id="sandbox-123")
+    sandbox._info = SandboxInfo(id="sandbox-123", status="pending", created_at="")
+    try:
+        result = sandbox.wait_until_ready(timeout=30)
+    finally:
+        client.close()
+
+    assert result is sandbox
+    assert sandbox.info is not None
+    assert sandbox.info.status == "running"
+    request = stub.wait_for_sandbox_readiness.call_args.args[0]
+    assert list(request.ids) == ["sandbox-123"]
 
 
 class _ProcessStub:
@@ -1242,8 +1561,10 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
     stub.create_sandbox.return_value = pb.CreateSandboxResponse(
         sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.PENDING)
     )
-    stub.get_sandbox.return_value = pb.GetSandboxResponse(
-        sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.RUNNING)
+    stub.wait_for_sandbox_readiness.return_value = pb.WaitForSandboxReadinessResponse(
+        results=[
+            pb.SandboxReadinessResult(id="sandbox-123", status=pb.SandboxStatus.RUNNING)
+        ]
     )
     client._stub = stub
     image = Image.debian_slim().add_local_dir(str(src), "/app")
@@ -1283,11 +1604,12 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
     ]
     assert sandbox.info is not None
     if wait:
-        stub.get_sandbox.assert_called_once()
+        stub.wait_for_sandbox_readiness.assert_called_once()
         assert sandbox.info.status == "running"
     else:
-        stub.get_sandbox.assert_not_called()
+        stub.wait_for_sandbox_readiness.assert_not_called()
         assert sandbox.info.status == "pending"
+    stub.get_sandbox.assert_not_called()
 
 
 @pytest.mark.parametrize("target", [None, "ENVIRONMENT", "SERVERLESS"])
