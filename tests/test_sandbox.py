@@ -180,6 +180,17 @@ class _Stub:
     def __init__(self) -> None:
         self.request: pb.CreateSandboxRequest | None = None
 
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id=request.id,
+                status=pb.SandboxStatus.RUNNING,
+                spec=container_pb.ChalkContainerSpec(
+                    compute_class=container_pb.ComputeClass.HOST,
+                ),
+            )
+        )
+
     def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         self.request = request
         return pb.CreateSandboxResponse(
@@ -814,6 +825,7 @@ def test_sandbox_exec_hands_trace_context_to_the_process(monkeypatch) -> None:
     client = SandboxClient()
     stub = _ProcessStub()
     client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         Sandbox(client=client, sandbox_id="sandbox-123").exec(
             "env", env={"APP": "1", "BAGGAGE": "mine=1"}
@@ -880,6 +892,7 @@ def test_sandbox_exec_without_a_trace_adds_no_env(monkeypatch) -> None:
     client = SandboxClient()
     stub = _ProcessStub()
     client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         Sandbox(client=client, sandbox_id="sandbox-123").exec("env")
     finally:
@@ -1081,6 +1094,7 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     client = SandboxClient()
     stub = _ProcessStub()
     client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo", "hello")
     finally:
@@ -1142,6 +1156,7 @@ class _ReattachProcessStub:
 def test_sandbox_reattach() -> None:
     client = SandboxClient()
     client._process_stub = _ReattachProcessStub()  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
     try:
         with patch("chalkcompute._sandbox.time.sleep"):
             result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo")

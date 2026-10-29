@@ -51,6 +51,7 @@ from chalkcompute._connect import (
     rpc_error_message,
 )
 from chalkcompute._containerspec import (
+    ComputeClass,
     ContainerSpec,
     NetworkPolicy,
     ResourceDetector,
@@ -112,7 +113,6 @@ if TYPE_CHECKING:
 
     from chalkcompute._artifact import Artifact
     from chalkcompute._containerspec import (
-        ComputeClass,
         ContainerSecurityPolicy,
         ExecutionBackend,
         RestartPolicy,
@@ -216,6 +216,9 @@ class SandboxInfo:
 
     status_details: str | None = None
     """Additional diagnostic output for the current lifecycle status."""
+
+    compute_class: ComputeClass | None = None
+    """Backend compute class reported by the sandbox specification."""
 
 
 @dataclass
@@ -1483,7 +1486,8 @@ class Sandbox:
             Optional environment variables to set for the command.
         auto_reattach
             Reattach and replay buffered output after transient transport
-            disconnects. Disable to handle disconnects yourself.
+            disconnects for HOST sandboxes. K8S commands use one-shot execution
+            and cannot be reattached.
 
         Returns
         -------
@@ -1491,7 +1495,33 @@ class Sandbox:
             Result with stdout/stderr and exit code.
         """
         _set_sandbox_span_id(self._id)
-        self._require_started()
+        sandbox_id = self._require_started()
+        validate_env(env)
+        info = self.info
+        if info is not None and info.compute_class == ComputeClass.K8S:
+            client = self._require_client()
+            request = process_pb.ExecCommandRequest(
+                sandbox_id=sandbox_id,
+                command=command,
+                args=list(args),
+                env_vars=_with_trace_env(env),
+            )
+            if workdir is not None:
+                request.workdir = workdir
+            if timeout_secs is not None:
+                request.timeout = Duration(seconds=timeout_secs)
+            try:
+                response = client._process_stub.exec_command(
+                    request, headers=client._headers
+                )
+            except ConnectRpcError as e:
+                _handle_rpc_error(e, sandbox_id)
+                raise
+            return ExecResult(
+                stdout=response.stdout,
+                stderr=response.stderr,
+                exit_code=response.exit_code,
+            )
         process = self.exec_start(
             command,
             *args,
@@ -2325,6 +2355,11 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         if info.created_at is not None
         else "",
         name=info.name or None,
+        compute_class=(
+            ComputeClass.__members__.get(info.spec.compute_class.name)
+            if info.spec is not None and info.spec.compute_class is not None
+            else None
+        ),
         status_message=(
             info.status_message if info.has_field("status_message") else None
         ),
