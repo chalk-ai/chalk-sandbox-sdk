@@ -35,6 +35,7 @@ include = ["chalkcompute/**", "README.md"]
 exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [project.optional-dependencies]
+gateway = ["openai>=3.41.0"]
 sql = ["pyarrow>=14.0.0"]
 workflows = ["chalkpy[workflows]>=2.154.27"]
 dev = [

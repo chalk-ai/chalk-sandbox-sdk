@@ -566,6 +566,35 @@ Changing or removing an existing override changes which function you deploy; it
 does not rename the existing deployment. Function names containing underscores
 and hyphens are distinct, but can collide when converted to scaling-group names.
 
+## Model gateway client
+
+Install `chalkcompute[gateway]` to call the Chalk model gateway with a standard
+OpenAI client, using your existing Chalk credentials:
+
+```python
+import chalkcompute as cc
+
+with cc.openai_client() as client:
+    response = client.chat.completions.create(
+        model="openai/gpt-4.1-mini-2025-04-14",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+```
+
+In a deployed function, use `chalk_identity=True` and include `openai` in its
+image. The client selects `/v1/router` on the authenticated Chalk API server;
+no provider API key or private scorer imports are needed. It refreshes Chalk
+credentials and attaches the current environment, trace, and evaluation session
+on each request, so a reused client does not retain another row's trace.
+
+The returned synchronous client supports OpenAI's normal HTTP request interface
+for endpoints implemented by the gateway, including chat completions. This does
+not imply support for every OpenAI endpoint or Realtime WebSockets. OpenAI's
+timeout and retry defaults are preserved; pass overrides to `cc.openai_client`
+only when needed. Authentication, endpoint, and HTTP transport are managed by
+Chalk, and `OPENAI_API_KEY` / `OPENAI_BASE_URL` are ignored. For a different
+provider or custom transport, construct that provider's client directly.
+
 ## Evaluations
 
 Create a reusable evaluation by pinning a completed dataset revision to a
