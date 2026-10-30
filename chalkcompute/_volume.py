@@ -25,7 +25,7 @@ import uuid
 import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
@@ -143,8 +143,9 @@ class VolumeMount:
     mount_path: str
     version_id: int | None = None
     ref_name: str | None = None
-    type: VolumeMountType = field(default=VolumeMountType.CHALKFS, kw_only=True)
-    size_limit: str | None = field(default=None, kw_only=True)
+    _: KW_ONLY
+    type: VolumeMountType = VolumeMountType.CHALKFS
+    size_limit: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.type, VolumeMountType):
