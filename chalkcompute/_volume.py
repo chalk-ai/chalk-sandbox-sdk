@@ -46,7 +46,6 @@ from chalkcompute._tracing import traced
 logger = logging.getLogger(__name__)
 
 #: Mount type stamped into container/sandbox specs for every Chalk volume.
-MOUNT_TYPE = "versioned_chalkfs"
 
 
 # ---------------------------------------------------------------------------
@@ -2343,11 +2342,10 @@ def pinned_volume_mount(client: VolumeClient, mount: VolumeMount) -> VolumeMount
 def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
     """Return the mount type of an existing volume, or raise if it is absent.
 
-    Every volume mounts as :data:`MOUNT_TYPE`, so this no longer discriminates
-    between backends. Prefer :func:`referenced_volume_mount`.
+    Persistent volumes use ChalkFS. Prefer :func:`referenced_volume_mount`.
     """
     _require_volume_exists(connect, name)
-    return MOUNT_TYPE
+    return VolumeMountType.CHALKFS.value
 
 
 def cleanup_owned_volumes(
