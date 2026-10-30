@@ -8,7 +8,7 @@ import pytest
 from chalkcompute import Container, ComputeClass, ExecutionBackend, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 from chalkcompute._gen.chalk.container.v1 import service_pb as pb
-from chalkcompute._volume import VolumeMount, VolumeMountType
+from chalkcompute._volume import VolumeMount
 
 from ._fakes import FakeConnectClient
 
@@ -205,11 +205,7 @@ def test_run_twice_raises_container_error() -> None:
 def test_stop_then_run_again_is_allowed() -> None:
     """stop() clears _container_id so a subsequent run() must succeed."""
     client = FakeConnectClient()
-    container = Container(
-        image="ubuntu:latest",
-        name="restart-test",
-        volumes=[VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)],
-    )
+    container = Container(image="ubuntu:latest", name="restart-test")
     container._client = client
 
     container.run()
