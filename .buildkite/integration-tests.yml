@@ -43,6 +43,10 @@ steps:
 
       echo "--- :pytest: Run core integration tests ($$CHALK_API_SERVER)"
       uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_sandbox_fs.py e2etests/test_container.py e2etests/test_mcp_eval_python.py -v -s --tb=short
+      if [[ "{{matrix}}" == "staging/ftqa" ]]; then
+        echo "--- :floppy_disk: Run sandbox snapshot integration test"
+        just test-sandbox-snapshots-e2e
+      fi
     agents:
       queue: default
     timeout_in_minutes: 15

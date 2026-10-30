@@ -169,8 +169,9 @@ class Image:
         an equivalent copy without network calls. Authentication, polling,
         and timeout settings only apply when a build or volume lookup is needed.
 
-        Backing volumes persist independently of workers. Keep them while
+        ChalkFS volumes persist independently of workers. Keep them while
         built images remain in use. Pins do not enforce runtime read-only access.
+        Empty-dir mounts are recreated for each worker.
         """
         from chalkcompute._image_build import build_image_snapshot
 
@@ -227,18 +228,23 @@ class Image:
         """
         if not self._built:
             raise ValueError("Call Image.build() before serializing an image")
+        volumes = []
+        for mount in self._volume_mounts:
+            volume: dict[str, str | int | None] = {
+                "name": mount.name,
+                "mount_path": mount.mount_path,
+                "version_id": mount.version_id,
+            }
+            if mount.type.value != "versioned_chalkfs":
+                volume["type"] = mount.type.value
+            if mount.size_limit is not None:
+                volume["size_limit"] = mount.size_limit
+            volumes.append(volume)
         return json.dumps(
             {
                 "schema_version": 1,
                 "image_uri": self._base_image,
-                "volumes": [
-                    {
-                        "name": mount.name,
-                        "mount_path": mount.mount_path,
-                        "version_id": mount.version_id,
-                    }
-                    for mount in self._volume_mounts
-                ],
+                "volumes": volumes,
             },
             sort_keys=True,
         )
@@ -263,7 +269,7 @@ class Image:
             If the JSON value is invalid or does not describe a built image.
         """
         from chalkcompute._image_build import merge_mounts
-        from chalkcompute._volume import VolumeMount
+        from chalkcompute._volume import VolumeMount, VolumeMountType
 
         try:
             data = json.loads(value)
@@ -275,17 +281,34 @@ class Image:
                 raise ValueError("image_uri must be a string")
             if not isinstance(data["volumes"], list):
                 raise ValueError("volumes must be a list")
-            mounts = [VolumeMount(**mount) for mount in data["volumes"]]
-            for mount in mounts:
+            mounts = []
+            for volume in data["volumes"]:
+                if not isinstance(volume, dict):
+                    raise ValueError("Invalid image mount")
+                volume["type"] = VolumeMountType(
+                    volume.get("type", "versioned_chalkfs")
+                )
+                mount = VolumeMount(**volume)
                 if (
                     not isinstance(mount.name, str)
                     or not mount.name
                     or not isinstance(mount.mount_path, str)
-                    or type(mount.version_id) is not int
-                    or mount.version_id < 0
+                    or (
+                        mount.type == VolumeMountType.CHALKFS
+                        and (type(mount.version_id) is not int or mount.version_id < 0)
+                    )
+                    or (
+                        mount.type == VolumeMountType.EMPTY_DIR
+                        and mount.version_id is not None
+                    )
+                    or (
+                        mount.size_limit is not None
+                        and not isinstance(mount.size_limit, str)
+                    )
                     or mount.ref_name is not None
                 ):
                     raise ValueError("Invalid pinned image mount")
+                mounts.append(mount)
             return cls._from_built(data["image_uri"], merge_mounts(mounts))
         except (TypeError, KeyError) as exc:
             raise ValueError("Invalid built image spec") from exc

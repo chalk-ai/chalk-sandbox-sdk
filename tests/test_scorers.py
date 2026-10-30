@@ -7,12 +7,17 @@ import json
 import sys
 import types
 import typing
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pyarrow as pa
 import pytest
+from opentelemetry import baggage, context as context_api, propagate, trace as trace_api
+from opentelemetry.sdk.trace import TracerProvider
 from pydantic import BaseModel, Field, ValidationError
 
-from chalkcompute import scorers
+from chalkcompute import _tracing, scorers
+from chalkcompute._call_context import reset_call_scope, set_call_scope
 from chalkcompute._evaluation import EvaluationScorerResult
 from chalkcompute._function import (
     SCORER_RESPONSE_SCHEMA_METADATA_KEY,
@@ -363,6 +368,115 @@ def test_every_call_lets_the_credential_refresh_itself(chalk_credentials) -> Non
     assert connection.auth_calls == 2
 
 
+@pytest.fixture
+def gateway_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = TracerProvider()
+    monkeypatch.setattr(_tracing, "_initialized", True)
+    monkeypatch.setattr(_tracing, "_provider", provider)
+    monkeypatch.setattr(_tracing, "_tracer", None)
+    monkeypatch.setattr(trace_api, "get_tracer_provider", lambda: provider)
+    monkeypatch.delenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", raising=False)
+
+
+@pytest.mark.parametrize("provider_key", [False, True])
+def test_judge_client_forwards_the_active_row_session_and_trace(
+    chalk_credentials,
+    gateway_tracing: None,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_key: bool,
+) -> None:
+    if provider_key:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://api.chalk.ai/v1/router")
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-123")
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+    token = set_call_scope(
+        {"x-chalk-session-id": "invocation-session"},
+        b'{"__chalk__session_id__": "run:row-1"}',
+    )
+    try:
+        span_context = trace_api.get_current_span().get_span_context()
+        headers = scorers._client_options(spec)["default_headers"]
+    finally:
+        reset_call_scope(token)
+
+    assert headers["X-Chalk-Env-Id"] == "env-123"
+    assert headers["X-Chalk-Agent-Session-Id"] == "run:row-1"
+    remote_context = propagate.extract(headers)
+    assert baggage.get_baggage("session.id", remote_context) == "run:row-1"
+    remote_span = trace_api.get_current_span(remote_context).get_span_context()
+    assert remote_span.trace_id == span_context.trace_id
+    assert remote_span.span_id == span_context.span_id
+
+
+def test_session_header_does_not_require_a_valid_trace(
+    chalk_credentials, gateway_tracing: None
+) -> None:
+    token = context_api.attach(baggage.set_baggage("session.id", "run:row-1"))
+    try:
+        assert not trace_api.get_current_span().get_span_context().is_valid
+        options = scorers._router_client_options()
+    finally:
+        context_api.detach(token)
+
+    assert options["default_headers"] == {
+        "X-Chalk-Env-Id": "env-123",
+        "X-Chalk-Agent-Session-Id": "run:row-1",
+    }
+
+
+def test_router_headers_follow_each_session_without_caching_it(
+    chalk_credentials, gateway_tracing: None
+) -> None:
+    seen: list[dict] = []
+    for session_id in ("run:row-1", "run:row-2"):
+        token = set_call_scope(
+            {}, json.dumps({"__chalk__session_id__": session_id}).encode()
+        )
+        try:
+            seen.append(scorers._router_client_options())
+        finally:
+            reset_call_scope(token)
+
+    outside_session = scorers._router_client_options()
+    assert _FakeConnection.instances == 1
+    assert [options["api_key"] for options in seen] == ["chalk-token-1"] * 2
+    assert [
+        options["default_headers"]["X-Chalk-Agent-Session-Id"] for options in seen
+    ] == [
+        "run:row-1",
+        "run:row-2",
+    ]
+    assert outside_session["default_headers"] == {"X-Chalk-Env-Id": "env-123"}
+
+
+def test_router_sessions_are_isolated_across_concurrent_rows(
+    chalk_credentials, gateway_tracing: None
+) -> None:
+    scorers._router_client_options()
+    ready = Barrier(2)
+
+    def row_headers(session_id: str) -> dict[str, str]:
+        token = set_call_scope(
+            {}, json.dumps({"__chalk__session_id__": session_id}).encode()
+        )
+        try:
+            ready.wait(timeout=5)
+            return scorers._router_client_options()["default_headers"]
+        finally:
+            reset_call_scope(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        headers = list(pool.map(row_headers, ("run:row-1", "run:row-2")))
+
+    for session_id, header in zip(("run:row-1", "run:row-2"), headers):
+        assert header["X-Chalk-Agent-Session-Id"] == session_id
+        remote_context = propagate.extract(header)
+        assert baggage.get_baggage("session.id", remote_context) == session_id
+    assert headers[0]["traceparent"] != headers[1]["traceparent"]
+    assert _FakeConnection.instances == 1
+
+
 def test_a_declared_key_that_did_not_arrive_is_reported(
     chalk_credentials, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -445,8 +559,11 @@ class _FakeCompletions:
 
 def _install_fake_openai(
     monkeypatch: pytest.MonkeyPatch, completions: _FakeCompletions
-):
+) -> list[dict]:
+    clients: list[dict] = []
+
     def fake_client(**options):
+        clients.append(options)
         return types.SimpleNamespace(
             options=options, chat=types.SimpleNamespace(completions=completions)
         )
@@ -455,6 +572,7 @@ def _install_fake_openai(
         sys.modules, "openai", types.SimpleNamespace(OpenAI=fake_client)
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    return clients
 
 
 def test_complete_asks_for_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -481,6 +599,35 @@ def test_complete_asks_for_structured_output(monkeypatch: pytest.MonkeyPatch) ->
             "response_format": Grade,
         }
     ]
+
+
+@pytest.mark.parametrize("parse_fn", [None, json.loads])
+def test_judge_request_uses_its_active_session_not_the_task_trace(
+    chalk_credentials,
+    gateway_tracing: None,
+    monkeypatch: pytest.MonkeyPatch,
+    parse_fn,
+) -> None:
+    completions = _FakeCompletions(parsed=Grade(**REPLY), text=json.dumps(REPLY))
+    clients = _install_fake_openai(monkeypatch, completions)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.chalk.ai/v1/router")
+    judge = _judge(
+        inputs=("output", "trace"),
+        prompt_fn=lambda response_model, output, trace: "grade",
+        parse_fn=parse_fn,
+    )
+    token = set_call_scope({}, b'{"__chalk__session_id__": "rescore:row-1"}')
+    try:
+        expected_traceparent = _tracing.trace_headers()["traceparent"]
+        result = judge._func(output="done", trace=Trace("original-task-session"))
+    finally:
+        reset_call_scope(token)
+
+    assert result.score == 0.5
+    assert len(clients) == 1
+    headers = clients[0]["default_headers"]
+    assert headers["X-Chalk-Agent-Session-Id"] == "rescore:row-1"
+    assert headers["traceparent"] == expected_traceparent
 
 
 def test_completion_kwargs_cannot_override_what_the_judge_sets() -> None:
