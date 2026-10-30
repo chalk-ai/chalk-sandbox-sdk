@@ -45,9 +45,6 @@ from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
 
-#: Mount type stamped into container/sandbox specs for every Chalk volume.
-
-
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
