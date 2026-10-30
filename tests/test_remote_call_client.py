@@ -737,7 +737,7 @@ def _err(exc_type: str, message: str) -> str:
     return json.dumps({"exc_type": exc_type, "message": message})
 
 
-def _poll(status_name, *, chunks=None, error_message=None):
+def _poll(status_name, *, chunks=None, error_message=None, cursor="", poll_count=0):
     status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[
         status_name
     ]
@@ -745,9 +745,9 @@ def _poll(status_name, *, chunks=None, error_message=None):
         status=status,
         status_name=status_name,
         chunks=chunks or [],
-        cursor="",
+        cursor=cursor,
         error_message=error_message,
-        poll_count=0,
+        poll_count=poll_count,
     )
 
 
@@ -758,9 +758,18 @@ def test_deferred_failure_does_not_resubmit(
     async_context, mode, partial_output
 ) -> None:
     FakeRemoteCallClient.poll_results = [
-        _poll("pending"),
-        _poll("running", chunks=[_result_ipc([0])] if partial_output else []),
-        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+        _poll("pending", cursor="c1", poll_count=1),
+        _poll(
+            "running",
+            chunks=[_result_ipc([0])] if partial_output else [],
+            cursor="c2",
+            poll_count=0 if partial_output else 2,
+        ),
+        _poll(
+            "failed",
+            error_message=_err("ProxyError", "CallFunction RPC failed"),
+            cursor="c3",
+        ),
     ]
     fn = _async_remote_function() if async_context else _remote_function()
     handle = fn.defer(98)
@@ -785,16 +794,20 @@ def test_deferred_failure_does_not_resubmit(
 
     assert handle.call_id == original_call_id
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
-    assert FakeRemoteCallClient.instances[0].polls == [(original_call_id, "", 0)] * 3
+    assert FakeRemoteCallClient.instances[0].polls == [
+        (original_call_id, "", 0),
+        (original_call_id, "c1", 1),
+        (original_call_id, "c2", 0 if partial_output else 2),
+    ]
 
 
 @pytest.mark.parametrize("async_context", [False, True])
 @pytest.mark.parametrize("mode", ["get", "stream", "gather"])
 def test_deferred_result_collection_polls_until_completed(async_context, mode) -> None:
     FakeRemoteCallClient.poll_results = [
-        _poll("pending"),
-        _poll("running", chunks=[_result_ipc([0])]),
-        _poll("completed", chunks=[_result_ipc([1])]),
+        _poll("pending", cursor="c1", poll_count=1),
+        _poll("running", chunks=[_result_ipc([0])], cursor="c2"),
+        _poll("completed", chunks=[_result_ipc([1])], cursor="c3"),
     ]
     fn = _async_remote_function() if async_context else _remote_function()
     handle = fn.defer(98)
@@ -821,7 +834,11 @@ def test_deferred_result_collection_polls_until_completed(async_context, mode) -
     assert result == expected[mode]
     assert handle.call_id == "call-1"
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
-    assert FakeRemoteCallClient.instances[0].polls == [("call-1", "", 0)] * 3
+    assert FakeRemoteCallClient.instances[0].polls == [
+        ("call-1", "", 0),
+        ("call-1", "c1", 1),
+        ("call-1", "c2", 0),
+    ]
 
 
 def test_deferred_get_raises_user_error() -> None:
