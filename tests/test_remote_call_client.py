@@ -890,8 +890,7 @@ def test_deferred_collection_preserves_deadline_order(
 
 
 def test_deferred_get_raises_user_error() -> None:
-    # The in-pod runtime wraps a user handler exception as RuntimeError; its
-    # message mentions the original error but the exc_type is not infra.
+    # Preserve the original user error reported by the runtime's RuntimeError wrapper.
     FakeRemoteCallClient.poll_results = [
         _poll(
             "failed",
@@ -907,7 +906,7 @@ def test_deferred_get_raises_user_error() -> None:
 
     with pytest.raises(FunctionError, match="bad input"):
         handle.get(timeout=60)
-    # Non-transient error: enqueued once, never resubmitted.
+    # Result retrieval propagates the failure without submitting another call.
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
