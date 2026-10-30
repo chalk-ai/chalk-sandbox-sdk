@@ -2147,10 +2147,6 @@ class RemoteFunction:
     ...         Image.debian_slim()
     ...         .pip_install(["numpy"])
     ...     ),
-    ...     cpu="1",
-    ...     memory="2Gi",
-    ...     min_replicas=1,
-    ...     max_replicas=4,
     ... )
     ... def embed(text: str) -> list[float]:
     ...     import numpy as np
@@ -2161,15 +2157,10 @@ class RemoteFunction:
     Imperative form, for constructing a ``RemoteFunction`` from an existing
     callable:
 
-    >>> from chalkcompute import RemoteFunction, Image
+    >>> from chalkcompute import RemoteFunction
     >>> def square(x: int) -> int:
     ...     return x * x
-    >>> fn = RemoteFunction(
-    ...     square,
-    ...     image=Image.debian_slim(),
-    ...     min_replicas=1,
-    ...     max_replicas=2,
-    ... )
+    >>> fn = RemoteFunction(square)
     >>> fn.deploy()
     >>> fn.remote(7)
     49
@@ -4268,6 +4259,13 @@ def function(
     The registered name defaults to the Python function's name, including
     underscores, and can be used with ``RemoteFunction.from_name(...)``.
 
+    Add optional configuration only for a concrete workload requirement.
+    Ordinary functions, evaluation tasks, and scorers should omit
+    ``min_replicas``, ``max_replicas``, and ``concurrency``: defaults are one
+    replica and no explicit concurrency policy. Multiple evaluation rows do
+    not require overriding them. Document why any tuning override is needed;
+    do not copy unrelated examples' settings or explicitly repeat defaults.
+
     **Locally**, decoration validates the function, starts deployment in a
     background worker, and returns. The worker:
 
@@ -4311,8 +4309,11 @@ def function(
         Optional registered-name override. Omit this in normal usage to use
         the function's ``__name__``. Set it only when a different registered
         name is intentional, such as preserving an existing deployment's name
-        after renaming the Python function. Changing or removing an override
-        changes the target function; it does not rename an existing deployment.
+        after renaming the Python function. For a new task or scorer, choose
+        a descriptive Python name instead of adding a prefix or replacing
+        underscores with hyphens via this option. Changing or removing an
+        override changes the target function; it does not rename an existing
+        deployment.
     env
         Environment variables as strings or single-value Secret references.
         The mapping key sets the injected name, overriding aliases and prefixes.
@@ -4323,9 +4324,11 @@ def function(
         ``(name_or_volume, mount_path)`` tuples for persistent storage.
         Volume handles preserve their selected ref or pinned version.
     min_replicas
-        Minimum number of replicas.
+        Minimum number of replicas. Defaults to 1; normally omit. Set to 0
+        only when deliberately choosing scale-to-zero behavior.
     max_replicas
-        Maximum number of replicas.
+        Maximum number of replicas. Defaults to 1; normally omit. Increase
+        only when the workload needs additional replica capacity.
     shutdown_delay_seconds
         Graceful termination period in seconds before replicas are forcibly
         killed during scale-down. Defaults to 30s on the server.
@@ -4371,7 +4374,9 @@ def function(
         one bucket — used when a downstream service imposes a throughput
         limit across callers.
     concurrency
-        Concurrency policy: cap on in-flight handler invocations. Pass an
+        Optional cap on in-flight handler invocations. Defaults to ``None``
+        (no explicit policy); normally omit. It does not enable parallel
+        execution. Set only for a known in-flight limit. Pass an
         ``int`` for a simple ``max_concurrent`` cap with a per-function key,
         or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
         (``max_concurrent``, ``key``). Multiple functions sharing the same
