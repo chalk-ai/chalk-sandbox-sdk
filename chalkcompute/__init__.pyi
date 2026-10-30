@@ -164,6 +164,7 @@ from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeMount as VolumeMount
+from chalkcompute._volume import VolumeMountType as VolumeMountType
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
@@ -332,6 +333,7 @@ __all__ = [
     "VolumeFileNotFoundError",
     "VolumeInfo",
     "VolumeMount",
+    "VolumeMountType",
     "VolumeNotFoundError",
     "VersionInfo",
     "resolve_referenced_volume_type",
