@@ -1,0 +1,1 @@
+`OIDCTokenFile(audience=..., claims={...})` adds claims to that audience's tokens as `chalk.ai.user_provided/<key>`, so external IAM can scope access to the role a sandbox was launched for. Sandbox creation fails, and the sandbox is terminated, if the server drops the claims.

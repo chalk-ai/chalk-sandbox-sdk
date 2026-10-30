@@ -431,3 +431,111 @@ def test_sandbox_without_token_files_is_unaffected_by_the_server_check() -> None
     sandbox = _create(stub, chalk_identity=SANDBOX_IDENTITY)
     assert sandbox.id == "sandbox-old"
     assert stub.terminated == []
+
+
+# --- claims ---------------------------------------------------------------
+
+PROFILE = {"profile": "bq-orders-reader"}
+GCP = OIDCTokenFile(audience="gcp.example.com", claims=PROFILE)
+
+
+def test_token_file_claims_are_copied_and_compared() -> None:
+    source = dict(PROFILE)
+    file = OIDCTokenFile(audience="gcp.example.com", claims=source)
+    source["profile"] = "changed"
+    assert file.claims == PROFILE
+    assert file == GCP
+    assert file != OIDCTokenFile(audience="gcp.example.com")
+    assert SNOWFLAKE.claims == {}
+    hash(file)
+
+
+@pytest.mark.parametrize(
+    ("claims", "error", "match"),
+    [
+        ({"okta/groups": "x"}, ValueError, "claim key"),
+        ({"": "x"}, ValueError, "claim key"),
+        ({"k" * 65: "x"}, ValueError, "claim key"),
+        ({"profile": ""}, ValueError, "must not be empty"),
+        ({"profile": "v" * 257}, ValueError, "exceeds 256 bytes"),
+        ({"profile": 3}, TypeError, "str to str"),
+        ({f"claim_{i}": "x" for i in range(17)}, ValueError, "at most 16"),
+        (["profile"], TypeError, "mapping"),
+    ],
+)
+def test_token_file_rejects_invalid_claims(
+    claims: Any, error: type[Exception], match: str
+) -> None:
+    with pytest.raises(error, match=match):
+        OIDCTokenFile(audience="gcp.example.com", claims=claims)
+
+
+def test_token_file_accepts_claims_at_the_limits() -> None:
+    claims = {f"claim_{i}": "x" for i in range(15)} | {"a.b-c_D9": "v" * 256}
+    assert OIDCTokenFile(audience="a", claims=claims).claims == claims
+
+
+def test_sandbox_sends_claims_on_their_token_file_only() -> None:
+    stub = _EchoStub()
+    _create(
+        stub,
+        chalk_identity=SANDBOX_IDENTITY,
+        env={"GCP_TOKEN": GCP, "SNOWFLAKE_TOKEN": SNOWFLAKE},
+    )
+    files = {f.env_var: f for f in _requested_identity(stub).oidc_token_files}
+    assert dict(files["GCP_TOKEN"].claims) == PROFILE
+    assert dict(files["SNOWFLAKE_TOKEN"].claims) == {}
+
+
+def test_sandbox_to_dict_declares_claims() -> None:
+    spec = ContainerSpec(
+        image="python:3.14-slim",
+        chalk_identity=SANDBOX_IDENTITY,
+        oidc_token_files={"GCP_TOKEN": GCP, "SNOWFLAKE_TOKEN": SNOWFLAKE},
+        allow_sandbox_identity=True,
+    )
+    assert spec.to_dict()["chalkWorkloadIdentity"]["oidcTokenFiles"] == [
+        {"audience": "gcp.example.com", "envVar": "GCP_TOKEN", "claims": PROFILE},
+        {"audience": "snowflakecomputing.com", "envVar": "SNOWFLAKE_TOKEN"},
+    ]
+
+
+def test_sandbox_rejects_different_claims_for_one_audience() -> None:
+    with pytest.raises(ValueError, match="different claims"):
+        _create(
+            _EchoStub(),
+            chalk_identity=SANDBOX_IDENTITY,
+            env={"A": GCP, "B": OIDCTokenFile(audience="gcp.example.com")},
+        )
+
+
+def test_sandbox_allows_matching_claims_for_one_audience() -> None:
+    sandbox = _create(
+        _EchoStub(), chalk_identity=SANDBOX_IDENTITY, env={"A": GCP, "B": GCP}
+    )
+    assert sandbox.id == "sandbox-123"
+
+
+class _NoClaimsServerStub(_EchoStub):
+    """Behaves like a server with OIDC token files but without claims."""
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **kwargs: object):
+        for file in request.source.value.chalk_workload_identity.oidc_token_files:
+            file.claims.clear()
+        return super().create_sandbox(request, **kwargs)
+
+
+def test_sandbox_create_fails_and_cleans_up_when_server_drops_claims() -> None:
+    stub = _NoClaimsServerStub()
+    with pytest.raises(
+        SandboxCreationError, match="does not support OIDCTokenFile claims"
+    ):
+        _create(stub, chalk_identity=SANDBOX_IDENTITY, env={"GCP_TOKEN": GCP})
+    assert stub.terminated == ["sandbox-123"]
+
+
+def test_server_without_claims_still_serves_files_that_declare_none() -> None:
+    sandbox = _create(
+        _NoClaimsServerStub(), chalk_identity=SANDBOX_IDENTITY, env={"T": SNOWFLAKE}
+    )
+    assert sandbox.id == "sandbox-123"

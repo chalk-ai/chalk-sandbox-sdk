@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 IdentityModeName = Literal["creator", "sandbox"]
 _IDENTITY_MODES: tuple[IdentityModeName, ...] = ("creator", "sandbox")
+
+# Same limits as the server.
+_MAX_CLAIMS = 16
+_MAX_CLAIM_VALUE_BYTES = 256
+_CLAIM_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,10 @@ class OIDCTokenFile:
     audience
         Audience claim of the token, as expected by the service that verifies
         it, for example ``"snowflakecomputing.com"``.
+    claims
+        Added to this audience's tokens as ``chalk.ai.user_provided/<key>`` and
+        fixed at creation. At most 16; keys are 1-64 letters, digits, ``_``,
+        ``.`` or ``-``; values are 1-256 bytes.
 
     Examples
     --------
@@ -51,10 +61,35 @@ class OIDCTokenFile:
     """
 
     audience: str
+    # Dicts are unhashable.
+    claims: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.audience, str) or not self.audience.strip():
             raise ValueError("OIDCTokenFile audience must be a non-empty string")
+        if not isinstance(self.claims, Mapping):
+            raise TypeError("OIDCTokenFile claims must be a mapping of str to str")
+        object.__setattr__(self, "claims", dict(self.claims))
+        if len(self.claims) > _MAX_CLAIMS:
+            raise ValueError(
+                f"at most {_MAX_CLAIMS} OIDCTokenFile claims may be set, "
+                f"got {len(self.claims)}"
+            )
+        for key, value in self.claims.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("OIDCTokenFile claims must be a mapping of str to str")
+            if not _CLAIM_KEY_RE.match(key):
+                raise ValueError(
+                    f"OIDCTokenFile claim key {key!r} must be 1-64 letters, "
+                    "digits, '_', '.' or '-'"
+                )
+            if not value:
+                raise ValueError(f"OIDCTokenFile claim {key!r} must not be empty")
+            if len(value.encode()) > _MAX_CLAIM_VALUE_BYTES:
+                raise ValueError(
+                    f"OIDCTokenFile claim {key!r} exceeds "
+                    f"{_MAX_CLAIM_VALUE_BYTES} bytes"
+                )
 
 
 @dataclass(frozen=True)

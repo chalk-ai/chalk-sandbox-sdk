@@ -2047,11 +2047,22 @@ _SandboxSnapshotList = list[SandboxSnapshot]
 _StrList = list[str]
 
 
-def _echoes_oidc_token_files(sandbox_info: Any, expected: int) -> bool:
-    """Whether the server's view of the sandbox includes the declared token files."""
+def _missing_token_file_feature(
+    sandbox_info: Any, files: Mapping[str, OIDCTokenFile]
+) -> str | None:
+    """The token file feature missing from the spec the server echoed, if any."""
     spec = getattr(sandbox_info, "spec", None)
     identity = None if spec is None else spec.chalk_workload_identity
-    return identity is not None and len(identity.oidc_token_files) >= expected
+    echoed = (
+        {} if identity is None else {f.env_var: f for f in identity.oidc_token_files}
+    )
+    if any(env_var not in echoed for env_var in files):
+        return "OIDCTokenFile"
+    if any(
+        dict(echoed[env_var].claims) != file.claims for env_var, file in files.items()
+    ):
+        return "OIDCTokenFile claims"
+    return None
 
 
 class SandboxClient:
@@ -2400,11 +2411,9 @@ class SandboxClient:
         # usable handle (e.g. to call .terminate()) instead of an orphaned sandbox.
         sandbox._id = resp.sandbox.id
         _set_sandbox_span_id(resp.sandbox.id)
-        if sandbox._oidc_token_files and not _echoes_oidc_token_files(
-            resp.sandbox, len(sandbox._oidc_token_files)
-        ):
-            # A server that predates OIDC token files drops the field and starts a
-            # sandbox whose env var points nowhere. Fail loudly instead.
+        missing = _missing_token_file_feature(resp.sandbox, sandbox._oidc_token_files)
+        if missing is not None:
+            # Older servers drop these fields; fail rather than run without them.
             try:
                 self._stub.terminate_sandbox(
                     pb.TerminateSandboxRequest(id=resp.sandbox.id),
@@ -2425,9 +2434,9 @@ class SandboxClient:
             sandbox._id = None
             sandbox._info = None
             raise SandboxCreationError(
-                "The Chalk server does not support OIDCTokenFile; the sandbox was "
-                "terminated. Upgrade the Chalk deployment or remove the OIDCTokenFile "
-                "values from env."
+                f"The Chalk server does not support {missing}; the "
+                "sandbox was terminated. Upgrade the Chalk deployment or remove them "
+                "from the sandbox."
             )
         info = _pb_to_sandbox_info(resp.sandbox)
 
