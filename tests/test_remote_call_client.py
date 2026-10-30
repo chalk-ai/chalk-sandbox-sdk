@@ -24,6 +24,7 @@ from chalkcompute._remote_call_client import (
     RemoteCallPollResult,
     RemoteCallClientUnavailable,
     RemoteCallTransportError,
+    RemoteCallUnavailableError,
     ServiceAuthContext,
 )
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -953,40 +954,73 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert client.purges == ["catalog-add"]
 
 
-@pytest.mark.parametrize("failure_kind", ["result", "exception"])
-def test_poll_refreshes_stale_queue_client_and_retries(failure_kind) -> None:
+@pytest.mark.parametrize(
+    "message",
+    [
+        "transport error: connection reset",
+        'gRPC status: status: Unavailable, message: "GOAWAY"',
+        _err("ProxyError", "transport error: connection reset"),
+    ],
+)
+def test_deferred_get_preserves_terminal_transport_error(message) -> None:
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=message),
+        _poll("completed", chunks=[_result_ipc([99])]),
+    ]
+    handle = _remote_function().defer(98)
+
+    with pytest.raises(FunctionError) as exc_info:
+        handle.get()
+
+    assert str(exc_info.value) == message
+    assert handle.call_id == "call-1"
+    assert len(FakeRemoteCallClient.instances) == 1
+    client = FakeRemoteCallClient.instances[0]
+    assert client.polls == [("call-1", "", 0)]
+    assert len(client.enqueues) == 1
+    assert not client.closed
+    assert len(FakeRemoteCallClient.poll_results) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RemoteCallTransportError("disconnected"),
+        RemoteCallUnavailableError("gRPC status: unavailable"),
+    ],
+    ids=["transport", "unavailable"],
+)
+def test_poll_refreshes_stale_queue_client_and_retries(error) -> None:
     FakeRemoteCallClient.poll_results = [
         RemoteCallPollResult(
-            status=4,
-            status_name="failed",
+            status=2,
+            status_name="running",
             chunks=[],
-            cursor="",
-            error_message='gRPC status: status: Unavailable, message: "GOAWAY"',
-            poll_count=0,
+            cursor="c1",
+            error_message=None,
+            poll_count=2,
         ),
         RemoteCallPollResult(
             status=3,
             status_name="completed",
             chunks=[_result_ipc([99])],
-            cursor="",
+            cursor="c2",
             error_message=None,
             poll_count=0,
         ),
     ]
 
-    if failure_kind == "exception":
-        FakeRemoteCallClient.poll_results.pop(0)
-        FakeRemoteCallClient.poll_errors = [RemoteCallTransportError("disconnected")]
-
     fn = _remote_function()
     handle = fn.defer(98)
+    assert handle.poll().cursor == "c1"
+    FakeRemoteCallClient.poll_errors = [error]
 
     assert handle.get() == 99
 
     assert handle.call_id == "call-1"
     assert [client.polls for client in FakeRemoteCallClient.instances] == [
-        [("call-1", "", 0)],
-        [("call-1", "", 0)],
+        [("call-1", "", 0), ("call-1", "c1", 2)],
+        [("call-1", "c1", 2)],
     ]
     assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
     assert len(FakeRemoteCallClient.instances) == 2

@@ -6,3 +6,7 @@ results still retry against the same call ID. Execution retries remain governed
 by the server-side invocation or queue policy, including `function(retries=...)`.
 This prevents result retrieval from initiating another execution; it does not
 guarantee exactly-once execution.
+
+Returned deferred-call failures now retain their original error message even
+when it resembles a transport error; only raised polling errors can trigger a
+connection refresh.

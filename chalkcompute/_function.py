@@ -3789,19 +3789,15 @@ class RemoteFunction:
     ) -> Any:
         """Poll a deferred call once."""
         self._wait_for_background_deploy()
+        # Returned errors describe the call, not this polling connection.
+        # Only raised polling errors may trigger a transport refresh.
         return self._with_remote_call_transport(
             queue=True,
             operation="poll",
             retry_stale=True,
-            stale_result=lambda result: _is_stale_remote_call_error_message(
-                result.error_message
-            ),
             timeout=self._call_timeout,
             call=lambda: self._using_remote_call_client(
                 queue=True,
-                stale_result=lambda result: _is_stale_remote_call_error_message(
-                    result.error_message
-                ),
                 call=lambda client: client.poll_next(call_id, cursor, poll_count),
             ),
         )
