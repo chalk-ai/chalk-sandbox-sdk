@@ -1,14 +1,8 @@
 name: Build and publish Python wheels
 
+# No pull_request trigger: builds need CHALK_PRIVATE_READ_TOKEN. Validate
+# workflow changes with a workflow_dispatch run (skip_publish defaults to true).
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/release.yml"
-      - "scripts/verify_release_wheel.py"
-      - "tests/test_verify_release_wheel.py"
-      - "pyproject.toml"
-      - "rust/**"
-      - "chalkcompute/**"
   release:
     types:
       - "published"
@@ -42,12 +36,6 @@ jobs:
   build-linux:
     name: "Build ${{ matrix.platform.name }} wheel (py${{ matrix.python_version }})"
     needs: [test-release-tools]
-    # Private Rust dependencies need a read token. Never expose it to fork PRs
-    # or untrusted authors, and never use pull_request_target to run PR code.
-    if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association))
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     strategy:
@@ -158,10 +146,6 @@ jobs:
   build-native:
     name: "Build ${{ matrix.platform.name }} wheel (py${{ matrix.python_version }})"
     needs: [test-release-tools]
-    if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association))
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     strategy:
@@ -412,7 +396,7 @@ jobs:
   notify:
     name: "Notify #proj-compute"
     needs: [build-linux, build-native, verify-built-wheels, publish]
-    # Build-only dispatches and PRs never publish, dispatch docs, or send Slack.
+    # Build-only dispatches never publish, dispatch docs, or send Slack.
     if: always() && github.event_name == 'release'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
