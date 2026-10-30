@@ -3046,6 +3046,17 @@ class RemoteFunction:
                     require_ready_replicas=self._min_replicas > 0,
                 )
 
+            dashboard_url = self._client.function_dashboard_url(
+                self._version_info.function_name
+            )
+            if dashboard_url:
+                progress_add(
+                    f"dashboard:{registered_name}",
+                    "function",
+                    f"Dashboard: {dashboard_url}",
+                    parent=fkey,
+                    status="done",
+                )
             progress_done(fkey, detail="ready")
             logger.info("Function ready: %s", registered_name)
         except BaseException:
