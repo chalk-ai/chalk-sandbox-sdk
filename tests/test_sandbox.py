@@ -13,7 +13,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
-from chalkcompute._volume import VolumeMount
+from chalkcompute._volume import VolumeMount, VolumeMountType
 
 
 @pytest.mark.parametrize("next_cursor", [None, ""])
@@ -988,12 +988,21 @@ def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
     # second, differently-authenticated one through _require_client().
     fake_client = SandboxClient()
     fake_client._stub = _PermissionDeniedOnGetStub()  # type: ignore[assignment]
-    sandbox = Sandbox(image="ubuntu:latest")
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)],
+    )
 
     try:
-        with patch.object(
-            SandboxClient, "from_env", return_value=fake_client
-        ) as from_env:
+        with (
+            patch.object(
+                SandboxClient, "from_env", return_value=fake_client
+            ) as from_env,
+            patch(
+                "chalkcompute._sandbox.VolumeClient.from_connect",
+                side_effect=AssertionError("empty_dir must not use the volume client"),
+            ),
+        ):
             with pytest.raises(SandboxError, match="still running"):
                 with patch("chalkcompute._sandbox.time.sleep"):
                     sandbox.run(poll_interval=0, timeout=30)

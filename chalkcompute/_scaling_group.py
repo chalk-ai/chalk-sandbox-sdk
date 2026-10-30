@@ -1167,7 +1167,9 @@ class ScalingGroup:
                 if container_spec is None:
                     continue
                 for volume in container_spec.volumes:
-                    if volume.name.startswith(f"{_OWNED_VOLUME_PREFIX}-"):
+                    if volume.type != "empty_dir" and volume.name.startswith(
+                        f"{_OWNED_VOLUME_PREFIX}-"
+                    ):
                         result[volume.name] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,

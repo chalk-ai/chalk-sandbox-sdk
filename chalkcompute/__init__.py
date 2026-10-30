@@ -221,6 +221,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
     "VolumeMount": ("chalkcompute._volume", "VolumeMount"),
+    "VolumeMountType": ("chalkcompute._volume", "VolumeMountType"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
     # Imported by chalkpy's model-deploy path; every volume mounts as
     # MOUNT_TYPE, so this only validates existence now.
