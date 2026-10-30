@@ -19,7 +19,8 @@ from chalkcompute._scaling_group import ScalingGroup
 
 
 @pytest.mark.parametrize("inspection_fails", [False, True])
-def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails):
+@pytest.mark.parametrize("volume_type", ["", VolumeMountType.CHALKFS.value])
+def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails, volume_type):
     current = VolumeMount("chalkcompute-sg-files-current", "/app", 7)
     historical = "chalkcompute-sg-files-old"
     revisions = sg_pb.ListScalingGroupRevisionsResponse(
@@ -29,7 +30,10 @@ def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails):
                     container_spec=container_pb.ChalkContainerSpec(
                         volumes=[
                             container_pb.VolumeMount(
-                                name=historical, mount_path="/app", version_id=7
+                                name=historical,
+                                mount_path="/app",
+                                version_id=7,
+                                type=volume_type,
                             ),
                             container_pb.VolumeMount(
                                 name="user-data", mount_path="/data"
@@ -38,6 +42,11 @@ def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails):
                                 name="chalkcompute-sg-files-scratch",
                                 mount_path="/tmp",
                                 type="empty_dir",
+                            ),
+                            container_pb.VolumeMount(
+                                name="chalkcompute-sg-files-other",
+                                mount_path="/other",
+                                type="unknown",
                             ),
                         ]
                     )
