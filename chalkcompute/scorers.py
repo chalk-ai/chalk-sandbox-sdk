@@ -88,6 +88,9 @@ def llm_judge(
     api_key: Secret | None = None,
     completion_kwargs: Mapping[str, Any] | None = None,
     image: Image | None = None,
+    # Frames above this call to the module the scorer is declared in. A prebuilt
+    # judge wrapping this one passes 3, so the deploy ships its caller's file.
+    _frame_depth: int = 2,
     **function_kwargs: Any,
 ) -> RemoteFunction | _NoOpFunction:
     """Deploy an LLM judge described by a pydantic model.
@@ -155,6 +158,7 @@ def llm_judge(
         },
         extra_globals={"__chalk_spec__": spec},
         prefix="_chalk_llm_judge_",
+        frame_depth=_frame_depth,
     )
 
 
@@ -256,7 +260,11 @@ def _is_pydantic_model(cls: Any) -> bool:
 
 def _field_names(cls: Any) -> Any:
     fields = getattr(cls, "model_fields", None)
-    return (fields if fields is not None else cls.__fields__).keys()
+    if fields is None:
+        return cls.__fields__.keys()
+    # A computed score counts: the model is asked for its inputs and derives the
+    # score itself, which is how a judge grades on a letter rather than a float.
+    return {**fields, **getattr(cls, "model_computed_fields", {})}.keys()
 
 
 def _json_schema(cls: Any, *, serialization: bool = False) -> dict[str, Any]:
@@ -323,7 +331,10 @@ def _serialized_name(response_model: Any, field: str) -> str:
     fields = getattr(response_model, "model_fields", None)
     if fields is None:
         return response_model.__fields__[field].alias
-    info = fields[field]
+    info = fields.get(field)
+    if info is None:
+        # Computed, so it serializes under its own name.
+        return field
     return info.serialization_alias or info.alias or field
 
 
@@ -1352,3 +1363,7 @@ def embedding_similarity(
         secrets=secrets,
         extra_globals={"__chalk_spec__": spec},
     )
+
+
+# At the bottom so the judges can import `llm_judge` from this module.
+from chalkcompute._judges import factuality as factuality  # noqa: E402
