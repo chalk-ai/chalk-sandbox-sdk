@@ -158,6 +158,8 @@ _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
 _FNQ_STREAMS_SUPPORTED_ENV_VAR = "CHALK_FNQ_STREAMS_SUPPORTED"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _DEFAULT_CALL_TIMEOUT: float | None = 60.0
+_NO_REPLICA_INITIAL_BACKOFF_SECONDS = 0.25
+_NO_REPLICA_MAX_BACKOFF_SECONDS = 5.0
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
 # mapping by the handler shim and published through a context variable instead, so a
@@ -1038,6 +1040,28 @@ def _is_stale_remote_call_error(error: BaseException) -> bool:
         except Exception:
             pass
     return _is_stale_remote_call_error_message(_remote_call_error_message(error))
+
+
+def _is_no_replica_error(error: BaseException) -> bool:
+    """Whether the gateway rejected the call before any replica received it."""
+    from chalkcompute._remote_call_client import RemoteCallUnavailableError
+
+    if not isinstance(error, RemoteCallUnavailableError) and not (
+        isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE
+    ):
+        return False
+    message = str(error).lower()
+    if "no healthy upstream" in message or "scaling up from zero" in message:
+        return True
+    # Other reset reasons, such as "connection termination", can follow dispatch.
+    return "upstream connect error" in message and any(
+        reason in message
+        for reason in ("connection failure", "connection timeout", "overflow")
+    )
+
+
+def _remaining_seconds(deadline: float | None) -> float | None:
+    return None if deadline is None else max(0.0, deadline - time.monotonic())
 
 
 def _should_retry_stale_remote_call(
@@ -3319,8 +3343,10 @@ class RemoteFunction:
         retry_stale: bool | Callable[[BaseException], bool] = False,
         stale_result: Callable[[_RemoteCallResult], bool] | None = None,
         timeout: float | None = None,
+        deadline: float | None = None,
     ) -> _RemoteCallResult:
-        deadline = None if timeout is None else time.monotonic() + timeout
+        if deadline is None and timeout is not None:
+            deadline = time.monotonic() + timeout
         for attempt in range(2):
             try:
                 result = self._call_with_deadline(
@@ -3356,6 +3382,33 @@ class RemoteFunction:
         raise FunctionError(
             f"Remote call {operation} failed after refreshing stale client"
         )
+
+    def _retry_while_no_replica(
+        self, call: Callable[[float | None], _RemoteCallResult]
+    ) -> _RemoteCallResult:
+        """Resend ``call(deadline)`` while no replica is ready, until ``call_timeout``."""
+        timeout = self._call_timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
+        delay = _NO_REPLICA_INITIAL_BACKOFF_SECONDS
+        while True:
+            try:
+                return call(deadline)
+            except Exception as exc:
+                if not _is_no_replica_error(exc):
+                    raise
+                remaining = _remaining_seconds(deadline)
+                # Another attempt would start with no time left and fail as a
+                # timeout, hiding that no replica ever accepted the call.
+                if remaining is not None and remaining <= delay:
+                    time.sleep(remaining)
+                    raise
+            logger.debug(
+                "Function %r has no ready replica; retrying in %.2fs",
+                self._queue_function_name(),
+                delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, _NO_REPLICA_MAX_BACKOFF_SECONDS)
 
     def _create_call_stub(self) -> Any:
         """Create the Python gRPC fallback when the native client is unavailable."""
@@ -3480,16 +3533,18 @@ class RemoteFunction:
         feather_bytes: bytes,
         function_name: str,
         metadata: list[tuple[str, str]],
+        deadline: float | None,
     ) -> list[bytes]:
         def call(client: Any) -> list[bytes]:
             policy = self._effective_retry_policy()
+            timeout = _remaining_seconds(deadline)
             if callable(getattr(client, "call_ipc", None)):
                 return client.call_ipc(
                     function_name,
                     feather_bytes,
                     metadata=metadata,
                     retry_policy=policy.to_dict(),
-                    timeout=self._call_timeout,
+                    timeout=timeout,
                 )
             if policy.max_retries:
                 raise FunctionError(
@@ -3499,9 +3554,7 @@ class RemoteFunction:
                 *self._remote_call_metadata(),
                 *metadata,
             ]
-            timeout_ms = (
-                None if self._call_timeout is None else int(self._call_timeout * 1000)
-            )
+            timeout_ms = None if timeout is None else int(timeout * 1000)
             return self._call_direct_chunks_python_grpc(
                 feather_bytes,
                 function_name,
@@ -3517,14 +3570,17 @@ class RemoteFunction:
         metadata = self._per_call_metadata()
         # Only the native engine owns retries once dispatch begins. An ambiguous
         # transport failure must not reset the configured invocation budget.
-        return self._with_remote_call_transport(
-            queue=False,
-            operation="direct call",
-            retry_stale=False,
-            timeout=self._call_timeout,
-            call=lambda: self._call_direct_chunks_once(
-                feather_bytes, function_name, metadata
-            ),
+        return self._retry_while_no_replica(
+            lambda deadline: self._with_remote_call_transport(
+                queue=False,
+                operation="direct call",
+                retry_stale=False,
+                timeout=self._call_timeout,
+                deadline=deadline,
+                call=lambda: self._call_direct_chunks_once(
+                    feather_bytes, function_name, metadata, deadline
+                ),
+            )
         )
 
     def _queue_function_name(self) -> str:
@@ -3626,18 +3682,21 @@ class RemoteFunction:
             raise FunctionError("Metadata API endpoint is unavailable")
         if client is not None:
             try:
-                chunks = self._with_remote_call_transport(
-                    queue=False,
-                    operation="API call",
-                    timeout=self._call_timeout,
-                    call=lambda: client.call_external_ipc(
-                        version_info.function_name,
-                        version_info.version or None,
-                        feather_bytes,
-                        metadata=self._per_call_metadata(),
-                        retry_policy=policy.to_dict(),
+                chunks = self._retry_while_no_replica(
+                    lambda deadline: self._with_remote_call_transport(
+                        queue=False,
+                        operation="API call",
                         timeout=self._call_timeout,
-                    ),
+                        deadline=deadline,
+                        call=lambda: client.call_external_ipc(
+                            version_info.function_name,
+                            version_info.version or None,
+                            feather_bytes,
+                            metadata=self._per_call_metadata(),
+                            retry_policy=policy.to_dict(),
+                            timeout=_remaining_seconds(deadline),
+                        ),
+                    )
                 )
                 if len(chunks) != 1:
                     raise FunctionError(
@@ -3738,7 +3797,9 @@ class RemoteFunction:
         """Invoke the deployed remote function over the wire.
 
         Bounded by ``call_timeout`` (set on the constructor / ``@function``
-        decorator / ``from_name`` — 60s by default): if the scaling group is
+        decorator / ``from_name`` — 60s by default). While no replica is ready
+        (scaling from zero, or waiting for capacity) the call is resent until
+        the timeout; ``None`` waits indefinitely. If the scaling group is
         ``Unhealthy`` (e.g. replicas stuck in ``CrashLoopBackOff``) or
         otherwise never responds, this raises ``TimeoutError`` instead of
         blocking forever, including the scaling group's status message when
