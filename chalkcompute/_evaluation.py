@@ -359,6 +359,8 @@ class Evaluation:
     created_at: datetime | None = None
     suite_id: str | None = None
     _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
+    archived_at: datetime | None = None
+    archived_by: str | None = None
 
     @property
     def dataset_id(self) -> str:
@@ -410,6 +412,14 @@ class Evaluation:
     ) -> Evaluation:
         """Attach to an existing evaluation by identifier."""
         return EvaluationClient(chalk_client=chalk_client).get(evaluation_id)
+
+    def archive(self) -> Evaluation:
+        """Archive this definition and return its updated representation.
+
+        Hides the evaluation and its runs from lists without deleting datasets
+        or canceling running work. The existing handle is not mutated.
+        """
+        return self._require_client().archive(self.id)
 
     def refresh(self) -> Evaluation:
         """Return the latest server representation of this evaluation."""
@@ -505,6 +515,13 @@ class EvaluationRun:
     ) -> EvaluationRun:
         """Attach to an existing evaluation run by identifier."""
         return EvaluationClient(chalk_client=chalk_client).get_run(evaluation_run_id)
+
+    def archive(self) -> None:
+        """Hide this run from lists and clear its baseline flag.
+
+        Does not cancel execution or delete the result dataset.
+        """
+        self._require_client().archive_run(self.id)
 
     def refresh(self) -> EvaluationRun:
         """Return the latest server representation of this run."""
@@ -654,6 +671,44 @@ class EvaluationClient:
         )
         return [_evaluation_suite_from_proto(raw, self) for raw in response.suites]
 
+    @_instrumented("chalkcompute.evaluation.archive")
+    def archive(self, evaluation_id: str) -> Evaluation:
+        """Archive a definition without deleting its runs or datasets.
+
+        Archived definitions and their runs are omitted from lists, but remain
+        accessible by ID. Repeating the operation succeeds.
+        """
+        evaluation_id = evaluation_id.strip()
+        if not evaluation_id:
+            raise ValueError("evaluation_id is required")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.archive_evaluation,
+            evaluation_pb.ArchiveEvaluationRequest(evaluation_id=evaluation_id),
+            not_found_subject=f"Evaluation {evaluation_id!r} not found",
+        )
+        if response.evaluation is None:
+            raise EvaluationError("ArchiveEvaluation returned no evaluation")
+        return _evaluation_from_proto(response.evaluation, self)
+
+    @_instrumented("chalkcompute.evaluation_run.archive")
+    def archive_run(self, evaluation_run_id: str) -> None:
+        """Archive a run without canceling it or deleting its result dataset.
+
+        Clears the run's baseline flag. Repeating the operation succeeds.
+        """
+        evaluation_run_id = evaluation_run_id.strip()
+        if not evaluation_run_id:
+            raise ValueError("evaluation_run_id is required")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        self._call(
+            stub.archive_evaluation_run,
+            evaluation_pb.ArchiveEvaluationRunRequest(
+                evaluation_run_id=evaluation_run_id
+            ),
+            not_found_subject=f"Evaluation run {evaluation_run_id!r} not found",
+        )
+
     @_instrumented("chalkcompute.evaluation.create")
     def create(
         self,
@@ -740,7 +795,7 @@ class EvaluationClient:
     def list(
         self, *, suite_id: str | None = None, limit: int | None = None
     ) -> Iterator[Evaluation]:
-        """Iterate evaluations, optionally filtered by suite."""
+        """Iterate unarchived evaluations, optionally filtered by suite."""
         suite_id = _optional_id(suite_id, name="suite_id")
         if limit is not None and limit < 0:
             raise ValueError("limit must be >= 0 or None")
@@ -883,7 +938,10 @@ class EvaluationClient:
         suite_id: str | None = None,
         limit: int | None = None,
     ) -> Iterator[EvaluationRun]:
-        """Iterate runs, optionally filtered by evaluation or suite."""
+        """Iterate unarchived runs whose evaluations are also unarchived.
+
+        Optionally filter by evaluation or suite.
+        """
         if evaluation_id is not None and not evaluation_id.strip():
             raise ValueError("evaluation_id must not be empty")
         suite_id = _optional_id(suite_id, name="suite_id")
@@ -1054,6 +1112,15 @@ def _evaluation_from_proto(
         environment_id=raw.environment_id or None,
         created_by=raw.created_by or None,
         created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        archived_at=(
+            raw.archive_status.archived_at.to_datetime()
+            if raw.archive_status is not None
+            and raw.archive_status.archived_at is not None
+            else None
+        ),
+        archived_by=raw.archive_status.archived_by
+        if raw.archive_status is not None
+        else None,
         _client=client,
     )
 
