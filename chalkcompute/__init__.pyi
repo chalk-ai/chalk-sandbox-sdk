@@ -1,4 +1,5 @@
 from chalkcompute._logging import configure_logging as configure_logging
+from chalkcompute._gateway import openai_client as openai_client
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
 from chalkcompute._sql import SQLJob as SQLJob
@@ -193,6 +194,7 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "openai_client",
     "configure_logging",
     "SandboxGit",
     "GitFileStatus",
