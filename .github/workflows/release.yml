@@ -216,6 +216,11 @@ jobs:
           "PROTOC_INCLUDE=$(Join-Path $destination 'include')" >> $env:GITHUB_ENV
           & $protoc --version
 
+      # Cargo checks out all of chalk-private, whose deepest paths exceed MAX_PATH.
+      - name: Enable long paths for Cargo git checkouts
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+
       - name: Set up Rust
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
