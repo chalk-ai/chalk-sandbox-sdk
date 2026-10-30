@@ -734,8 +734,6 @@ class RemoteClass:
     ...     image=img,
     ...     cpu="2",
     ...     memory="4Gi",
-    ...     min_replicas=1,
-    ...     max_replicas=2,
     ... )
     ... class Embedder:
     ...     @chalkcompute.before
@@ -1780,6 +1778,13 @@ def cls(
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
+    Prefer ``@cc.cls`` or ``@cc.cls(image=...)`` without ``name=``; the
+    registered name defaults to the Python class's name. Add other options
+    only for a concrete workload requirement. Normally omit ``min_replicas``,
+    ``max_replicas``, and ``concurrency``: defaults are one replica per method
+    and no explicit concurrency policy. Document necessary tuning overrides
+    rather than copying unrelated examples' settings or repeating defaults.
+
     **Locally** (at decoration time):
 
     1. Scans the class for ``@method``, ``@before``, ``@after``
@@ -1816,8 +1821,10 @@ def cls(
         Optional registered-name override. Omit this in normal usage to use
         the class's ``__name__``. Set it only when a different registered name
         is intentional, such as preserving existing deployments after renaming
-        the Python class. Changing or removing an override changes the target
-        functions; it does not rename existing deployments.
+        the Python class. For a new class, choose a descriptive Python name
+        instead of adding a prefix via this option. Changing or removing an
+        override changes the target functions; it does not rename existing
+        deployments.
     env
         Environment variables as strings or single-value Secret references.
         The mapping key sets the injected name, overriding aliases and prefixes.
@@ -1828,9 +1835,11 @@ def cls(
         ``(name_or_volume, mount_path)`` tuples for persistent storage.
         Volume handles preserve their selected ref or pinned version.
     min_replicas
-        Minimum number of replicas per method.
+        Minimum number of replicas per method. Defaults to 1; normally omit.
+        Set to 0 only when deliberately choosing scale-to-zero behavior.
     max_replicas
-        Maximum number of replicas per method.
+        Maximum number of replicas per method. Defaults to 1; normally omit.
+        Increase only when the workload needs additional replica capacity.
     shutdown_delay_seconds
         Graceful termination period in seconds before replicas are forcibly
         killed during scale-down. Defaults to 30s on the server.
@@ -1876,7 +1885,9 @@ def cls(
         one bucket — used when a downstream service imposes a throughput
         limit across callers.
     concurrency
-        Concurrency policy: cap on in-flight handler invocations. Pass an
+        Optional cap on in-flight handler invocations. Defaults to ``None``
+        (no explicit policy); normally omit. It does not enable parallel
+        execution. Set only for a known in-flight limit. Pass an
         ``int`` for a simple ``max_concurrent`` cap with a per-method key,
         or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
         (``max_concurrent``, ``key``). Multiple methods sharing the same

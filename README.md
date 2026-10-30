@@ -524,7 +524,26 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
-## Function names
+## Function configuration
+
+Start with `@cc.function` and add only options your workload needs, such as an
+image with its dependencies or `chalk_identity=True` for calls to Chalk services.
+These defaults also apply to `@cc.cls`:
+
+| Option | Default | When to override |
+| --- | --- | --- |
+| `name` | Python function or class name | An intentional external naming contract |
+| `min_replicas` | `1` | A deliberate scaling policy, such as scaling to zero |
+| `max_replicas` | `1` | Capacity requirements established for this workload |
+| `concurrency` | `None` (no explicit policy) | A known limit on in-flight calls |
+
+Omit these keywords in ordinary functions, tasks, and scorers. An evaluation
+with many rows does not require custom replica counts or a concurrency policy.
+`concurrency` limits in-flight calls; setting it does not enable parallelism.
+For any tuning override, document the requirement that motivates it. Avoid
+copying values from an unrelated example or explicitly repeating defaults.
+
+### Function names
 
 Omit `name=` when defining functions. The registered name defaults to the Python
 function's name, including underscores:
