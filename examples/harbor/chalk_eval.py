@@ -6,15 +6,14 @@
 # ///
 """Run a Harbor task set as a Chalk evaluation: one dataset row per Harbor task.
 
-    ./chalk_eval.py [task-name ...]
-
 The task function runs one Harbor trial per row. The trial's environment is itself a
 Chalk sandbox (via chalk_harbor), which the function creates with its platform identity,
 so nothing here needs credentials beyond the caller's own. The scorer turns the trial's
 verifier reward into the evaluation score and keeps timings and failures as metadata.
 
-Rows run concurrently up to ``concurrency``; each trial's sandbox is its own workload, so
-the function replica only orchestrates.
+Each trial runs in its own sandbox; the function replica only orchestrates.
+The task and scorer deployments, dataset, and evaluation results persist for inspection.
+Function deployments use the SDK's default replica and concurrency settings.
 """
 
 from __future__ import annotations
@@ -38,15 +37,8 @@ IMAGE = (
 )
 
 
-@chalkcompute.function(
-    name="harbor-trial",
-    image=IMAGE,
-    chalk_identity=True,
-    concurrency=8,
-    cpu="1",
-    memory="2Gi",
-)
-def harbor_trial(task_name: str) -> str:
+@chalkcompute.function(image=IMAGE, chalk_identity=True)
+def run_harbor_trial(task_name: str) -> str:
     import os
     import subprocess
     import uuid
@@ -98,8 +90,8 @@ def harbor_trial(task_name: str) -> str:
     )
 
 
-@chalkcompute.function(name="harbor-reward")
-def harbor_reward(output: str) -> EvaluationScorerResult:
+@chalkcompute.function
+def score_harbor_trial(output: str) -> EvaluationScorerResult:
     trial = json.loads(output)
     reward = trial.get("reward")
     return EvaluationScorerResult(
@@ -130,14 +122,14 @@ def main(argv: list[str]) -> int:
     # The decorators deploy in the background, and Python waits for those deploys at
     # exit (up to 600s of build plus 300s of readiness each). Waiting here surfaces a slow
     # or broken deploy before the evaluation instead of as a hang after the results.
-    for function in (harbor_trial, harbor_reward):
+    for function in (run_harbor_trial, score_harbor_trial):
         function.wait_ready(timeout=900)
     dataset = chalkcompute.DatasetClient().upload("harbor-smoke", {"task_name": tasks})
     evaluation = chalkcompute.EvaluationClient().create(
         f"harbor-smoke-{int(time.time())}",
         dataset=dataset,
-        task=harbor_trial,
-        scorers=[harbor_reward],
+        task=run_harbor_trial,
+        scorers=[score_harbor_trial],
     )
     run = evaluation.run()
     print(

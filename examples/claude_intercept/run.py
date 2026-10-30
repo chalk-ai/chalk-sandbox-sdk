@@ -130,8 +130,6 @@ proxy = ScalingGroup(
     name=f"claude-intercept-{uuid.uuid4().hex[:8]}",
     port=PROXY_PORT,
     env={"CLAUDE_INTERCEPT_TOKEN": proxy_token},
-    min_replicas=1,
-    max_replicas=1,
 )
 with ExitStack() as stack:
     proxy = stack.enter_context(deployed(proxy))
