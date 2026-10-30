@@ -29,6 +29,13 @@ from chalkcompute._gen.chalk.server.v1 import (
     team_pb,
 )
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
+from chalkcompute._progress import (
+    progress_add,
+    progress_done,
+    progress_fail,
+    progress_finish,
+    progress_update,
+)
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -310,6 +317,24 @@ class ConnectClient:
                 headers={"X-Chalk-Server": "go-api"},
                 timeout_ms=30_000,
             )
+            # Resolve names using login's environment metadata before restricting
+            # the token. Keep the scoped response, including its service routes,
+            # instead of passing an unscoped token on subsequent API requests.
+            self._environment_id_to_name = _string_map(data.environment_id_to_name)
+            environment_id = self._resolve_environment_id(
+                requested_env or data.primary_environment or ""
+            )
+            if environment_id:
+                data = auth_client.get_token(
+                    auth_pb.GetTokenRequest(
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        grant_type="client_credentials",
+                        scope=f"env:{environment_id}",
+                    ),
+                    headers={"X-Chalk-Server": "go-api"},
+                    timeout_ms=30_000,
+                )
         finally:
             auth_client.close()
         self._access_token = data.access_token
@@ -320,9 +345,7 @@ class ConnectClient:
             data.environment_id_to_authority
         )
         self._service_prefixes = _int_string_map(data.service_prefixes)
-        self._env_id = self._resolve_environment_id(
-            requested_env or self._primary_environment or ""
-        )
+        self._env_id = environment_id
 
         self._headers = {
             "Content-Type": "application/json",
@@ -406,10 +429,47 @@ class ConnectClient:
         return grpc_engine_target_from_url(query_server)
 
     def dataplane_api_server_target(self) -> tuple[str, bool]:
-        """Resolve the DPA target from auth's generic service URI metadata."""
+        """Return the injected workload target or auth's dataplane service URI."""
         self._ensure_auth()
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
+        if self._uses_web_identity_token():
+            endpoint_variable = (
+                "CHALK_FUNCTION_QUEUE_ENDPOINT"
+                if "CHALK_FUNCTION_QUEUE_ENDPOINT" in os.environ
+                else "CHALK_DATAPLANE_API_ENDPOINT"
+            )
+            endpoint = os.environ.get(endpoint_variable, "").strip()
+            if not endpoint:
+                raise ConnectError(
+                    "Queued function calls with CHALK_WEB_IDENTITY_TOKEN_FILE require "
+                    f"{endpoint_variable}. The platform must inject the "
+                    "dataplane API server endpoint alongside the token file."
+                )
+            try:
+                parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
+                valid = (
+                    parsed.scheme in ("", "http", "https")
+                    and parsed.hostname
+                    and parsed.port != 0
+                    and parsed.username is None
+                    and parsed.password is None
+                    and parsed.path in ("", "/")
+                    and "?" not in endpoint
+                    and "#" not in endpoint
+                    and not parsed.netloc.endswith(":")
+                    and not any(char.isspace() for char in endpoint)
+                )
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ConnectError(
+                    f"Invalid {endpoint_variable}: expected a dataplane "
+                    "API server host with optional port and http:// or https:// scheme"
+                )
+            return grpc_engine_target_from_url(
+                parsed.geturl() if parsed.scheme else endpoint
+            )
         authority = self._environment_id_to_authority.get(self._env_id, "")
         service_prefix = self._service_prefixes.get(
             auth_pb.ServiceKind.DATAPLANE_API_SERVER.value, ""
@@ -553,6 +613,7 @@ def build_image(
     *,
     poll_interval: float = 0.5,
     timeout: float | None = None,
+    progress_parent: str | None = None,
 ) -> str:
     """Build an ``Image`` spec via ``CustomImageService`` and return its URI.
 
@@ -570,6 +631,8 @@ def build_image(
     timeout
         Optional maximum seconds to wait for the build to complete. By default,
         wait for the server to report a terminal build status.
+    progress_parent
+        Optional progress row to nest the "Building image" step under.
 
     Returns
     -------
@@ -598,7 +661,11 @@ def build_image(
         raise ConnectError(f"Image build failed: {response.error or 'unknown'}")
 
     return wait_for_image_build(
-        client, response.build_id, poll_interval=poll_interval, timeout=timeout
+        client,
+        response.build_id,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        progress_parent=progress_parent,
     )
 
 
@@ -608,12 +675,50 @@ def wait_for_image_build(
     *,
     poll_interval: float,
     timeout: float | None,
+    progress_parent: str | None = None,
 ) -> str:
-    """Wait for an already-submitted build without another get-or-build call."""
+    """Wait for an already-submitted build without another get-or-build call.
+
+    Shows a "Building image" row in the deploy progress display while waiting,
+    nested under ``progress_parent`` when the caller has its own progress row.
+    """
+    key = f"image-build:{build_id}"
+    started = time.monotonic()
+    progress_add(
+        key,
+        "image",
+        "Building image",
+        parent=progress_parent,
+        detail=f"Build started ({build_id})",
+    )
+    try:
+        image = _poll_image_build(
+            client, build_id, key, poll_interval=poll_interval, timeout=timeout
+        )
+    except BaseException:
+        progress_fail(key, detail="build did not complete")
+        if progress_parent is None:
+            progress_finish()
+        raise
+    progress_done(key, detail=f"built in {time.monotonic() - started:.0f}s")
+    if progress_parent is None:
+        progress_finish()
+    return image
+
+
+def _poll_image_build(
+    client: ConnectClient,
+    build_id: str,
+    progress_key: str,
+    *,
+    poll_interval: float,
+    timeout: float | None,
+) -> str:
     stub = client.stub(image_connect.CustomImageServiceClientSync)
     deadline = time.monotonic() + timeout if timeout is not None else None
     transient_failures = 0
     max_transient_failures = 5
+    announced_building = False
     while deadline is None or time.monotonic() < deadline:
         try:
             get_response = client.call(
@@ -641,6 +746,9 @@ def wait_for_image_build(
             continue
         transient_failures = 0
         status = get_response.status
+        if status == "building" and not announced_building:
+            announced_building = True
+            progress_update(progress_key, detail="Building")
         if status == "succeeded":
             return get_response.image
         if status == "failed":

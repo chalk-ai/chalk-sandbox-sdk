@@ -71,8 +71,8 @@ def test_assert_container_metrics_builds_pod_filtered_request(
     assert payload["useSketchMetricsTable"] is False
     series = payload["metricConfig"]["series"]
     assert {s["metric"] for s in series} == {
-        "METRIC_KIND_CONTAINER_COUNT",
-        "METRIC_KIND_CONTAINER_MEMORY_BYTES",
+        "METRIC_KIND_POD_CONTAINER_CPU_UTILIZATION",
+        "METRIC_KIND_POD_CONTAINER_MEMORY_BYTES",
     }
     for metric_series in series:
         assert metric_series["filters"] == [

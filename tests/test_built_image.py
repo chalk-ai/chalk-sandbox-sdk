@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from chalkcompute import Image, VolumeMount
+from chalkcompute import Image, VolumeMount, VolumeMountType
 from chalkcompute import _connect
 from chalkcompute import _image_build
 from chalkcompute._cls import RemoteClass, method
@@ -19,7 +19,8 @@ from chalkcompute._scaling_group import ScalingGroup
 
 
 @pytest.mark.parametrize("inspection_fails", [False, True])
-def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails):
+@pytest.mark.parametrize("volume_type", ["", VolumeMountType.CHALKFS.value])
+def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails, volume_type):
     current = VolumeMount("chalkcompute-sg-files-current", "/app", 7)
     historical = "chalkcompute-sg-files-old"
     revisions = sg_pb.ListScalingGroupRevisionsResponse(
@@ -29,10 +30,23 @@ def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails):
                     container_spec=container_pb.ChalkContainerSpec(
                         volumes=[
                             container_pb.VolumeMount(
-                                name=historical, mount_path="/app", version_id=7
+                                name=historical,
+                                mount_path="/app",
+                                version_id=7,
+                                type=volume_type,
                             ),
                             container_pb.VolumeMount(
                                 name="user-data", mount_path="/data"
+                            ),
+                            container_pb.VolumeMount(
+                                name="chalkcompute-sg-files-scratch",
+                                mount_path="/tmp",
+                                type="empty_dir",
+                            ),
+                            container_pb.VolumeMount(
+                                name="chalkcompute-sg-files-other",
+                                mount_path="/other",
+                                type="unknown",
                             ),
                         ]
                     )
@@ -95,8 +109,16 @@ class Worker:
         return value
 
 
-def test_round_trip_without_services():
-    spec = built_image("engine:1", (VolumeMount("assets", "/assets", 7),))
+@pytest.mark.parametrize("size_limit", [None, "64Mi"])
+def test_round_trip_without_services(size_limit):
+    legacy = built_image("engine:1", (VolumeMount("assets", "/assets", 7),))
+    assert json.loads(legacy.to_json())["volumes"] == [
+        {"name": "assets", "mount_path": "/assets", "version_id": 7}
+    ]
+    scratch = VolumeMount(
+        "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit=size_limit
+    )
+    spec = Image._from_built("engine:1", [*legacy.volumes, scratch])
     assert Image.from_json(spec.to_json()).to_json() == spec.to_json()
     assert Sandbox(image=Image.from_json(spec.to_json()))._referenced_volumes == list(
         spec.volumes
@@ -109,6 +131,18 @@ def test_round_trip_without_services():
         {"schema_version": 2},
         {"image_uri": ""},
         {"volumes": {}},
+        {"volumes": [None]},
+        {"volumes": [{"name": "scratch", "mount_path": "/tmp", "type": "unknown"}]},
+        {
+            "volumes": [
+                {
+                    "name": "scratch",
+                    "mount_path": "/tmp",
+                    "type": "empty_dir",
+                    "version_id": 7,
+                }
+            ]
+        },
         {"volumes": [{"name": "assets", "mount_path": "/assets", "version_id": None}]},
         {"volumes": [{"name": "assets", "mount_path": "/assets", "version_id": -1}]},
         {"volumes": [{"name": "assets", "mount_path": "assets", "version_id": 7}]},
@@ -134,9 +168,16 @@ def test_invalid_serialized_spec(change):
 def test_image_build_across_surfaces(factory):
     asset = VolumeMount("assets", "/assets", 7)
     spec = built_image("engine:1", (asset,))
-    resource = factory(image=spec, volumes=[asset, ("saves", "/saves")])
+    scratch = VolumeMount(
+        "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit="64Mi"
+    )
+    resource = factory(image=spec, volumes=[asset, ("saves", "/saves"), scratch])
     assert resource._image.as_image_uri_if_possible() == "engine:1"
-    assert resource._referenced_volumes == [asset, VolumeMount("saves", "/saves")]
+    assert resource._referenced_volumes == [
+        asset,
+        VolumeMount("saves", "/saves"),
+        scratch,
+    ]
     with pytest.raises(ValueError, match="Conflicting"):
         factory(image=spec, volumes=[("other", "/assets")])
 
@@ -184,10 +225,18 @@ def test_resolve_pins_ref_and_uploads(tmp_path, monkeypatch):
     monkeypatch.setattr(_image_build, "build_image", build_image)
     spec = image.build(
         name="bridge",
-        volumes=[VolumeMount("models", "/models", ref_name="released")],
+        volumes=[
+            VolumeMount("models", "/models", ref_name="released"),
+            VolumeMount(
+                "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit="64Mi"
+            ),
+        ],
     )
     assert spec.volumes == (
         VolumeMount("models", "/models", 9),
+        VolumeMount(
+            "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit="64Mi"
+        ),
         VolumeMount("bridge-assets", "/assets", 11),
     )
     from_env.assert_called_once_with(chalk_client=None)

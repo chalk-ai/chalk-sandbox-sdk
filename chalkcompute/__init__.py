@@ -123,6 +123,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._connect",
         "build_image_with_volumes_from_spec",
     ),
+    # _chalk_identity.py
+    "ChalkIdentity": ("chalkcompute._chalk_identity", "ChalkIdentity"),
+    "OIDCTokenFile": ("chalkcompute._chalk_identity", "OIDCTokenFile"),
     # _workload_identity.py
     "OIDCToken": ("chalkcompute._workload_identity", "OIDCToken"),
     "WorkloadIdentityTokenError": (
@@ -170,9 +173,17 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SandboxError": ("chalkcompute._sandbox", "SandboxError"),
     "SandboxInfo": ("chalkcompute._sandbox", "SandboxInfo"),
     "SandboxNotFoundError": ("chalkcompute._sandbox", "SandboxNotFoundError"),
+    "SandboxSnapshot": ("chalkcompute._sandbox", "SandboxSnapshot"),
+    "SandboxSnapshotError": ("chalkcompute._sandbox", "SandboxSnapshotError"),
     "SandboxTerminatedError": ("chalkcompute._sandbox", "SandboxTerminatedError"),
     # _sandbox_fs.py
+    "FileDownload": ("chalkcompute._sandbox_fs", "FileDownload"),
+    "FileMatch": ("chalkcompute._sandbox_fs", "FileMatch"),
+    "FileUpload": ("chalkcompute._sandbox_fs", "FileUpload"),
     "FilesystemError": ("chalkcompute._sandbox_fs", "FilesystemError"),
+    "ReplaceResult": ("chalkcompute._sandbox_fs", "ReplaceResult"),
+    "SandboxFileInfo": ("chalkcompute._sandbox_fs", "SandboxFileInfo"),
+    "SandboxFileSystem": ("chalkcompute._sandbox_fs", "SandboxFileSystem"),
     "SandboxFileSystemError": (
         "chalkcompute._sandbox_fs",
         "SandboxFileSystemError",
@@ -212,9 +223,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
     "VolumeMount": ("chalkcompute._volume", "VolumeMount"),
+    "VolumeMountType": ("chalkcompute._volume", "VolumeMountType"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
-    # Imported by chalkpy's model-deploy path; every volume mounts as
-    # MOUNT_TYPE, so this only validates existence now.
+    # Imported by chalkpy's model-deploy path; persistent volumes use ChalkFS,
+    # so this only validates existence now.
     "resolve_referenced_volume_type": (
         "chalkcompute._volume",
         "resolve_referenced_volume_type",

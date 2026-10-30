@@ -847,3 +847,51 @@ def test_remote_class_forwards_shared_scaling_fields(
         spec.scaling_spec.scale_from_zero_request_policy
         == sg_pb.ScaleFromZeroRequestPolicy.HOLD
     )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("initial_wait_seconds", -1),
+        ("initial_wait_seconds", float("nan")),
+        ("max_wait_seconds", float("inf")),
+        ("backoff_multiplier", 0.5),
+        ("backoff_multiplier", float("nan")),
+        ("max_wait_seconds", 0.5),
+        ("max_retries", 2**31),
+    ],
+)
+def test_retry_policy_rejects_invalid_bounds(field, value):
+    with pytest.raises((ValueError, TypeError)):
+        RetryPolicy(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        RetryPolicy(retry_on=(TimeoutError,)),
+        RetryPolicy(key="shared"),
+    ],
+)
+def test_call_options_reject_unimplemented_retry_filters(policy):
+    def add(x: int) -> int:
+        return x + 1
+
+    with pytest.raises(ValueError, match="not supported"):
+        RemoteFunction(add).with_options(retries=policy)
+
+
+def test_retry_policy_serializes_jitter():
+    policy = RetryPolicy.linear(attempts=2, delay=0.25, jitter=False)
+    config = function_config(
+        serialization_format="pyarrow",
+        options={},
+        max_buffer_duration=None,
+        max_batching_size=None,
+        retries=policy,
+        rate_limit=None,
+        concurrency=None,
+        queue_policy=None,
+        schedule=None,
+    )
+    assert config.retry_policy.jitter is False

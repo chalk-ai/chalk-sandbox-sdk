@@ -381,11 +381,10 @@ token's remaining lifetime from its `exp` claim, then re-reads the file on its
 next authenticated operation. Tokens without `exp` use the one-hour limit.
 Changing the configured file path bypasses the cache. The JWT's
 `environment_id` claim selects the environment unless `CHALK_ENVIRONMENT` or
-`CHALK_ENVIRONMENT_ID` is set explicitly. For queued function calls, the SDK
-uses `CHALK_GRPC_ENGINE` when set; otherwise it discovers the environment's gRPC
-endpoint through the metadata API's `TeamService.GetEnv` RPC. Discovery requires
-`DEPLOY_READ` permission. The endpoint is cached until the identity is refreshed;
-set `CHALK_GRPC_ENGINE` explicitly if the identity cannot read environment metadata.
+`CHALK_ENVIRONMENT_ID` is set explicitly. With token-file authentication, queued
+function calls use the platform-provided `CHALK_DATAPLANE_API_ENDPOINT`. An explicit
+`CHALK_FUNCTION_QUEUE_ENDPOINT` overrides that default; an empty override disables
+queued calls. Client-credential and service authentication use Auth routing metadata.
 
 ### Workload identity federation
 
@@ -439,6 +438,48 @@ The external service must trust Chalk's issuer and validate the token using the
 Chalk API server's `/.well-known/jwks.json` endpoint. The existing
 `ConnectClient.get_workload_identity_token()` string API remains available.
 
+#### Platform-managed token files for sandboxes
+
+For a CLI or entrypoint that you cannot wrap, declare the token file in the
+sandbox's `env` instead. The platform writes the first token before your code
+starts, sets the variable to the file's path, and replaces the file with a fresh
+token before the old one expires for the life of the sandbox:
+
+```python
+import chalkcompute as cc
+
+sandbox = cc.Sandbox(
+    image=cc.Image.sandbox().pip_install(["snowflake-cli"]),
+    chalk_identity=cc.ChalkIdentity(mode="sandbox"),
+    env={
+        "SNOWFLAKE_AUTHENTICATOR": "WORKLOAD_IDENTITY",
+        "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER": "OIDC",
+        "SNOWFLAKE_TOKEN_FILE_PATH": cc.OIDCTokenFile(audience="snowflakecomputing.com"),
+    },
+).run()
+
+sandbox.exec("snow", "sql", "-x", "--account", "<account>", "--user", "<user>",
+             "-q", "select current_user()")
+```
+
+`OIDCTokenFile` is an immutable descriptor; it holds no token and starts no
+background work. A consumer must reopen the file to pick up a rotated token, so
+a credential that a process has already read and cached is not refreshed.
+
+`OIDCTokenFile` requires `ChalkIdentity(mode="sandbox")`, which issues
+credentials that identify the sandbox (`sub` is
+`v1:env:<environment>:sandbox:<sandbox_id>`) instead of the user who created it.
+With the default creator identity (`chalk_identity=True`), every workload a
+developer launches is indistinguishable from that developer to the external
+service. A sandbox can mint tokens only for the audiences it declares. This is
+supported for sandboxes only; functions, classes, containers and scaling groups
+reject `ChalkIdentity(mode="sandbox")`, and `OIDCTokenFile` is rejected in image
+and per-exec `env`.
+
+A sandbox can declare at most 8 token files, must run on host compute (the
+default; `compute_class=cc.ComputeClass.K8S` is rejected), and cannot set a
+token file's variable through `env` or `secrets` as well.
+
 ## Chalk SQL
 
 Run SQL against your Chalk environment without installing ChalkPy or defining
@@ -483,7 +524,26 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
-## Function names
+## Function configuration
+
+Start with `@cc.function` and add only options your workload needs, such as an
+image with its dependencies or `chalk_identity=True` for calls to Chalk services.
+These defaults also apply to `@cc.cls`:
+
+| Option | Default | When to override |
+| --- | --- | --- |
+| `name` | Python function or class name | An intentional external naming contract |
+| `min_replicas` | `1` | A deliberate scaling policy, such as scaling to zero |
+| `max_replicas` | `1` | Capacity requirements established for this workload |
+| `concurrency` | `None` (no explicit policy) | A known limit on in-flight calls |
+
+Omit these keywords in ordinary functions, tasks, and scorers. An evaluation
+with many rows does not require custom replica counts or a concurrency policy.
+`concurrency` limits in-flight calls; setting it does not enable parallelism.
+For any tuning override, document the requirement that motivates it. Avoid
+copying values from an unrelated example or explicitly repeating defaults.
+
+### Function names
 
 Omit `name=` when defining functions. The registered name defaults to the Python
 function's name, including underscores:
@@ -752,8 +812,11 @@ if use_shared_cache:
 client.run(sandbox)
 ```
 
-Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
-identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
+Sandboxes default to a platform-managed Chalk identity representing the creating
+user or service token. Inside deployed functions and classes, indicated by a
+nonempty `CHALK_REMOTE_FUNCTION`, identity defaults to disabled. Set
+`chalk_identity=True` or `chalk_identity=False` to override the default.
+With identity enabled, the sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
 API/environment settings it needs to authenticate without caller credentials
 being copied into the workload.
 
@@ -881,6 +944,28 @@ Git paths identify the repository root relative to the image working directory.
 Helpers accept `timeout_secs`; multi-command operations apply it to each command.
 See the [sandbox Git guide](docs/sandbox-git.md) for workflows and a method reference.
 See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
+
+### Files inside a sandbox
+
+`sandbox.fs` transfers and manages files. `add_file` can be called before
+`run()`; queued files are uploaded once the sandbox is ready.
+
+```python
+from chalkcompute import Sandbox
+
+sandbox = Sandbox()
+sandbox.fs.add_file("requirements.txt", "/workspace/requirements.txt")
+sandbox.fs.add_file(b"#!/bin/sh\necho ready\n", "/workspace/run.sh", mode=0o755)
+sandbox.run()
+try:
+    for info in sandbox.fs.list_files("/workspace"):
+        print(info.name, info.size, oct(info.mode))
+    print(sandbox.fs.find_files("/workspace", "TODO"))
+finally:
+    sandbox.terminate()
+```
+
+See the [sandbox filesystem guide](docs/sandbox-filesystem.md) for every method.
 
 ### Add tmux to a sandbox image
 
@@ -1124,3 +1209,41 @@ are omitted. These values are catalog-visible; keep secrets in Chalk-managed
 secret references rather than function defaults. Clients can show descriptions,
 collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
+
+
+## Function retries
+
+Configure a default with `@cc.function(retries=3)`, or scope an override to one
+handle without changing its deployment:
+
+```python
+handle = fetch_status.with_options(retries=2).defer("https://example.com")
+result = handle.get()
+result = fetch_status.with_options(
+    retries=cc.RetryPolicy.exponential(attempts=3, initial=0.5, max_wait=10)
+).remote("https://example.com")
+```
+
+Counts exclude the first execution: `retries=2` allows three attempts. Zero
+disables invocation retries; `with_options(retries=None)` inherits the deployed
+default, which is zero when no policy is configured. Method handles support the
+same API. A handler argument named `retries` remains an ordinary input.
+
+Regular `.remote()` calls retry in the native client, including calls awaited
+from an async Python program. The retry budget, backoff sleeps, and executions
+share the call timeout. Exponential policies multiply the delay up to `max_wait`;
+`linear` policies use a constant delay. Jitter uniformly samples between zero
+and that delay. Generator `.remote()` calls use the queue, like `.defer()`.
+
+Queued calls keep one call ID and retry on the server, even if the submitting
+client exits. Queue overrides currently apply only the retry count; delay and
+jitter remain controlled by the queue's fixed reclaim interval. Failed calls
+are never silently resubmitted under another ID while collecting results.
+Retry-enabled generators buffer output to avoid repeating already emitted
+values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not
+supported and raise an error instead of being ignored.
+
+Retries can execute side effects more than once. Make retried handlers
+idempotent. Transient execution and transport failures share the configured invocation
+retry budget. Connection setup and result polling do not create additional
+invocation budgets.

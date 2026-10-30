@@ -11,6 +11,8 @@ from chalkcompute._artifact import ArtifactError as ArtifactError
 from chalkcompute._artifact import ArtifactNotFoundError as ArtifactNotFoundError
 from chalkcompute._cls import ClassBuildError as ClassBuildError
 from chalkcompute._cls import ClassError as ClassError
+from chalkcompute._chalk_identity import ChalkIdentity as ChalkIdentity
+from chalkcompute._chalk_identity import OIDCTokenFile as OIDCTokenFile
 from chalkcompute._cls import RemoteClass as RemoteClass
 from chalkcompute._cls import after as after
 from chalkcompute._cls import before as before
@@ -109,8 +111,16 @@ from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
+from chalkcompute._sandbox import SandboxSnapshot as SandboxSnapshot
+from chalkcompute._sandbox import SandboxSnapshotError as SandboxSnapshotError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
+from chalkcompute._sandbox_fs import FileDownload as FileDownload
+from chalkcompute._sandbox_fs import FileMatch as FileMatch
+from chalkcompute._sandbox_fs import FileUpload as FileUpload
 from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
+from chalkcompute._sandbox_fs import ReplaceResult as ReplaceResult
+from chalkcompute._sandbox_fs import SandboxFileInfo as SandboxFileInfo
+from chalkcompute._sandbox_fs import SandboxFileSystem as SandboxFileSystem
 from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
 from chalkcompute._workflow_worker import WorkflowWorker as WorkflowWorker
@@ -156,6 +166,7 @@ from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeMount as VolumeMount
+from chalkcompute._volume import VolumeMountType as VolumeMountType
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
@@ -262,6 +273,8 @@ __all__ = [
     "ModelNotDeployedError",
     "ConnectClient",
     "OIDCToken",
+    "OIDCTokenFile",
+    "ChalkIdentity",
     "WorkloadIdentityTokenError",
     "WorkloadIdentityTokenSource",
     "build_image",
@@ -291,8 +304,16 @@ __all__ = [
     "SandboxError",
     "SandboxInfo",
     "SandboxNotFoundError",
+    "SandboxSnapshot",
+    "SandboxSnapshotError",
     "SandboxTerminatedError",
+    "FileDownload",
+    "FileMatch",
+    "FileUpload",
     "FilesystemError",
+    "ReplaceResult",
+    "SandboxFileInfo",
+    "SandboxFileSystem",
     "SandboxFileSystemError",
     "ScalingGroup",
     "ScalingGroupBuildError",
@@ -316,6 +337,7 @@ __all__ = [
     "VolumeFileNotFoundError",
     "VolumeInfo",
     "VolumeMount",
+    "VolumeMountType",
     "VolumeNotFoundError",
     "VersionInfo",
     "resolve_referenced_volume_type",

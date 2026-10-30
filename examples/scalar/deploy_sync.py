@@ -13,13 +13,14 @@ nested-gather example that invokes it by name.
 from __future__ import annotations
 
 import logging
+import os
 
 import chalkcompute
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-@chalkcompute.function(name="ex-add")
+@chalkcompute.function(name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-add"))
 def add(a: int, b: int) -> int:
     """Simple addition."""
     return a + b

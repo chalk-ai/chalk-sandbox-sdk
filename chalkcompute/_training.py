@@ -106,7 +106,7 @@ def _secret_to_proto(secret: _Secret) -> container_pb.SecretRef:
     elif secret._secret_name is not None:
         source = Oneof("secret_name", secret._secret_name)
     return container_pb.SecretRef(
-        source=source,  # ty: ignore[invalid-argument-type]
+        source=source,
         keys=list(secret._keys),
         aliases=dict(secret._aliases),
         prefix=secret._prefix,
@@ -554,7 +554,7 @@ class TrainingFunction:
             source = Oneof("input_sql", self._input_sql)
         else:
             source = Oneof("dataset_name", self._data or self._dataset or "")
-        return tr_pb.TrainingRunDataSource(source=source)  # ty: ignore[invalid-argument-type]
+        return tr_pb.TrainingRunDataSource(source=source)
 
     def _build_container_spec(self, image: str) -> container_pb.ChalkContainerSpec:
         return ContainerSpec(

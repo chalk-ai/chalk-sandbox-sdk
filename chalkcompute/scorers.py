@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from chalkcompute import _tracing
 from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
@@ -396,6 +397,17 @@ def _environment_id() -> str | None:
     )
 
 
+def _client_headers(environment_id: str | None) -> dict[str, str]:
+    # Attribution belongs to the active row, not the cached router credential.
+    headers = _tracing.trace_headers()
+    if environment_id is not None:
+        headers["X-Chalk-Env-Id"] = environment_id
+    session_id = _tracing.current_session_id()
+    if session_id:
+        headers["X-Chalk-Agent-Session-Id"] = session_id
+    return headers
+
+
 def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
     base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     api_key = os.environ.get(spec.api_key_env)
@@ -417,10 +429,9 @@ def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
     options: dict[str, Any] = {"api_key": api_key}
     if base_url:
         options["base_url"] = base_url
-    # Chalk's AI router routes on this; other endpoints ignore it.
-    env_id = _environment_id()
-    if env_id:
-        options["default_headers"] = {"X-Chalk-Env-Id": env_id}
+    headers = _client_headers(_environment_id())
+    if headers:
+        options["default_headers"] = headers
     return options
 
 
@@ -448,9 +459,9 @@ def _router_client_options() -> dict[str, Any]:
     return {
         "api_key": token,
         "base_url": f"{api_server}{_ROUTER_PATH}",
-        "default_headers": {
-            "X-Chalk-Env-Id": connection._env_id or _environment_id() or ""
-        },
+        "default_headers": _client_headers(
+            connection._env_id or _environment_id() or ""
+        ),
     }
 
 

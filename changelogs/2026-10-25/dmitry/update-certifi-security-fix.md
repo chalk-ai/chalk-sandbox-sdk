@@ -1,0 +1,1 @@
+- Fix GHSA-6q48-6c7w-9gw2 by bumping the `certifi` lockfiles (root and `examples/df`, `examples/embedding-function`, `examples/fraud-agents-sdk`) to 2026.10.23, which drops the compromised `emSign ECC Root CA - G3` intermediate certificates.
