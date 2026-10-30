@@ -228,28 +228,23 @@ class Image:
         """
         if not self._built:
             raise ValueError("Call Image.build() before serializing an image")
+        volumes = []
+        for mount in self._volume_mounts:
+            volume: dict[str, str | int | None] = {
+                "name": mount.name,
+                "mount_path": mount.mount_path,
+                "version_id": mount.version_id,
+            }
+            if mount.type.value != "versioned_chalkfs":
+                volume["type"] = mount.type.value
+            if mount.size_limit is not None:
+                volume["size_limit"] = mount.size_limit
+            volumes.append(volume)
         return json.dumps(
             {
                 "schema_version": 1,
                 "image_uri": self._base_image,
-                "volumes": [
-                    {
-                        "name": mount.name,
-                        "mount_path": mount.mount_path,
-                        "version_id": mount.version_id,
-                        **(
-                            {"type": mount.type.value}
-                            if mount.type.value != "versioned_chalkfs"
-                            else {}
-                        ),
-                        **(
-                            {"size_limit": mount.size_limit}
-                            if mount.size_limit is not None
-                            else {}
-                        ),
-                    }
-                    for mount in self._volume_mounts
-                ],
+                "volumes": volumes,
             },
             sort_keys=True,
         )
@@ -287,12 +282,13 @@ class Image:
             if not isinstance(data["volumes"], list):
                 raise ValueError("volumes must be a list")
             mounts = []
-            for mount in data["volumes"]:
-                if not isinstance(mount, dict):
+            for volume in data["volumes"]:
+                if not isinstance(volume, dict):
                     raise ValueError("Invalid image mount")
-                mount["type"] = VolumeMountType(mount.get("type", "versioned_chalkfs"))
-                mounts.append(VolumeMount(**mount))
-            for mount in mounts:
+                volume["type"] = VolumeMountType(
+                    volume.get("type", "versioned_chalkfs")
+                )
+                mount = VolumeMount(**volume)
                 if (
                     not isinstance(mount.name, str)
                     or not mount.name
@@ -312,6 +308,7 @@ class Image:
                     or mount.ref_name is not None
                 ):
                     raise ValueError("Invalid pinned image mount")
+                mounts.append(mount)
             return cls._from_built(data["image_uri"], merge_mounts(mounts))
         except (TypeError, KeyError) as exc:
             raise ValueError("Invalid built image spec") from exc
