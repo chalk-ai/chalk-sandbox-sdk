@@ -40,6 +40,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "RemoteFunction": ("chalkcompute._function", "RemoteFunction"),
     "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
     "RemoteExecutionError": ("chalkcompute._function_error", "RemoteExecutionError"),
+    "FunctionUnavailableError": (
+        "chalkcompute._function_error",
+        "FunctionUnavailableError",
+    ),
     "FunctionError": ("chalkcompute._function", "FunctionError"),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
     "FunctionSignatureError": ("chalkcompute._function", "FunctionSignatureError"),

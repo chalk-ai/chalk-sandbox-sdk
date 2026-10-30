@@ -24,6 +24,7 @@ from chalkcompute._remote_call_client import (
     RemoteCallPollResult,
     RemoteCallClientUnavailable,
     RemoteCallTransportError,
+    RemoteCallUnavailableError,
     ServiceAuthContext,
 )
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -685,6 +686,27 @@ def test_direct_call_retires_transport_error_without_redispatch(monkeypatch) -> 
         fn.remote(41)
     assert len(FakeRemoteCallClient.instances) == 1
     assert FakeRemoteCallClient.instances[0].closed is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RemoteCallTransportError("disconnected"),
+        RemoteCallUnavailableError("no healthy upstream"),
+    ],
+)
+def test_undelivered_calls_raise_function_unavailable_error(error) -> None:
+    from chalkcompute import FunctionError, FunctionUnavailableError
+
+    FakeRemoteCallClient.call_ipc_errors = [error]
+    with pytest.raises(FunctionUnavailableError) as caught:
+        _remote_function().remote(41)
+    assert caught.value is error
+    assert not isinstance(caught.value, FunctionError)
+
+    FakeRemoteCallClient.enqueue_errors = [error]
+    with pytest.raises(FunctionUnavailableError):
+        _remote_function().defer(41)
 
 
 def test_direct_call_does_not_retry_deadline_exceeded() -> None:
