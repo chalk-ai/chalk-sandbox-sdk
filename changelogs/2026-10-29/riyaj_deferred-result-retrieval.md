@@ -10,3 +10,6 @@ guarantee exactly-once execution.
 Returned deferred-call failures now retain their original error message even
 when it resembles a transport error; only raised polling errors can trigger a
 connection refresh.
+
+Structured proxy failures now display the error type, message, and deferred call
+ID instead of a raw JSON envelope, while preserving nested runtime tracebacks.

@@ -57,6 +57,13 @@ class RemoteExecutionError(FunctionError):
         )
 
     def _remote_lines(self) -> list[str]:
+        if (
+            self.exception_type == "ProxyError"
+            and not self.remote_traceback
+            and not self.trace_id
+        ):
+            suffix = f" (call {self.call_id})" if self.call_id else ""
+            return [f"ProxyError: {self.message}{suffix}"]
         lines = [f"Remote execution failed: {self.function_name}"]
         if self.call_id:
             lines.append(f"Call ID: {self.call_id}")
@@ -104,19 +111,20 @@ class RemoteExecutionError(FunctionError):
 def decode_remote_error(
     payload: Any, function_name: str, *, call_id: str | None = None
 ) -> RemoteExecutionError | None:
-    """Decode the versioned runtime payload or a queue envelope around it.
+    """Decode versioned runtime errors and structured proxy failure envelopes.
 
-    Never classify a free-text error by words in its message. Older runtimes
-    and unknown payload versions retain their existing error behavior.
+    Never classify a free-text error by words in its message. Unknown payload
+    versions and unrecognized legacy errors retain their existing behavior.
     """
+    proxy_error: RemoteExecutionError | None = None
     for _ in range(3):
         if isinstance(payload, str):
             try:
                 payload = json.loads(payload)
             except (ValueError, TypeError):
-                return None
+                return proxy_error
         if not isinstance(payload, dict):
-            return None
+            return proxy_error
         if payload.get("chalk_remote_error") == 1:
             exception = payload.get("exception")
             if not isinstance(exception, dict):
@@ -135,9 +143,24 @@ def decode_remote_error(
         if "chalk_remote_error" in payload:
             return None
         if not isinstance(payload.get("exc_type"), str):
-            return None
+            return proxy_error
+        if payload["exc_type"] == "ProxyError" and isinstance(
+            payload.get("message"), str
+        ):
+            proxy_error = RemoteExecutionError(
+                function_name,
+                "ProxyError",
+                payload["message"],
+                payload["traceback"]
+                if isinstance(payload.get("traceback"), str)
+                else "",
+                "",
+                call_id=call_id,
+            )
+        # A proxy envelope may carry a richer runtime error. Prefer its
+        # original exception and traceback over the proxy fallback.
         payload = payload.get("message")
-    return None
+    return proxy_error
 
 
 def remote_error_from_exception(

@@ -43,6 +43,62 @@ def test_decodes_without_double_unescaping(queued: bool) -> None:
     assert '\n  File "user.py"' in str(error)
 
 
+@pytest.mark.parametrize("call_id", [None, "call-123"])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_decodes_proxy_error_with_optional_call_id(call_id, wrapped) -> None:
+    message = "CallFunction RPC failed"
+    wire = json.dumps({"exc_type": "ProxyError", "message": message})
+    if wrapped:
+        wire = json.dumps({"exc_type": "RemoteFunctionError", "message": wire})
+
+    error = decode_remote_error(wire, "score", call_id=call_id)
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.function_name == "score"
+    assert error.exception_type == "ProxyError"
+    assert error.message == message
+    assert error.call_id == call_id
+    suffix = f" (call {call_id})" if call_id else ""
+    assert str(error) == f"ProxyError: {message}{suffix}"
+
+
+def test_proxy_envelope_preserves_versioned_runtime_error() -> None:
+    wire = json.dumps({"exc_type": "ProxyError", "message": payload()})
+
+    error = decode_remote_error(wire, "score", call_id="call-123")
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.exception_type == "ValueError"
+    assert error.call_id == "call-123"
+    assert error.internal_traceback == "full runtime diagnostics"
+
+
+def test_versioned_proxy_error_preserves_trace_id() -> None:
+    wire = json.loads(payload())
+    wire["exception"]["kind"] = "ProxyError"
+    wire["exception"]["stacktrace"] = ""
+    wire["trace_id"] = "trace-123"
+
+    error = decode_remote_error(wire, "score", call_id="call-123")
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.call_id == "call-123"
+    assert error.trace_id == "trace-123"
+    assert "Trace ID: trace-123" in str(error)
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        '{"exc_type": "ProxyError", "message": null}',
+        '{"exc_type": "ProxyError", "message": 123}',
+        '{"exc_type": "RuntimeError", "message": "legacy failure"}',
+    ],
+)
+def test_unsupported_legacy_errors_keep_fallback(wire) -> None:
+    assert decode_remote_error(wire, "score") is None
+
+
 @pytest.mark.parametrize(
     "wire",
     [

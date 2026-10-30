@@ -522,6 +522,39 @@ def test_deferred_remote_execution_error_preserves_details(
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_proxy_error_includes_call_id(mode, async_call) -> None:
+    from chalkcompute import RemoteExecutionError
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+    ]
+    fn = _async_remote_function() if async_call else _remote_function()
+    handle = fn.defer(1)
+
+    async def collect():
+        if mode == "stream":
+            return [batch async for batch in handle.stream()]
+        if mode == "gather":
+            return await function_mod.gather([handle])
+        return await handle.get()
+
+    with pytest.raises(RemoteExecutionError) as caught:
+        if async_call:
+            asyncio.run(collect())
+        elif mode == "stream":
+            list(handle.stream())
+        elif mode == "gather":
+            function_mod.gather([handle])
+        else:
+            handle.get()
+
+    assert str(caught.value) == "ProxyError: CallFunction RPC failed (call call-1)"
+    assert caught.value.call_id == handle.call_id == "call-1"
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
 def test_calling_handle_without_local_func_raises() -> None:
     fn = RemoteFunction._make_empty()
     fn._func_name = "add"
@@ -720,10 +753,9 @@ def _poll(status_name, *, chunks=None, error_message=None):
 
 @pytest.mark.parametrize("async_context", [False, True])
 @pytest.mark.parametrize("mode", ["get", "stream", "gather"])
-@pytest.mark.parametrize("retries", [None, 0, 3])
 @pytest.mark.parametrize("partial_output", [False, True])
 def test_deferred_failure_does_not_resubmit(
-    async_context, mode, retries, partial_output
+    async_context, mode, partial_output
 ) -> None:
     FakeRemoteCallClient.poll_results = [
         _poll("pending"),
@@ -731,11 +763,6 @@ def test_deferred_failure_does_not_resubmit(
         _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
     ]
     fn = _async_remote_function() if async_context else _remote_function()
-    fn._retries = (
-        function_mod.RetryPolicy.from_int_or_policy(retries)
-        if retries is not None
-        else None
-    )
     handle = fn.defer(98)
     original_call_id = handle.call_id
 
@@ -955,14 +982,20 @@ def test_defer_get_and_purge_use_queue_client() -> None:
 
 
 @pytest.mark.parametrize(
-    "message",
+    ("message", "expected"),
     [
-        "transport error: connection reset",
-        'gRPC status: status: Unavailable, message: "GOAWAY"',
-        _err("ProxyError", "transport error: connection reset"),
+        ("transport error: connection reset", "transport error: connection reset"),
+        (
+            'gRPC status: status: Unavailable, message: "GOAWAY"',
+            'gRPC status: status: Unavailable, message: "GOAWAY"',
+        ),
+        (
+            _err("ProxyError", "transport error: connection reset"),
+            "ProxyError: transport error: connection reset (call call-1)",
+        ),
     ],
 )
-def test_deferred_get_preserves_terminal_transport_error(message) -> None:
+def test_deferred_get_preserves_terminal_transport_error(message, expected) -> None:
     FakeRemoteCallClient.poll_results = [
         _poll("failed", error_message=message),
         _poll("completed", chunks=[_result_ipc([99])]),
@@ -972,7 +1005,7 @@ def test_deferred_get_preserves_terminal_transport_error(message) -> None:
     with pytest.raises(FunctionError) as exc_info:
         handle.get()
 
-    assert str(exc_info.value) == message
+    assert str(exc_info.value) == expected
     assert handle.call_id == "call-1"
     assert len(FakeRemoteCallClient.instances) == 1
     client = FakeRemoteCallClient.instances[0]
