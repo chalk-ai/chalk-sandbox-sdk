@@ -880,3 +880,81 @@ def test_rescore_raises_when_the_server_ignores_the_target_evaluation() -> None:
 
     with pytest.raises(EvaluationError, match="does not support rescoring"):
         client.rescore("run-0", evaluation_id="eval-2")
+
+
+def test_archive_evaluation_uses_attached_client_and_returns_archive_metadata() -> None:
+    raw = _evaluation_dict()
+    raw["archiveStatus"] = {
+        "archivedAt": "2026-10-30T12:00:00Z",
+        "archivedBy": "user-1",
+    }
+    transport = _FakeConnectClient(
+        {
+            "get_evaluation": [
+                _message(
+                    evaluation_pb.GetEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
+            ],
+            "archive_evaluation": [
+                _message(evaluation_pb.ArchiveEvaluationResponse, {"evaluation": raw})
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=transport)
+    original = client.get("eval-1")
+    archived = original.archive()
+    assert archived.id == original.id
+    assert archived.archived_at is not None
+    assert archived.archived_by == "user-1"
+    assert original.archived_at is None
+    assert archived._client is client
+    assert transport.calls[-1][0] == "archive_evaluation"
+    assert transport.calls[-1][1].evaluation_id == "eval-1"
+
+
+def test_archive_run_uses_attached_client() -> None:
+    transport = _FakeConnectClient(
+        {
+            "get_evaluation_run": [
+                _message(
+                    evaluation_pb.GetEvaluationRunResponse,
+                    {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_RUNNING")},
+                )
+            ],
+            "archive_evaluation_run": [
+                evaluation_pb.ArchiveEvaluationRunResponse(evaluation_run_id="run-1")
+            ],
+        }
+    )
+    run = EvaluationClient(connect_client=transport).get_run("run-1")
+    assert run.archive() is None
+    assert run.status == EvaluationRunStatus.RUNNING
+    assert transport.calls[-1][0] == "archive_evaluation_run"
+    assert transport.calls[-1][1].evaluation_run_id == "run-1"
+
+
+@pytest.mark.parametrize("method", ["archive", "archive_run"])
+def test_archive_rejects_empty_ids(method: str) -> None:
+    transport = _FakeConnectClient({})
+    with pytest.raises(ValueError, match="is required"):
+        getattr(EvaluationClient(connect_client=transport), method)("  ")
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    ("method", "rpc"),
+    [("archive", "archive_evaluation"), ("archive_run", "archive_evaluation_run")],
+)
+def test_archive_translates_not_found(method: str, rpc: str) -> None:
+    transport = _FakeConnectClient({rpc: [ConnectRpcError(Code.NOT_FOUND, "missing")]})
+    with pytest.raises(EvaluationNotFoundError):
+        getattr(EvaluationClient(connect_client=transport), method)("missing")
+
+
+def test_archive_requires_evaluation_in_response() -> None:
+    transport = _FakeConnectClient(
+        {"archive_evaluation": [evaluation_pb.ArchiveEvaluationResponse()]}
+    )
+    with pytest.raises(EvaluationError, match="returned no evaluation"):
+        EvaluationClient(connect_client=transport).archive("eval-1")
