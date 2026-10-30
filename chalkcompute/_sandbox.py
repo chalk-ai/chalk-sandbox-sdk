@@ -102,6 +102,7 @@ from chalkcompute._tracing import (
 )
 from chalkcompute._volume import (
     VolumeClient,
+    VolumeMountType,
     cleanup_owned_volumes,
     normalize_volume_refs,
     referenced_volume_mount,
@@ -1994,7 +1995,7 @@ class Sandbox:
             _handle_rpc_error(e, sandbox_id)
             raise
         self._terminated = True
-        if self._volumes:
+        if any(mount.type == VolumeMountType.CHALKFS for mount in self._volumes):
             volume_client = self._volume_client or VolumeClient.from_connect(
                 self._connect_client(client)
             )

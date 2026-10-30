@@ -25,7 +25,8 @@ import uuid
 import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
@@ -43,10 +44,6 @@ from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
-
-#: Mount type stamped into container/sandbox specs for every Chalk volume.
-MOUNT_TYPE = "versioned_chalkfs"
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -111,6 +108,13 @@ class ForkInfo:
     parent_version_id: int | None = None
 
 
+class VolumeMountType(Enum):
+    """Storage backing a volume mount."""
+
+    CHALKFS = "versioned_chalkfs"
+    EMPTY_DIR = "empty_dir"
+
+
 @dataclass(frozen=True)
 class VolumeMount:
     """A volume to mount into a container, sandbox, or scaling group.
@@ -125,14 +129,23 @@ class VolumeMount:
         Optional immutable version to mount.
     ref_name
         Optional mutable fork to mount.
+    type
+        Mount type: ``VolumeMountType.CHALKFS`` (default) or ``EMPTY_DIR``.
+    size_limit
+        Optional empty-dir size, such as ``10Gi``. Omit for the platform default.
     """
 
     name: str
     mount_path: str
     version_id: int | None = None
     ref_name: str | None = None
+    _: KW_ONLY
+    type: VolumeMountType = VolumeMountType.CHALKFS
+    size_limit: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.type, VolumeMountType):
+            raise TypeError("type must be a VolumeMountType")
         if self.ref_name == "":
             raise ValueError("ref_name must not be empty")
         if self.version_id is not None and self.ref_name is not None:
@@ -143,8 +156,10 @@ class VolumeMount:
         spec: dict[str, str | int] = {
             "name": self.name,
             "mountPath": self.mount_path,
-            "type": MOUNT_TYPE,
+            "type": self.type.value,
         }
+        if self.size_limit is not None:
+            spec["sizeLimit"] = self.size_limit
         if self.version_id is not None:
             spec["versionId"] = self.version_id
         if self.ref_name is not None:
@@ -2284,12 +2299,14 @@ def _require_volume_exists(connect: ConnectClient, name: str) -> None:
 
 
 def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> VolumeMount:
-    """Build a mount for a caller-referenced volume, failing fast if absent.
+    """Resolve persistent volume references, passing ephemeral mounts through.
 
     A volume supplied as a ``(name, mount_path)`` tuple is owned by the caller
     and must already exist. Checking here turns a typo'd name into a deploy-time
     error instead of a container that mounts nothing.
     """
+    if mount.type != VolumeMountType.CHALKFS:
+        return mount
     if mount.version_id is None and mount.ref_name is None:
         _require_volume_exists(connect, mount.name)
     else:
@@ -2302,7 +2319,9 @@ def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> Volum
 
 
 def pinned_volume_mount(client: VolumeClient, mount: VolumeMount) -> VolumeMount:
-    """Resolve a volume selector to an immutable version mount."""
+    """Pin a persistent volume selector, leaving ephemeral mounts unchanged."""
+    if mount.type != VolumeMountType.CHALKFS:
+        return mount
     response = client._get_volume(
         mount.name,
         version_id=mount.version_id,
@@ -2320,11 +2339,10 @@ def pinned_volume_mount(client: VolumeClient, mount: VolumeMount) -> VolumeMount
 def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
     """Return the mount type of an existing volume, or raise if it is absent.
 
-    Every volume mounts as :data:`MOUNT_TYPE`, so this no longer discriminates
-    between backends. Prefer :func:`referenced_volume_mount`.
+    Persistent volumes use ChalkFS. Prefer :func:`referenced_volume_mount`.
     """
     _require_volume_exists(connect, name)
-    return MOUNT_TYPE
+    return VolumeMountType.CHALKFS.value
 
 
 def cleanup_owned_volumes(
@@ -2341,6 +2359,6 @@ def cleanup_owned_volumes(
     """
     referenced_names = {volume.name for volume in referenced_volumes}
     for v in all_volumes:
-        if v.name in referenced_names:
+        if v.type != VolumeMountType.CHALKFS or v.name in referenced_names:
             continue
         client.delete_volume(v.name)

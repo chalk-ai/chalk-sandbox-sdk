@@ -21,7 +21,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
-from chalkcompute._volume import VolumeMount
+from chalkcompute._volume import VolumeMount, VolumeMountType
 
 
 @pytest.mark.parametrize("next_cursor", [None, ""])
@@ -1184,6 +1184,27 @@ def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
         assert fake_client._stub.terminate_request.id == "sandbox-123"
     finally:
         fake_client.close()
+
+
+def test_sandbox_terminate_empty_dir_does_not_create_volume_client() -> None:
+    with SandboxClient() as client:
+        stub = MagicMock(wraps=_Stub())
+        stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        client._stub = stub
+        sandbox = Sandbox(
+            image="ubuntu:latest",
+            sandbox_client=client,
+            volumes=[VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)],
+        )
+        sandbox.run()
+
+        with patch("chalkcompute._sandbox.VolumeClient.from_connect") as from_connect:
+            sandbox.terminate()
+
+        from_connect.assert_not_called()
+        stub.terminate_sandbox.assert_called_once_with(
+            pb.TerminateSandboxRequest(id="sandbox-123"), headers=client._headers
+        )
 
 
 class _RerunPermissionDeniedStub:

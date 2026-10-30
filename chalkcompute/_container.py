@@ -76,6 +76,7 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
+    VolumeMountType,
     cleanup_owned_volumes,
     normalize_volume_refs,
     referenced_volume_mount,
@@ -1405,7 +1406,7 @@ class Container:
             self._session_client.close()
             self._session_client = None
 
-        if self._volumes:
+        if any(mount.type == VolumeMountType.CHALKFS for mount in self._volumes):
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or VolumeClient.from_connect(self._client)
