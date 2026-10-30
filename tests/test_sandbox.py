@@ -3,7 +3,14 @@ from __future__ import annotations
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from chalkcompute import Image, NetworkPolicy, ResourceDetector, Sandbox, Secret
+from chalkcompute import (
+    Image,
+    NetworkPolicy,
+    ResourceDetector,
+    Sandbox,
+    SandboxSnapshot,
+    Secret,
+)
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
@@ -12,6 +19,7 @@ from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
 from chalkcompute._volume import VolumeMount
 
@@ -341,6 +349,177 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     assert stub.request is not None
     assert stub.request.source.value.image == "registry/image:built"
     build.assert_called_once()
+
+
+def test_sandbox_snapshot_wait_restore_and_fork() -> None:
+    client = SandboxClient()
+    sandbox_stub = MagicMock()
+    sandbox_stub.create_sandbox.side_effect = [
+        pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="restored-sandbox",
+                status=pb.SandboxStatus.RUNNING,
+                created_at=Timestamp(seconds=2),
+            )
+        ),
+        pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="forked-sandbox",
+                status=pb.SandboxStatus.RUNNING,
+                created_at=Timestamp(seconds=3),
+            )
+        ),
+    ]
+    client._stub = sandbox_stub  # type: ignore[assignment]
+
+    snapshot_stub = MagicMock()
+    in_progress = snapshot_pb.SandboxSnapshot(
+        id="snapshot-123",
+        sandbox_id="sandbox-123",
+        status=snapshot_pb.SandboxSnapshotStatus.IN_PROGRESS,
+        created_at=Timestamp(seconds=1),
+    )
+    completed = snapshot_pb.SandboxSnapshot(
+        id="snapshot-123",
+        sandbox_id="sandbox-123",
+        status=snapshot_pb.SandboxSnapshotStatus.COMPLETED,
+        created_at=Timestamp(seconds=1),
+        completed_at=Timestamp(seconds=2),
+    )
+    snapshot_stub.create_sandbox_snapshot.return_value = (
+        snapshot_pb.CreateSandboxSnapshotResponse(snapshot=in_progress)
+    )
+    snapshot_stub.get_sandbox_snapshot.side_effect = [
+        snapshot_pb.GetSandboxSnapshotResponse(snapshot=completed)
+    ]
+    client._snapshot_stub = snapshot_stub  # type: ignore[assignment]
+
+    snapshot = client.get("sandbox-123").snapshot(poll_interval=0.001)
+    restored = snapshot.restore()
+    fork = snapshot.restore()
+
+    assert snapshot.status == "completed"
+    assert restored.id == "restored-sandbox"
+    assert fork.id == "forked-sandbox"
+    assert restored.id != fork.id
+    assert (
+        snapshot_stub.create_sandbox_snapshot.call_args.args[0].sandbox_id
+        == "sandbox-123"
+    )
+    assert snapshot_stub.get_sandbox_snapshot.call_count == 1
+    assert sandbox_stub.create_sandbox.call_count == 2
+    for call in sandbox_stub.create_sandbox.call_args_list:
+        request = call.args[0]
+        assert request.source.field == "snapshot_id"
+        assert request.source.value == "snapshot-123"
+
+
+def test_sandbox_snapshot_from_id_and_list_snapshots() -> None:
+    client = SandboxClient()
+    snapshot_stub = MagicMock()
+    first = snapshot_pb.SandboxSnapshot(
+        id="snapshot-1",
+        sandbox_id="sandbox-123",
+        status=snapshot_pb.SandboxSnapshotStatus.COMPLETED,
+    )
+    second = snapshot_pb.SandboxSnapshot(
+        id="snapshot-2",
+        sandbox_id="sandbox-123",
+        status=snapshot_pb.SandboxSnapshotStatus.COMPLETED,
+    )
+    snapshot_stub.get_sandbox_snapshot.return_value = (
+        snapshot_pb.GetSandboxSnapshotResponse(snapshot=first)
+    )
+    snapshot_stub.list_sandbox_snapshots.side_effect = [
+        snapshot_pb.ListSandboxSnapshotsResponse(
+            snapshots=[first], next_cursor="page-2"
+        ),
+        snapshot_pb.ListSandboxSnapshotsResponse(snapshots=[second]),
+    ]
+    client._snapshot_stub = snapshot_stub  # type: ignore[assignment]
+
+    hydrated = SandboxSnapshot.from_id("snapshot-1", client=client)
+    snapshots = client.list_snapshots("sandbox-123")
+
+    assert hydrated.id == "snapshot-1"
+    assert [snapshot.id for snapshot in snapshots] == ["snapshot-1", "snapshot-2"]
+    assert snapshot_stub.list_sandbox_snapshots.call_count == 2
+    assert (
+        snapshot_stub.list_sandbox_snapshots.call_args_list[1].args[0].cursor
+        == "page-2"
+    )
+    assert snapshot_stub.list_sandbox_snapshots.call_args_list[0].args[
+        0
+    ].filters.sandbox_ids == ["sandbox-123"]
+    hydrated.delete()
+    assert (
+        snapshot_stub.delete_sandbox_snapshot.call_args.args[0].snapshot_id
+        == "snapshot-1"
+    )
+
+
+def test_sandbox_suspend_and_restore_refresh_info() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.get_sandbox.side_effect = [
+        pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.SUSPENDED,
+                created_at=Timestamp(seconds=1),
+            )
+        ),
+        pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.RUNNING,
+                created_at=Timestamp(seconds=1),
+            )
+        ),
+    ]
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = client.get("sandbox-123")
+
+    sandbox.suspend()
+    assert sandbox.info is not None and sandbox.info.status == "suspended"
+    sandbox.restore()
+
+    assert sandbox.info is not None and sandbox.info.status == "running"
+    stub.suspend_sandbox.assert_called_once_with(
+        pb.SuspendSandboxRequest(id="sandbox-123"), headers=client._headers
+    )
+    stub.resume_sandbox.assert_called_once_with(
+        pb.ResumeSandboxRequest(id="sandbox-123"), headers=client._headers
+    )
+
+
+def test_sandbox_restore_retries_conflict_while_suspended_resource_deletes() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.resume_sandbox.side_effect = [
+        ConnectRpcError(
+            Code.UNKNOWN,
+            "creating ChalkContainer CR: the server reported a conflict "
+            "(post chalkcontainers.meta.k8s.io)",
+        ),
+        pb.ResumeSandboxResponse(),
+    ]
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(
+            id="sandbox-123",
+            status=pb.SandboxStatus.RUNNING,
+            created_at=Timestamp(seconds=1),
+        )
+    )
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = client.get("sandbox-123")
+
+    with patch("chalkcompute._sandbox.time.sleep") as sleep:
+        sandbox.restore()
+
+    assert stub.resume_sandbox.call_count == 2
+    sleep.assert_called_once_with(0.25)
+    assert sandbox.info is not None and sandbox.info.status == "running"
 
 
 @pytest.mark.parametrize("use_client_create", [False, True])
