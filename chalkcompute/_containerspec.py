@@ -827,7 +827,8 @@ class ContainerSpec:
                 container_pb.VolumeMount(
                     name=volume.name,
                     mount_path=volume.mount_path,
-                    type="versioned_chalkfs",
+                    type=volume.type.value,
+                    size_limit=volume.size_limit,
                     version_id=volume.version_id,
                     ref_name=volume.ref_name,
                 )

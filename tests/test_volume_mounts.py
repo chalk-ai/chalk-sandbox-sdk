@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import json
 from functools import partial
 from unittest.mock import MagicMock
 
 import pytest
 
 from chalkcompute import VersionedVolume
+from chalkcompute import _volume as vv
 from chalkcompute._cls import RemoteClass, method
 from chalkcompute._container import Container
 from chalkcompute._function import RemoteFunction
 from chalkcompute._sandbox import Sandbox
 from chalkcompute._scaling_group import ScalingGroup
-from chalkcompute._volume import VolumeMount, normalize_volume_refs
+from chalkcompute._volume import VolumeMount, VolumeMountType, normalize_volume_refs
 
 
 def _identity(value: int) -> int:
@@ -97,3 +99,61 @@ def test_normalize_volume_handle_requires_string_mount_path() -> None:
     volume = VersionedVolume("code", client=MagicMock())
     with pytest.raises(ValueError, match="string mount path"):
         normalize_volume_refs([(volume, None)])  # type: ignore[arg-type]
+
+
+def test_empty_dir_mount_skips_persistent_volume_operations() -> None:
+    mount = VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)
+    client = MagicMock()
+    assert vv.normalize_volume_refs([mount]) == [mount]
+    assert vv.referenced_volume_mount(client, mount) is mount
+    assert vv.pinned_volume_mount(client, mount) is mount
+    vv.cleanup_owned_volumes(client, [mount], [])
+    assert not client.mock_calls
+
+
+@pytest.mark.parametrize(
+    "mount, expected_type, expected_size",
+    [
+        pytest.param(
+            VolumeMount("data", "/data"),
+            "versioned_chalkfs",
+            None,
+            id="default-chalkfs",
+        ),
+        pytest.param(
+            VolumeMount("data", "/data", type=VolumeMountType.CHALKFS),
+            "versioned_chalkfs",
+            None,
+            id="explicit-chalkfs",
+        ),
+        pytest.param(
+            VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR),
+            "empty_dir",
+            None,
+            id="empty-dir-default-size",
+        ),
+        pytest.param(
+            VolumeMount(
+                "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit="64Mi"
+            ),
+            "empty_dir",
+            "64Mi",
+            id="empty-dir-explicit-size",
+        ),
+    ],
+)
+def test_volume_mount_serialization(mount, expected_type, expected_size) -> None:
+    from chalkcompute._containerspec import ContainerSpec
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    spec = ContainerSpec(image="python:3.13", volumes=[mount])
+    proto = spec.to_proto()
+    assert proto.volumes[0].name == mount.name
+    assert proto.volumes[0].mount_path == mount.mount_path
+    assert proto.volumes[0].type == expected_type
+    assert proto.volumes[0].has_field("size_limit") == (expected_size is not None)
+    if expected_size is not None:
+        assert proto.volumes[0].size_limit == expected_size
+    assert (
+        container_pb.ChalkContainerSpec.from_json(json.dumps(spec.to_dict())) == proto
+    )
