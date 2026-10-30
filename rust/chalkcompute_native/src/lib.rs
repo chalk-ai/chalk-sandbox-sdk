@@ -29,6 +29,11 @@ pyo3::create_exception!(
 pyo3::create_exception!(chalkcompute._native, RemoteCallStatusError, PyRuntimeError);
 pyo3::create_exception!(
     chalkcompute._native,
+    RemoteCallCancelledError,
+    PyRuntimeError
+);
+pyo3::create_exception!(
+    chalkcompute._native,
     RemoteCallNotFoundError,
     PyRuntimeError
 );
@@ -153,6 +158,23 @@ impl PyRemoteCallClient {
         .map_err(to_py_err)
     }
 
+    #[pyo3(signature = (call_id, terminate_containers=false))]
+    fn cancel(
+        &self,
+        py: Python<'_>,
+        call_id: String,
+        terminate_containers: bool,
+    ) -> PyResult<Py<PyDict>> {
+        let result = py
+            .detach(|| self.inner.cancel(call_id, terminate_containers))
+            .map_err(to_py_err)?;
+        let status = CallStatus::from_raw(result.status);
+        let dict = PyDict::new(py);
+        dict.set_item("status", result.status)?;
+        dict.set_item("status_name", status_name(status))?;
+        Ok(dict.unbind())
+    }
+
     #[pyo3(signature = (call_id, cursor=None, poll_count=0))]
     fn poll_next(
         &self,
@@ -181,8 +203,7 @@ impl PyRemoteCallClient {
     }
 
     fn purge_all(&self, py: Python<'_>) -> PyResult<HashMap<String, u64>> {
-        py.detach(|| self.inner.purge_all())
-            .map_err(to_py_err)
+        py.detach(|| self.inner.purge_all()).map_err(to_py_err)
     }
 }
 
@@ -213,6 +234,7 @@ fn status_code(status: CallStatus) -> i32 {
         CallStatus::Completed => 3,
         CallStatus::Failed => 4,
         CallStatus::Expired => 5,
+        CallStatus::Cancelled => 6,
         CallStatus::Unknown(raw) => raw,
     }
 }
@@ -225,6 +247,7 @@ fn status_name(status: CallStatus) -> &'static str {
         CallStatus::Completed => "completed",
         CallStatus::Failed => "failed",
         CallStatus::Expired => "expired",
+        CallStatus::Cancelled => "cancelled",
         CallStatus::Unknown(_) => "unknown",
     }
 }
@@ -239,6 +262,7 @@ fn to_py_err(error: RemoteCallError) -> PyErr {
             RemoteCallNotFoundError::new_err(status.message().to_string())
         }
         RemoteCallError::Transport(_) => RemoteCallTransportError::new_err(message),
+        RemoteCallError::Cancelled(_) => RemoteCallCancelledError::new_err(message),
         RemoteCallError::Status(status) => {
             RemoteCallStatusError::new_err((status.code() as i32, status.message().to_string()))
         }
@@ -412,6 +436,10 @@ fn notebook_source_dependencies(sources: Vec<String>) -> PyResult<Vec<usize>> {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
+    m.add(
+        "RemoteCallCancelledError",
+        m.py().get_type::<RemoteCallCancelledError>(),
+    )?;
     m.add_function(wrap_pyfunction!(notebook_source_dependencies, m)?)?;
     m.add(
         "RemoteCallStatusError",

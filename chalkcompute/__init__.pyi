@@ -90,6 +90,10 @@ from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
+from chalkcompute._function_error import CallCancelledError as CallCancelledError
+from chalkcompute._remote_call_client import (
+    RemoteCallCancelResult as RemoteCallCancelResult,
+)
 from chalkcompute._remote_call_client import RemoteCallClient as RemoteCallClient
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable as RemoteCallClientUnavailable,
@@ -233,6 +237,8 @@ __all__ = [
     "RemoteFunction",
     "DeployedFunction",
     "FunctionError",
+    "CallCancelledError",
+    "RemoteCallCancelResult",
     "RemoteExecutionError",
     "FunctionBuildError",
     "FunctionSignatureError",

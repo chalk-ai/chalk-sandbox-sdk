@@ -644,6 +644,7 @@ class TestFunctionQueueProtocolAdvertisement:
         container_spec = client.requests[0].spec.container_spec
         assert container_spec is not None
         assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "true"
+        assert container_spec.env_vars["CHALK_FNQ_CANCELLATION_SUPPORTED"] == "true"
         assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
 
     def test_user_can_disable_stream_support(
@@ -688,6 +689,7 @@ class TestFunctionQueueProtocolAdvertisement:
         container_spec = client.requests[0].spec.container_spec
         assert container_spec is not None
         assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "true"
+        assert container_spec.env_vars["CHALK_FNQ_CANCELLATION_SUPPORTED"] == "true"
         assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
 
 

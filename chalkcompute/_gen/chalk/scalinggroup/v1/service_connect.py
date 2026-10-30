@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import BatchUpdateScalingGroupStatusRequest, BatchUpdateScalingGroupStatusResponse, CreateScalingGroupRequest, CreateScalingGroupResponse, DeleteScalingGroupRequest, DeleteScalingGroupResponse, GetScalingGroupRequest, GetScalingGroupResponse, GetScalingGroupRevisionRequest, GetScalingGroupRevisionResponse, ListScalingGroupRevisionsRequest, ListScalingGroupRevisionsResponse, ListScalingGroupsRequest, ListScalingGroupsResponse, UpdateScalingGroupRequest, UpdateScalingGroupResponse
+from .service_pb import BatchUpdateScalingGroupStatusRequest, BatchUpdateScalingGroupStatusResponse, CreateScalingGroupRequest, CreateScalingGroupResponse, DeleteScalingGroupRequest, DeleteScalingGroupResponse, GetScalingGroupRequest, GetScalingGroupResponse, GetScalingGroupRevisionRequest, GetScalingGroupRevisionResponse, ListScalingGroupReplicasRequest, ListScalingGroupReplicasResponse, ListScalingGroupRevisionsRequest, ListScalingGroupRevisionsResponse, ListScalingGroupsRequest, ListScalingGroupsResponse, UpdateScalingGroupRequest, UpdateScalingGroupResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -103,6 +103,25 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
                 service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
                 input=ListScalingGroupsRequest,
                 output=ListScalingGroupsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def list_scaling_group_replicas(
+        self,
+        request: ListScalingGroupReplicasRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ListScalingGroupReplicasResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListScalingGroupReplicas",
+                service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
+                input=ListScalingGroupReplicasRequest,
+                output=ListScalingGroupReplicasResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

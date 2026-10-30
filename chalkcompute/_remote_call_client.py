@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar
 
+from chalkcompute._function_error import CallCancelledError
+
 logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -164,6 +166,15 @@ RemoteCallNotFoundError: type[Exception] = getattr(
 )
 
 
+class _RemoteCallCancelledError(RuntimeError):
+    pass
+
+
+_RemoteCallCancelledErrorType: type[Exception] = getattr(
+    _native, "RemoteCallCancelledError", _RemoteCallCancelledError
+)
+
+
 class _RemoteCallTransportError(RuntimeError):
     pass
 
@@ -192,6 +203,16 @@ class ServiceAuthContext:
 
 
 @dataclass(frozen=True)
+class RemoteCallCancelResult:
+    status: int
+    status_name: str
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status_name.lower() == "cancelled"
+
+
+@dataclass(frozen=True)
 class RemoteCallPollResult:
     status: int
     status_name: str
@@ -207,6 +228,10 @@ class RemoteCallPollResult:
     @property
     def is_expired(self) -> bool:
         return self.status_name.lower() == "expired"
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status_name.lower() == "cancelled"
 
     @property
     def is_failed(self) -> bool:
@@ -382,6 +407,20 @@ class RemoteCallClient:
         )
         return call_id
 
+    def cancel(
+        self, call_id: str, *, terminate_containers: bool = False
+    ) -> RemoteCallCancelResult:
+        """Cancel a Stream-backed call; the first request fixes termination policy.
+
+        A conflicting repeat is rejected by the server. Success durably schedules
+        any required container termination; it does not wait for the container to stop.
+        """
+        raw = self._inner_or_raise().cancel(call_id, terminate_containers)
+        return RemoteCallCancelResult(
+            status=int(raw["status"]),
+            status_name=str(raw["status_name"]),
+        )
+
     def poll_next(
         self,
         call_id: str,
@@ -408,7 +447,10 @@ class RemoteCallClient:
         return result
 
     def get_result_chunks(self, call_id: str) -> list[bytes]:
-        return list(self._inner_or_raise().get_result_chunks(call_id))
+        try:
+            return list(self._inner_or_raise().get_result_chunks(call_id))
+        except _RemoteCallCancelledErrorType:
+            raise CallCancelledError(f"Remote call {call_id} was cancelled") from None
 
     def purge_function(self, function_name: str) -> int:
         return int(self._inner_or_raise().purge_function(function_name))

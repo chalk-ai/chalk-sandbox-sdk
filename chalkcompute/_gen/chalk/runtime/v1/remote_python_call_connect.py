@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .remote_python_call_pb import CallFunctionRequest, CallFunctionResponse, EnqueueRemoteCallRequest, EnqueueRemoteCallResponse, GetCallCountRequest, GetCallCountResponse, GetCallResultsRequest, GetCallResultsResponse, GetRecentCallsRequest, GetRecentCallsResponse, PollRemoteCallRequest, PollRemoteCallResponse, PurgeQueueRequest, PurgeQueueResponse, StreamRemoteCallBatchRequest, StreamRemoteCallBatchResponse
+from .remote_python_call_pb import CallFunctionRequest, CallFunctionResponse, CancelRemoteCallRequest, CancelRemoteCallResponse, EnqueueRemoteCallRequest, EnqueueRemoteCallResponse, GetCallCountRequest, GetCallCountResponse, GetCallResultsRequest, GetCallResultsResponse, GetRecentCallsRequest, GetRecentCallsResponse, PollRemoteCallRequest, PollRemoteCallResponse, PurgeQueueRequest, PurgeQueueResponse, StreamRemoteCallBatchRequest, StreamRemoteCallBatchResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -84,6 +84,32 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
                 service_name="chalk.runtime.v1.AsyncRemoteCallService",
                 input=PollRemoteCallRequest,
                 output=PollRemoteCallResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def cancel_remote_call(
+        self,
+        request: CancelRemoteCallRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CancelRemoteCallResponse:
+        """
+        Cancel a call without interrupting running code unless container termination
+        is requested. List queues return UNIMPLEMENTED. Late results cannot replace
+        cancellation, and cancellation never schedules another execution attempt.
+        Success commits cancellation and durably schedules any required termination;
+        it does not wait for the container to stop or collateral recovery to finish.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CancelRemoteCall",
+                service_name="chalk.runtime.v1.AsyncRemoteCallService",
+                input=CancelRemoteCallRequest,
+                output=CancelRemoteCallResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
