@@ -1,0 +1,1 @@
+- `chalkcompute.trigger_workflow` takes `worker=`, a `WorkflowWorker` or a worker name, to start a run on a worker from `deploy_workflow_worker`, e.g. from a scheduled function, without hard-coding its task queue.
