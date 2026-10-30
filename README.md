@@ -31,8 +31,9 @@ except cc.CallCancelledError:
 ```
 
 Inside an event loop, use `await call.cancel(...)`. The result reports the call
-status and `termination_status`; container termination may still be pending when
-cancellation returns. The first successful cancellation fixes the termination
+status. Success commits cancellation and durably schedules any required container
+termination; it does not wait for the container to stop. The first successful
+cancellation fixes the termination
 choice. Repeating the same choice is idempotent; changing it is rejected.
 
 Cancellation requires a Stream-backed queue and cancellation-capable consumers.

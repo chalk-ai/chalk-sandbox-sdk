@@ -94,9 +94,6 @@ from chalkcompute._function_error import CallCancelledError as CallCancelledErro
 from chalkcompute._remote_call_client import (
     RemoteCallCancelResult as RemoteCallCancelResult,
 )
-from chalkcompute._remote_call_client import (
-    RemoteCallTerminationStatus as RemoteCallTerminationStatus,
-)
 from chalkcompute._remote_call_client import RemoteCallClient as RemoteCallClient
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable as RemoteCallClientUnavailable,
@@ -239,7 +236,6 @@ __all__ = [
     "FunctionError",
     "CallCancelledError",
     "RemoteCallCancelResult",
-    "RemoteCallTerminationStatus",
     "RemoteExecutionError",
     "FunctionBuildError",
     "FunctionSignatureError",

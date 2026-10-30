@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from chalkcompute import CallCancelledError, RemoteCallTerminationStatus
+from chalkcompute import CallCancelledError
 from chalkcompute._connect import ConnectClient
 from chalkcompute._function import RemoteFunction
 
@@ -56,11 +56,6 @@ def test_native_function_handle_cancellation(function, terminate):
     handle = function.defer(21)
     result = handle.cancel(terminate_containers=terminate)
     assert result.is_cancelled
-    assert result.termination_status == (
-        RemoteCallTerminationStatus.TERMINATED
-        if terminate
-        else RemoteCallTerminationStatus.NOT_REQUESTED
-    )
     assert handle.cancel(terminate_containers=terminate) == result
     with pytest.raises(
         RuntimeError, match="termination policy is already fixed"

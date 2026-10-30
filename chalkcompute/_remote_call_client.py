@@ -9,7 +9,6 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar
 
@@ -203,21 +202,10 @@ class ServiceAuthContext:
     grpc_engine: tuple[str, bool] | None
 
 
-class RemoteCallTerminationStatus(IntEnum):
-    """Progress of an optional consumer-container termination request."""
-
-    UNSPECIFIED = 0
-    NOT_REQUESTED = 1
-    PENDING = 2
-    TERMINATED = 3
-    FAILED = 4
-
-
 @dataclass(frozen=True)
 class RemoteCallCancelResult:
     status: int
     status_name: str
-    termination_status: RemoteCallTerminationStatus
 
     @property
     def is_cancelled(self) -> bool:
@@ -424,14 +412,13 @@ class RemoteCallClient:
     ) -> RemoteCallCancelResult:
         """Cancel a Stream-backed call; the first request fixes termination policy.
 
-        A conflicting repeat is rejected by the server. Container termination
-        can remain pending after the call itself becomes cancelled.
+        A conflicting repeat is rejected by the server. Success durably schedules
+        any required container termination; it does not wait for the container to stop.
         """
         raw = self._inner_or_raise().cancel(call_id, terminate_containers)
         return RemoteCallCancelResult(
             status=int(raw["status"]),
             status_name=str(raw["status_name"]),
-            termination_status=RemoteCallTerminationStatus(raw["termination_status"]),
         )
 
     def poll_next(

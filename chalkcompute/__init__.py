@@ -46,10 +46,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._remote_call_client",
         "RemoteCallCancelResult",
     ),
-    "RemoteCallTerminationStatus": (
-        "chalkcompute._remote_call_client",
-        "RemoteCallTerminationStatus",
-    ),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
     "FunctionSignatureError": ("chalkcompute._function", "FunctionSignatureError"),
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),

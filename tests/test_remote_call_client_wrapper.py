@@ -288,20 +288,17 @@ def test_import_native_falls_back_to_site_packages(
     assert module.__file__ == str(native_path)
 
 
-def test_cancel_preserves_server_outcome_and_termination_status(monkeypatch):
-    from chalkcompute import RemoteCallTerminationStatus
-
+def test_cancel_preserves_server_outcome(monkeypatch):
     requests = []
 
     def cancel(self, call_id, terminate_containers):
         requests.append((call_id, terminate_containers))
-        return {"status": 6, "status_name": "cancelled", "termination_status": 2}
+        return {"status": 6, "status_name": "cancelled"}
 
     monkeypatch.setattr(LegacyNativeRemoteCallClient, "cancel", cancel, raising=False)
     client = RemoteCallClient("remote.chalk.test:443")
     result = client.cancel("call-1", terminate_containers=True)
     assert result.is_cancelled
-    assert result.termination_status is RemoteCallTerminationStatus.PENDING
     assert requests == [("call-1", True)]
 
 

@@ -100,6 +100,8 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
         Cancel a call without interrupting running code unless container termination
         is requested. List queues return UNIMPLEMENTED. Late results cannot replace
         cancellation, and cancellation never schedules another execution attempt.
+        Success commits cancellation and durably schedules any required termination;
+        it does not wait for the container to stop or collateral recovery to finish.
         """
         return self.execute_unary(
             request=request,

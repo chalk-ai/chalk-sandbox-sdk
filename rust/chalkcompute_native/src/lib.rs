@@ -172,7 +172,6 @@ impl PyRemoteCallClient {
         let dict = PyDict::new(py);
         dict.set_item("status", result.status)?;
         dict.set_item("status_name", status_name(status))?;
-        dict.set_item("termination_status", result.termination_status)?;
         Ok(dict.unbind())
     }
 

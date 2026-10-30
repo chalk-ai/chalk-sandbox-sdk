@@ -397,16 +397,12 @@ class FakeRemoteCallClient:
     def cancel(self, call_id: str, *, terminate_containers: bool = False):
         from chalkcompute._remote_call_client import (
             RemoteCallCancelResult,
-            RemoteCallTerminationStatus,
         )
 
         self.cancellations.append((call_id, terminate_containers))
         return RemoteCallCancelResult(
             6,
             "cancelled",
-            RemoteCallTerminationStatus.PENDING
-            if terminate_containers
-            else RemoteCallTerminationStatus.NOT_REQUESTED,
         )
 
     def purge_function(self, function_name: str) -> int:
@@ -1313,16 +1309,11 @@ def test_call_timeout_none_disables_deadline() -> None:
 
 @pytest.mark.parametrize("terminate_containers", [False, True])
 def test_deferred_cancel_threads_policy_and_stops_get(terminate_containers):
-    from chalkcompute import CallCancelledError, RemoteCallTerminationStatus
+    from chalkcompute import CallCancelledError
 
     handle = _remote_function().defer(98)
     result = handle.cancel(terminate_containers=terminate_containers)
     assert result.is_cancelled
-    assert result.termination_status == (
-        RemoteCallTerminationStatus.PENDING
-        if terminate_containers
-        else RemoteCallTerminationStatus.NOT_REQUESTED
-    )
     client = FakeRemoteCallClient.instances[-1]
     assert client.cancellations == [("call-1", terminate_containers)]
     with pytest.raises(CallCancelledError, match="call-1"):
