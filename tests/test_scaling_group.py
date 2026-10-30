@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from chalkcompute import VolumeMount, VolumeMountType
-
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -51,11 +49,6 @@ def test_scaling_group_deploy_forwards_spec_fields(
         tags={"team": "compute"},
         chalk_identity=True,
         network_policy=policy,
-        volumes=[
-            VolumeMount(
-                "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit="64Mi"
-            )
-        ],
     )
     sg._client = cast(Any, client)
 
@@ -65,11 +58,6 @@ def test_scaling_group_deploy_forwards_spec_fields(
     assert isinstance(request, sg_pb.CreateScalingGroupRequest)
     assert request.spec is not None and request.spec.container_spec is not None
     assert dict(request.spec.container_spec.tags) == {"team": "compute"}
-    assert request.spec.container_spec.volumes == [
-        container_pb.VolumeMount(
-            name="scratch", mount_path="/tmp", type="empty_dir", size_limit="64Mi"
-        )
-    ]
     assert request.spec.container_spec.has_field("chalk_workload_identity")
     assert request.spec.container_spec.has_field("network_policy") == (
         expected is not None

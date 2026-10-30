@@ -988,21 +988,12 @@ def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
     # second, differently-authenticated one through _require_client().
     fake_client = SandboxClient()
     fake_client._stub = _PermissionDeniedOnGetStub()  # type: ignore[assignment]
-    sandbox = Sandbox(
-        image="ubuntu:latest",
-        volumes=[VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)],
-    )
+    sandbox = Sandbox(image="ubuntu:latest")
 
     try:
-        with (
-            patch.object(
-                SandboxClient, "from_env", return_value=fake_client
-            ) as from_env,
-            patch(
-                "chalkcompute._sandbox.VolumeClient.from_connect",
-                side_effect=AssertionError("empty_dir must not use the volume client"),
-            ),
-        ):
+        with patch.object(
+            SandboxClient, "from_env", return_value=fake_client
+        ) as from_env:
             with pytest.raises(SandboxError, match="still running"):
                 with patch("chalkcompute._sandbox.time.sleep"):
                     sandbox.run(poll_interval=0, timeout=30)
@@ -1014,6 +1005,27 @@ def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
         assert fake_client._stub.terminate_request.id == "sandbox-123"
     finally:
         fake_client.close()
+
+
+def test_sandbox_terminate_empty_dir_does_not_create_volume_client() -> None:
+    with SandboxClient() as client:
+        stub = MagicMock(wraps=_Stub())
+        stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        client._stub = stub
+        sandbox = Sandbox(
+            image="ubuntu:latest",
+            sandbox_client=client,
+            volumes=[VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)],
+        )
+        sandbox.run()
+
+        with patch("chalkcompute._sandbox.VolumeClient.from_connect") as from_connect:
+            sandbox.terminate()
+
+        from_connect.assert_not_called()
+        stub.terminate_sandbox.assert_called_once_with(
+            pb.TerminateSandboxRequest(id="sandbox-123"), headers=client._headers
+        )
 
 
 class _RerunPermissionDeniedStub:
