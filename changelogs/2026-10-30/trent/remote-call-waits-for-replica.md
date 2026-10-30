@@ -1,0 +1,1 @@
+- `.remote()` calls rejected by the gateway for lack of a ready replica are now resent by the native client until `call_timeout` (indefinitely when `None`), without consuming handler retries.

@@ -3727,7 +3727,9 @@ class RemoteFunction:
         """Invoke the deployed remote function over the wire.
 
         Bounded by ``call_timeout`` (set on the constructor / ``@function``
-        decorator / ``from_name`` — 60s by default): if the scaling group is
+        decorator / ``from_name`` — 60s by default). While no replica is ready
+        (scaling from zero, or waiting for capacity) the call is resent until
+        the timeout; ``None`` waits indefinitely. If the scaling group is
         ``Unhealthy`` (e.g. replicas stuck in ``CrashLoopBackOff``) or
         otherwise never responds, this raises ``TimeoutError`` instead of
         blocking forever, including the scaling group's status message when
