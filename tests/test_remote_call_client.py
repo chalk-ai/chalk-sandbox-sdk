@@ -841,6 +841,54 @@ def test_deferred_result_collection_polls_until_completed(async_context, mode) -
     ]
 
 
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+@pytest.mark.parametrize("status", ["running", "completed"])
+def test_deferred_collection_preserves_deadline_order(
+    async_context, mode, status
+) -> None:
+    FakeRemoteCallClient.poll_results = [
+        _poll(status, chunks=[_result_ipc([99])], cursor="c1"),
+    ]
+    fn = _async_remote_function() if async_context else _remote_function()
+    handle = fn.defer(98)
+    yielded = []
+
+    async def collect_async():
+        if mode == "stream":
+            async for batch in handle.stream(timeout=0):
+                yielded.append(batch.column("result").to_pylist())
+            return yielded
+        if mode == "gather":
+            return await function_mod.gather([handle], timeout=0)
+        return await handle.get(timeout=0)
+
+    def collect():
+        if async_context:
+            return asyncio.run(collect_async())
+        if mode == "stream":
+            for batch in handle.stream(timeout=0):
+                yielded.append(batch.column("result").to_pylist())
+            return yielded
+        if mode == "gather":
+            return function_mod.gather([handle], timeout=0)
+        return handle.get(timeout=0)
+
+    if status == "running":
+        with pytest.raises(TimeoutError, match="last status: running"):
+            collect()
+    else:
+        # A completed call wins over an elapsed retrieval deadline.
+        expected = {"get": 99, "stream": [[99]], "gather": [99]}
+        assert collect() == expected[mode]
+
+    if mode == "stream":
+        # Available output is delivered before checking the deadline.
+        assert yielded == [[99]]
+    assert FakeRemoteCallClient.instances[0].polls == [("call-1", "", 0)]
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
 def test_deferred_get_raises_user_error() -> None:
     # The in-pod runtime wraps a user handler exception as RuntimeError; its
     # message mentions the original error but the exc_type is not infra.

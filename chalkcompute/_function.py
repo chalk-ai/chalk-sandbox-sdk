@@ -1107,6 +1107,26 @@ class FunctionCallHandle:
             f"(last status: {last_status})"
         )
 
+    def _raise_if_terminal(self, result: Any, deadline: float | None) -> bool:
+        """Raise failures or timeouts; return whether the call completed."""
+        if result.is_expired:
+            raise FunctionError("Remote call results have expired")
+
+        if result.is_failed:
+            message = result.error_message or "Remote call failed"
+            raise (
+                decode_remote_error(message, self._func_name, call_id=self._call_id)
+                or FunctionError(message)
+            ) from None
+
+        if result.is_completed:
+            return True
+
+        if deadline is not None and time.monotonic() >= deadline:
+            raise self._timeout_error(result.status_name)
+
+        return False
+
     def get(self, timeout: float | None = None) -> Any:
         if _has_running_event_loop():
             return self._async_get(timeout)
@@ -1120,21 +1140,8 @@ class FunctionCallHandle:
             result = self.poll()
             chunks.extend(result.chunks)
 
-            if result.is_expired:
-                raise FunctionError("Remote call results have expired")
-
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise (
-                    decode_remote_error(message, self._func_name, call_id=self._call_id)
-                    or FunctionError(message)
-                ) from None
-
-            if result.is_completed:
+            if self._raise_if_terminal(result, deadline):
                 return self._function._materialize_result_chunks(chunks)
-
-            if deadline is not None and time.monotonic() >= deadline:
-                raise self._timeout_error(result.status_name)
 
     async def _async_get(self, timeout: float | None = None) -> Any:
         return await _run_in_worker_thread(self._sync_get, timeout)
@@ -1155,21 +1162,8 @@ class FunctionCallHandle:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                 yield from reader
 
-            if result.is_expired:
-                raise FunctionError("Remote call results have expired")
-
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise (
-                    decode_remote_error(message, self._func_name, call_id=self._call_id)
-                    or FunctionError(message)
-                ) from None
-
-            if result.is_completed:
+            if self._raise_if_terminal(result, deadline):
                 return
-
-            if deadline is not None and time.monotonic() >= deadline:
-                raise self._timeout_error(result.status_name)
 
     async def _async_stream(self, timeout: float | None = None) -> Any:
         import pyarrow as pa
@@ -1183,21 +1177,8 @@ class FunctionCallHandle:
                 for batch in reader:
                     yield batch
 
-            if result.is_expired:
-                raise FunctionError("Remote call results have expired")
-
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise (
-                    decode_remote_error(message, self._func_name, call_id=self._call_id)
-                    or FunctionError(message)
-                ) from None
-
-            if result.is_completed:
+            if self._raise_if_terminal(result, deadline):
                 return
-
-            if deadline is not None and time.monotonic() >= deadline:
-                raise self._timeout_error(result.status_name)
 
 
 def gather(
