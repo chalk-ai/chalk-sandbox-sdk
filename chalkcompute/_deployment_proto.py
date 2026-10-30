@@ -96,6 +96,8 @@ def function_config(
         if serialization_format == "pyarrow"
         else None
     )
+    if retries is not None:
+        retries.validate_execution()
     retry_proto = (
         None
         if retries is None
@@ -105,6 +107,7 @@ def function_config(
             backoff_multiplier=retries.backoff_multiplier,
             max_backoff_ms=round(retries.max_wait_seconds * 1000),
             key=retries.key,
+            jitter=retries.jitter,
         )
     )
     rate_limit_proto = None

@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -212,3 +213,37 @@ def test_function_runtime_image_or_none_builds_image_outside_pod() -> None:
     assert image is not None
     proto = image.to_proto()
     assert proto.base_image.startswith("python:3.11-slim")
+
+
+@pytest.mark.parametrize("overlay", ["source", "wheel"])
+def test_local_sdk_overlay_runtime_requirements_match_project(
+    tmp_path, monkeypatch, overlay
+) -> None:
+    from chalkcompute import Image, _local_dev
+
+    monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", "0")
+    monkeypatch.delenv("CHALK_FUNCTION_REMOTE_CALL_WHEEL", raising=False)
+    if overlay == "wheel":
+        wheel = tmp_path / "chalkcompute-0.0.0-cp314-cp314-linux_x86_64.whl"
+        wheel.write_bytes(b"wheel")
+        monkeypatch.setenv("CHALK_FUNCTION_LOCAL_SDK_WHEEL", str(wheel))
+        monkeypatch.delenv("CHALK_FUNCTION_LOCAL_SDK_COPY", raising=False)
+    else:
+        monkeypatch.setenv("CHALK_FUNCTION_LOCAL_SDK_COPY", "1")
+        monkeypatch.delenv("CHALK_FUNCTION_LOCAL_SDK_WHEEL", raising=False)
+
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    )["project"]
+    remote_call = next(
+        requirement
+        for requirement in project["dependencies"]
+        if requirement.startswith("chalk-remote-call-python")
+    )
+    image = _local_dev.apply_local_dev_mounts(
+        Image.debian_slim("3.14"), remote_call_runtime_package=remote_call
+    )
+    packages = image.to_proto().steps[0].step.value.packages
+    # The wheel overlay uses --no-deps, so its image must resolve every
+    # runtime requirement against the same constraints as a normal install.
+    assert set(packages) == set(project["dependencies"])

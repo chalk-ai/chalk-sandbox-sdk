@@ -18,18 +18,31 @@ class RemoteCallClient:
         requested_permissions: Sequence[int] | None = None,
         auth_rpc_timeout_ms: int | None = None,
         auth_retry_interval_ms: int | None = None,
+        api_mode: bool = False,
     ) -> None: ...
     def call_ipc(
         self,
         name: str,
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] | None = None,
+        retry_policy: dict[str, object] | None = None,
+        timeout: float | None = None,
+    ) -> list[bytes]: ...
+    def call_external_ipc(
+        self,
+        name: str,
+        version: int | None,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] | None = None,
+        retry_policy: dict[str, object] | None = None,
+        timeout: float | None = None,
     ) -> list[bytes]: ...
     def enqueue(
         self,
         name: str,
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] | None = None,
+        max_retries: int | None = None,
     ) -> str: ...
     def poll_next(
         self,

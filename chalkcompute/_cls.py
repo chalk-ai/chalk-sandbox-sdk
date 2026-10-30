@@ -299,6 +299,12 @@ class _BoundRemoteMethod:
         """Enqueue a wire call and return a handle immediately."""
         return self._remote().defer(*args, **kwargs)
 
+    def with_options(
+        self, *, retries: int | RetryPolicy | None = None
+    ) -> RemoteFunction:
+        """Return a call-scoped method handle with a retry override."""
+        return self._remote().with_options(retries=retries)
+
     def with_knowledge_cutoff(self, knowledge_cutoff: Any) -> RemoteFunction:
         """Return a call-scoped remote handle with an overridden request time."""
         return self._remote().with_knowledge_cutoff(knowledge_cutoff)
@@ -1858,10 +1864,10 @@ def cls(
         Defaults to 10 when batching is enabled.
     retries
         Retry policy for handler invocations. An ``int`` is the number of
-        retries after the initial execution. Redis Stream function queues
-        currently honor ``max_retries`` with a fixed reclaim delay; the
-        backoff, jitter, key, and exception-filter fields are reserved for
-        other invocation paths.
+        retries after the initial execution. Direct calls apply the policy's
+        backoff and jitter client-side; Redis Stream queues apply the count
+        with a fixed reclaim delay. Override per call using ``with_options``.
+        Exception filters and shared retry keys are not supported.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-method key, or a
