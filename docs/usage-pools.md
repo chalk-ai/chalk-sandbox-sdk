@@ -45,7 +45,8 @@ budget per period; adding another for the same period raises an API error. Use t
 budget's handle to edit its limit instead. `refresh()` preserves queued additions.
 
 The separate `UsageBudget` and `RateLimit` resources accept `usage_pool=pool` for
-either a local definition or a deployed handle (see their respective SDK PRs).
+either a local definition or a deployed handle. See [usage budgets](usage-budgets.md)
+and [rate limits](router-rate-limits.md) for standalone policy management.
 Deploying a standalone policy creates its undeployed pool first with the same
 client and environment. An already deployed pool is referenced by ID without
 redeploying it; any new queued changes on that pool still require `pool.deploy()`.
