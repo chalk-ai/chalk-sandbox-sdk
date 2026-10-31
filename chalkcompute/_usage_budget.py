@@ -10,8 +10,10 @@ from protobuf.wkt import FieldMask
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.router.v1 import usage_budget_connect, usage_budget_pb as pb
 from chalkcompute._router_resource import (
-    RouterResource, boolean, client_for, nonblank, positive, scope_for,
+    RouterResource, boolean, client_for, nonblank, positive, resolve_owner, scope_for,
 )
+
+from chalkcompute._usage_pool import UsagePool
 
 Period = Literal["daily", "weekly", "monthly"]
 _PERIODS = {
@@ -25,6 +27,9 @@ class UsageBudget(RouterResource):
     """A token budget scoped to exactly one usage pool or router API key.
 
     Construct locally, then ``deploy()`` with ambient Chalk authentication.
+    ``usage_pool`` accepts a local pool definition, a deployed handle, or a pool
+    ID. Deploy creates an undeployed pool first using the same client. Loaded
+    pools are reused without deploying any queued changes on them.
     ``token_limit`` and ``enabled`` can be changed and redeployed. Ownership and
     period are immutable; use ``from_id`` to edit a previously created budget.
     """
@@ -34,12 +39,12 @@ class UsageBudget(RouterResource):
         *,
         token_limit: int,
         period: Period,
-        usage_pool_id: str | None = None,
+        usage_pool: UsagePool | str | None = None,
         api_key_id: str | None = None,
         enabled: bool = True,
     ) -> None:
         super().__init__()
-        self._scope, self._scope_id = scope_for(usage_pool_id, api_key_id)
+        self._scope, self._owner = scope_for(usage_pool, api_key_id)
         if period not in _PERIODS:
             raise ValueError("period must be daily, weekly, or monthly")
         self._period = period
@@ -55,7 +60,7 @@ class UsageBudget(RouterResource):
 
     @property
     def scope_id(self) -> str:
-        return self._scope_id
+        return self._owner if isinstance(self._owner, str) else self._owner.id
 
     @property
     def period(self) -> Period:
@@ -79,7 +84,7 @@ class UsageBudget(RouterResource):
         resource = cls(
             token_limit=budget.token_limit,
             period=period,
-            usage_pool_id=budget.scope_id if budget.scope == "usage_pool" else None,
+            usage_pool=budget.scope_id if budget.scope == "usage_pool" else None,
             api_key_id=budget.scope_id if budget.scope == "api_key" else None,
             enabled=budget.enabled,
         )
@@ -92,6 +97,8 @@ class UsageBudget(RouterResource):
 
     def _load(self, budget: pb.UsageBudget | None, env: str | None) -> UsageBudget:
         loaded = self._from_proto(budget, env)
+        if not isinstance(self._owner, str) and self._owner._id == loaded._owner:
+            loaded._owner = self._owner
         self.__dict__.update(loaded.__dict__)
         return self
 
@@ -101,10 +108,11 @@ class UsageBudget(RouterResource):
         positive(self.token_limit, "token_limit")
         boolean(self.enabled, "enabled")
         with client_for(client, self._environment_id) as c:
+            scope_id = resolve_owner(self._owner, c, create=self._id is None)
             stub = c.stub(usage_budget_connect.UsageBudgetServiceClientSync)
             if self._id is None:
                 budget = c.call(stub.create_usage_budget, pb.CreateUsageBudgetRequest(
-                    scope=self.scope, scope_id=self.scope_id,
+                    scope=self.scope, scope_id=scope_id,
                     token_limit=self.token_limit, period=_PERIODS[self.period], enabled=self.enabled,
                 )).budget
             else:
@@ -126,15 +134,15 @@ class UsageBudget(RouterResource):
 
     @classmethod
     def list(
-        cls, *, usage_pool_id: str | None = None, api_key_id: str | None = None,
+        cls, *, usage_pool: UsagePool | str | None = None, api_key_id: str | None = None,
         client: ConnectClient | None = None,
     ) -> list[UsageBudget]:
-        """List budgets, optionally filtering by one pool or key ID."""
-        scope, scope_id = (
-            (None, None) if usage_pool_id is None and api_key_id is None
-            else scope_for(usage_pool_id, api_key_id)
-        )
+        """List budgets for a pool or key; local pools are looked up by name."""
+        owner = None if usage_pool is None and api_key_id is None else scope_for(usage_pool, api_key_id)
         with client_for(client) as c:
+            scope, scope_id = (None, None) if owner is None else (
+                owner[0], resolve_owner(owner[1], c, create=False),
+            )
             response = c.call(
                 c.stub(usage_budget_connect.UsageBudgetServiceClientSync).list_usage_budgets,
                 pb.ListUsageBudgetsRequest(scope=scope, scope_id=scope_id),

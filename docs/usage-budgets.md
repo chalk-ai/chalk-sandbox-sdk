@@ -1,15 +1,16 @@
 # Usage budgets
 
-Create token budgets for an existing router usage pool or API key using normal
+Create token budgets for a router usage pool or API key using normal
 Chalk credentials and the active environment. The server must have Model Gateway
 and quota enforcement enabled. No new credentials or client construction are needed.
 
 ```python
 import chalkcompute as cc
 
-# Use an existing pool ID. This budget persists after the program exits.
+# Deploy creates this local pool first. Both resources persist after this program exits.
+pool = cc.UsagePool("customer-support")
 budget = cc.UsageBudget(
-    usage_pool_id="your-pool-id",
+    usage_pool=pool,
     token_limit=1_000_000,
     period="monthly",
 ).deploy()
@@ -26,13 +27,40 @@ budget.enabled = False
 budget.deploy()
 ```
 
-Provide exactly one of `usage_pool_id` or `api_key_id`. The latter is the router
+Provide exactly one of `usage_pool` or `api_key_id`. The latter is the router
 key's record ID, not its secret token. Periods are `daily`, `weekly`, and
 `monthly`; these are server-defined fixed UTC windows, not rolling durations.
 Only one budget per owner and period is allowed. Creating a new definition does
 not silently overwrite an existing budget. Use `from_id()` or
-`UsageBudget.list(usage_pool_id="your-pool-id")` to manage existing budgets.
-Omit the filter to list all budgets in the environment.
+`UsageBudget.list(usage_pool=pool)` to manage existing budgets.
+Omit the filter to list all budgets in the environment. A local pool passed to
+`list()` is looked up by name without creating anything.
+
+`usage_pool` accepts either `cc.UsagePool("...")` or a deployed/loaded pool handle.
+Construction stays local; deploying the budget deploys a new pool first with the
+same authentication and environment. Already deployed pools are reused without
+redeploying them. Use `UsagePool.from_name(...)` to adopt an existing pool; a new
+pool definition does not silently adopt an existing name. An existing pool ID
+string is also accepted as `usage_pool="your-pool-id"`.
+
+For fluent configuration, put the budget directly on the pool:
+
+```python
+pool = (
+    cc.UsagePool("analytics")
+    .with_usage_budget(token_limit=1_000_000, period="monthly")
+    .deploy()
+)
+
+# The standalone form also accepts an already deployed pool.
+daily_budget = cc.UsageBudget(
+    usage_pool=pool, token_limit=100_000, period="daily",
+).deploy()
+```
+
+`with_usage_budget()` queues an addition for the next `pool.deploy()` and returns
+the same pool. To edit an existing budget, use its handle instead of adding a
+second budget for the same period.
 
 `current_usage` is an admission counter, not an exact historical billing ledger.
 It can be `None` when enforcement is disabled or unavailable. The next reset is
