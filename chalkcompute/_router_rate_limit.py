@@ -10,8 +10,10 @@ from protobuf.wkt import FieldMask
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.router.v1 import rate_limit_connect, rate_limit_pb as pb
 from chalkcompute._router_resource import (
-    RouterResource, boolean, client_for, nonblank, positive, scope_for,
+    RouterResource, client_for, nonblank, rate_dimension, resolve_owner, scope_for, validate_rate_limit,
 )
+
+from chalkcompute._usage_pool import UsagePool
 
 
 class RateLimit(RouterResource):
@@ -21,12 +23,15 @@ class RateLimit(RouterResource):
     ``concurrent_requests``. Separate objects can enforce multiple dimensions.
     This is a persistent gateway policy, separate from the outbound function
     ``RateLimitPolicy``. Construct locally, then call ``deploy()``.
+    ``usage_pool`` accepts a local definition, deployed handle, or pool ID. Deploy
+    creates an undeployed pool first using the same client. An already deployed
+    pool is reused without deploying any queued changes on it.
     """
 
     def __init__(
         self,
         *,
-        usage_pool_id: str | None = None,
+        usage_pool: UsagePool | str | None = None,
         api_key_id: str | None = None,
         requests_per_minute: int | None = None,
         tokens_per_minute: int | None = None,
@@ -37,16 +42,10 @@ class RateLimit(RouterResource):
         enabled: bool = True,
     ) -> None:
         super().__init__()
-        self._scope, self._scope_id = scope_for(usage_pool_id, api_key_id)
-        dimensions = {
-            "requests_per_minute": requests_per_minute,
-            "tokens_per_minute": tokens_per_minute,
-            "concurrent_requests": concurrent_requests,
-        }
-        selected = [(name, value) for name, value in dimensions.items() if value is not None]
-        if len(selected) != 1:
-            raise ValueError("provide exactly one rate-limit dimension")
-        self._limit_type, self.limit_value = selected[0]
+        self._scope, self._owner = scope_for(usage_pool, api_key_id)
+        self._limit_type, self.limit_value = rate_dimension(
+            requests_per_minute, tokens_per_minute, concurrent_requests,
+        )
         self.burst = burst
         self.connection_id = connection_id
         if isinstance(models, (str, bytes)):
@@ -62,27 +61,16 @@ class RateLimit(RouterResource):
 
     @property
     def scope_id(self) -> str:
-        return self._scope_id
+        return self._owner if isinstance(self._owner, str) else self._owner.id
 
     @property
     def limit_type(self) -> str:
         return self._limit_type
 
     def _validate(self) -> None:
-        positive(self.limit_value, "limit_value")
-        boolean(self.enabled, "enabled")
-        if self.burst is not None:
-            positive(self.burst, "burst")
-            if self.limit_type == "concurrent_requests" and self.burst != self.limit_value:
-                raise ValueError("concurrent request burst must be absent or equal to the limit")
-        if self.connection_id is not None:
-            nonblank(self.connection_id, "connection_id")
-        if isinstance(self.models, (str, bytes)):
-            raise TypeError("models must be a sequence of model names, not a string")
-        if self.models and self.connection_id is None:
-            raise ValueError("models requires connection_id")
-        for model in self.models:
-            nonblank(model, "model")
+        validate_rate_limit(
+            self.limit_type, self.limit_value, self.burst, self.connection_id, self.models, self.enabled,
+        )
 
     @classmethod
     def _from_proto(cls, policy: pb.RateLimitPolicy | None, env: str | None) -> RateLimit:
@@ -93,7 +81,7 @@ class RateLimit(RouterResource):
         if policy.limit_type not in ("requests_per_minute", "tokens_per_minute", "concurrent_requests"):
             raise RuntimeError("rate limit API returned an unsupported dimension")
         resource = cls(
-            usage_pool_id=policy.scope_id if policy.scope == "usage_pool" else None,
+            usage_pool=policy.scope_id if policy.scope == "usage_pool" else None,
             api_key_id=policy.scope_id if policy.scope == "api_key" else None,
             requests_per_minute=policy.limit_value if policy.limit_type == "requests_per_minute" else None,
             tokens_per_minute=policy.limit_value if policy.limit_type == "tokens_per_minute" else None,
@@ -108,6 +96,8 @@ class RateLimit(RouterResource):
 
     def _load(self, policy: pb.RateLimitPolicy | None, env: str | None) -> RateLimit:
         loaded = self._from_proto(policy, env)
+        if not isinstance(self._owner, str) and self._owner._id == loaded._owner:
+            loaded._owner = self._owner
         self.__dict__.update(loaded.__dict__)
         return self
 
@@ -116,10 +106,11 @@ class RateLimit(RouterResource):
         self._require_active()
         self._validate()
         with client_for(client, self._environment_id) as c:
+            scope_id = resolve_owner(self._owner, c, create=self._id is None)
             stub = c.stub(rate_limit_connect.RateLimitServiceClientSync)
             if self._id is None:
                 policy = c.call(stub.create_rate_limit, pb.CreateRateLimitRequest(
-                    scope=self.scope, scope_id=self.scope_id, limit_type=self.limit_type,
+                    scope=self.scope, scope_id=scope_id, limit_type=self.limit_type,
                     limit_value=self.limit_value, burst_value=self.burst,
                     connection_id=self.connection_id, models=list(self.models), enabled=self.enabled,
                 )).policy
@@ -147,21 +138,22 @@ class RateLimit(RouterResource):
 
     @classmethod
     def list(
-        cls, *, usage_pool_id: str | None = None, api_key_id: str | None = None,
+        cls, *, usage_pool: UsagePool | str | None = None, api_key_id: str | None = None,
         client: ConnectClient | None = None,
     ) -> list[RateLimit]:
         """Read every page, optionally selecting one pool or key's policies."""
-        owner = None if usage_pool_id is None and api_key_id is None else scope_for(usage_pool_id, api_key_id)
+        owner = None if usage_pool is None and api_key_id is None else scope_for(usage_pool, api_key_id)
         policies: list[RateLimit] = []
         cursor: str | None = None
         seen: set[str] = set()
         with client_for(client) as c:
+            resolved = None if owner is None else (owner[0], resolve_owner(owner[1], c, create=False))
             stub = c.stub(rate_limit_connect.RateLimitServiceClientSync)
             while True:
                 response = c.call(stub.list_rate_limits, pb.ListRateLimitsRequest(cursor=cursor))
                 policies.extend(
                     cls._from_proto(policy, c._env_id) for policy in response.policies
-                    if owner is None or (policy.scope, policy.scope_id) == owner
+                    if resolved is None or (policy.scope, policy.scope_id) == resolved
                 )
                 cursor = response.next_cursor
                 if not cursor:
