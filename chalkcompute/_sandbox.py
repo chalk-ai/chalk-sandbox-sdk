@@ -720,19 +720,32 @@ class Sandbox:
 
     Examples
     --------
+    Create a sandbox, upload a script, run it, and tear the sandbox down:
+
     >>> from chalkcompute import Image, SandboxClient
+    >>> script = b"import numpy as np\\nprint(np.__version__)\\n"
     >>> with SandboxClient.from_env() as client:
     ...     sandbox = client.create(
     ...         Image.debian_slim().pip_install(["numpy"]),
+    ...         env={"DATASET_URL": "https://example.com/data.csv"},
+    ...         cpu="2",
+    ...         memory="4Gi",
     ...     )
-    ...     result = sandbox.exec(
-    ...         "python",
-    ...         "-c",
-    ...         "import numpy; print(numpy.__version__)",
-    ...     )
-    ...     sandbox.terminate()
+    ...     try:
+    ...         sandbox.fs.write_bytes("/workspace/analyze.py", script)
+    ...         result = sandbox.exec("python", "/workspace/analyze.py")
+    ...         if result.exit_code != 0:
+    ...             raise RuntimeError(result.stderr_text)
+    ...     finally:
+    ...         sandbox.terminate()
     >>> result.stdout_text.strip()
     '2.5.1'
+
+    Reuse an existing, long-lived sandbox by name instead of creating one:
+
+    >>> sandbox = Sandbox.from_name("my-long-lived-sandbox")
+    >>> sandbox.exec("ls", "/workspace").stdout_text.splitlines()
+    ['analyze.py']
     """
 
     __chalk_type_id__ = "chalkcompute.Sandbox"
