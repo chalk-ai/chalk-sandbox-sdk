@@ -210,3 +210,33 @@ def test_function_invocation_is_not_retried_by_connect_interceptor():
     with pytest.raises(ConnectError):
         _rpc.RetryInterceptor().intercept_unary_sync(execute, "call", ctx)
     assert attempts == ["call"]
+
+
+@pytest.mark.parametrize(
+    "service,method",
+    [
+        ("ModelRouteService", "CreateModelRoute"),
+        ("ProviderConnectionService", "CreateProviderConnection"),
+    ],
+)
+def test_router_creation_is_not_automatically_replayed(service, method):
+    ctx = RequestContext(
+        method=MethodInfo(
+            name=method,
+            service_name=f"chalk.router.v1.{service}",
+            input=object,
+            output=object,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        ),
+        http_method="POST",
+        request_headers=Headers(),
+    )
+    attempts = []
+
+    def execute(request, context):
+        attempts.append(request)
+        raise ConnectError(Code.UNAVAILABLE, "response lost after creation")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(execute, "create", ctx)
+    assert attempts == ["create"]
