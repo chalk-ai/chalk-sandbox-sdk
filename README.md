@@ -675,19 +675,20 @@ evaluation = cc.Evaluation.create(
 
 ### LLM judges
 
-`cc.scorers.llm_judge` deploys a scorer from a pydantic model (v1 or v2)
+`cc.scorers.llm_judge` deploys a scorer from a standard-library dataclass or a Pydantic model (v1 or v2)
 instead of a function body. The model's `score` field becomes the score; every other field
 is recorded as row metadata. The reply is requested through the OpenAI client
 with structured outputs and validated against the model, so a malformed grade
 fails the row.
 
 ```python
-from pydantic import BaseModel, Field
+from dataclasses import dataclass, field
 
-class TraceQuality(BaseModel):
-    score: float = Field(ge=0, le=1, description="Overall quality.")
-    directness: int = Field(ge=0, le=2, description="Shortest reasonable path to the goal.")
-    task_correctness: int = Field(ge=0, le=2, description="Was the task actually completed?")
+@dataclass
+class TraceQuality:
+    score: float = field(metadata={"description": "Overall quality, from 0 to 1."})
+    directness: int = field(metadata={"description": "Shortest reasonable path to the goal, from 0 to 2."})
+    task_correctness: int = field(metadata={"description": "Was the task actually completed, from 0 to 2?"})
     reason: str
 
 trace_quality = cc.scorers.llm_judge(
@@ -696,6 +697,13 @@ trace_quality = cc.scorers.llm_judge(
     instructions="You are grading a browser agent's login attempt.",
 )
 ```
+
+Dataclass judges can be declared without Pydantic installed. Their annotations
+validate JSON primitives, nested dataclasses, lists, string-keyed dictionaries,
+unions (including optional fields), literals, and enums. Descriptions come from
+`field(metadata={"description": "..."})`; use `__post_init__` for additional
+validation such as score ranges. Pydantic models retain their own validation
+and field aliases. The deployed judge installs its OpenAI client dependencies.
 
 The scorer deploys as `trace-quality`, the model's name in kebab case; pass
 `name=` to choose another. `inputs` names the dataset columns the judge reads
@@ -709,8 +717,8 @@ it calls [Chalk's AI router](https://docs.chalk.ai/docs/ai-router) as the
 environment itself, and the router holds the provider credentials. To call a
 provider directly instead, pass `api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY")`,
 and `base_url` for any other OpenAI-compatible endpoint. Every function deployed from the
-same module imports that module, so give sibling functions an image with
-`pydantic` as well. A judge is generated
+same module imports that module, so if it imports Pydantic, give sibling functions
+an image with `pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.
 
 `cc.scorers.jev` is a judge that escalates when unsure, the cascade from

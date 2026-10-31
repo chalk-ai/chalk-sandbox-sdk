@@ -12,10 +12,10 @@ import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from typing import Any
 
-from chalkcompute import _tracing
+from chalkcompute import _dataclass_model, _tracing
 from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
@@ -90,7 +90,7 @@ def llm_judge(
     image: Image | None = None,
     **function_kwargs: Any,
 ) -> RemoteFunction | _NoOpFunction:
-    """Deploy an LLM judge described by a pydantic model.
+    """Deploy an LLM judge described by a dataclass or Pydantic model.
 
     ``response_model`` needs a ``score`` field, which becomes the scorer's
     score; its other fields are recorded as row metadata. A reply that fails
@@ -113,7 +113,11 @@ def llm_judge(
     :func:`chalkcompute.function`.
     """
     _assert_deployable()
-    _assert_response_model(response_model)
+    if "score" not in _field_names(response_model):
+        raise ValueError(
+            "response_model must declare a `score` field; it becomes the scorer's "
+            "score and the remaining fields are recorded as metadata"
+        )
     inputs = _validate_inputs(inputs)
     completion_kwargs = _validate_completion_kwargs(completion_kwargs)
     name = name or _default_name(response_model)
@@ -236,30 +240,24 @@ def _assert_deployable(what: str = "cc.scorers.llm_judge") -> None:
         )
 
 
-def _assert_response_model(response_model: Any) -> None:
-    if not _is_pydantic_model(response_model):
-        raise TypeError("response_model must be a pydantic BaseModel class")
-    if "score" not in _field_names(response_model):
-        raise ValueError(
-            "response_model must declare a `score` field; it becomes the scorer's "
-            "score and the remaining fields are recorded as metadata"
-        )
-
-
 # pydantic 1 and 2 both work, for parity with chalkpy; the helpers below pick
 # the API the installed version has.
-def _is_pydantic_model(cls: Any) -> bool:
-    return isinstance(cls, type) and (
-        hasattr(cls, "model_fields") or hasattr(cls, "__fields__")
-    )
-
-
 def _field_names(cls: Any) -> Any:
+    if not isinstance(cls, type):
+        raise TypeError("response_model must be a dataclass or Pydantic model class")
+    if is_dataclass(cls):
+        return _dataclass_model.model_fields(cls).keys()
     fields = getattr(cls, "model_fields", None)
-    return (fields if fields is not None else cls.__fields__).keys()
+    if fields is None:
+        fields = getattr(cls, "__fields__", None)
+    if fields is None:
+        raise TypeError("response_model must be a dataclass or Pydantic model class")
+    return fields.keys()
 
 
 def _json_schema(cls: Any, *, serialization: bool = False) -> dict[str, Any]:
+    if is_dataclass(cls):
+        return _dataclass_model.json_schema(cls)
     if hasattr(cls, "model_json_schema"):
         return cls.model_json_schema(
             mode="serialization" if serialization else "validation"
@@ -268,6 +266,8 @@ def _json_schema(cls: Any, *, serialization: bool = False) -> dict[str, Any]:
 
 
 def _validate(cls: Any, data: Any) -> Any:
+    if is_dataclass(cls):
+        return _dataclass_model.validate(cls, data)
     return (
         cls.model_validate(data)
         if hasattr(cls, "model_validate")
@@ -276,6 +276,8 @@ def _validate(cls: Any, data: Any) -> Any:
 
 
 def _dump(instance: Any) -> dict[str, Any]:
+    if is_dataclass(instance):
+        return _dataclass_model.dump(instance)
     if hasattr(instance, "model_dump"):
         return instance.model_dump(mode="json", by_alias=True)
     return json.loads(instance.json(by_alias=True))
@@ -320,6 +322,8 @@ def _default_name(response_model: Any) -> str:
 
 def _serialized_name(response_model: Any, field: str) -> str:
     """The key the model serializes ``field`` under."""
+    if is_dataclass(response_model):
+        return field
     fields = getattr(response_model, "model_fields", None)
     if fields is None:
         return response_model.__fields__[field].alias
@@ -363,7 +367,7 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
         messages.append({"role": "system", "content": spec.instructions})
     messages.append({"role": "user", "content": prompt})
     graded = _complete(spec, messages)
-    if not isinstance(graded, spec.response_model):
+    if is_dataclass(spec.response_model) or not isinstance(graded, spec.response_model):
         graded = _validate(spec.response_model, graded)
     # By alias, the way the stamped schema names it.
     data = _dump(graded)
@@ -372,10 +376,10 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
 
 
 def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
-    fields = _json_schema(spec.response_model).get("properties", {})
+    schema = _json_schema(spec.response_model)
     parts = [
         "Grade the material below. Reply with a JSON object matching this schema:",
-        json.dumps(fields, indent=1),
+        json.dumps(schema, indent=1),
     ]
     for column, value in columns.items():
         parts.extend([f"## {column}", _render_input(column, value)])
@@ -479,6 +483,30 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     if spec.parse_fn is not None:
         text = client.chat.completions.create(**request).choices[0].message.content
         return spec.parse_fn(text or "")
+    if is_dataclass(spec.response_model):
+        choice = client.chat.completions.create(
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": spec.response_model.__name__,
+                    "strict": True,
+                    "schema": _dataclass_model.json_schema(
+                        spec.response_model, strict=True
+                    ),
+                },
+            },
+            **request,
+        ).choices[0]
+        if choice.finish_reason in ("length", "content_filter"):
+            raise RuntimeError(
+                f"llm_judge: the model returned an incomplete grade ({choice.finish_reason})"
+            )
+        message = choice.message
+        if message.refusal or not message.content:
+            raise RuntimeError(
+                f"llm_judge: the model returned no grade ({message.refusal or 'empty reply'})"
+            )
+        return json.loads(message.content)
     # The client derives the strict schema and validates the reply. parse()
     # left beta in openai 1.92; older clients still have it under beta.
     parse = getattr(client.chat.completions, "parse", None)
