@@ -77,6 +77,7 @@ from chalkcompute._traceback import format_exception, format_frame
 from chalkcompute._terminal import styled, supports_color
 from chalkcompute._function_error import (
     FunctionError,
+    decode_deferred_failure,
     decode_remote_error,
     remote_error_from_exception,
 )
@@ -1050,7 +1051,13 @@ def _should_retry_stale_remote_call(
 
 
 class FunctionCallHandle:
-    """Handle returned by :meth:`RemoteFunction.defer`."""
+    """Handle returned by :meth:`RemoteFunction.defer`.
+
+    Result retrieval polls the original call and never submits another
+    invocation. Failures the server reports for the call, including proxy
+    errors, are raised to the caller; any execution retries happen on the
+    server under the same call ID.
+    """
 
     def __init__(
         self,
@@ -1091,6 +1098,29 @@ class FunctionCallHandle:
             f"(last status: {last_status})"
         )
 
+    def _raise_if_terminal(self, result: Any, deadline: float | None) -> bool:
+        """Raise failures or timeouts; return whether the call completed."""
+        if result.is_expired:
+            raise FunctionError("Remote call results have expired")
+
+        if result.is_cancelled:
+            raise FunctionError("Remote call was cancelled")
+
+        if result.is_failed:
+            message = result.error_message or "Remote call failed"
+            raise (
+                decode_deferred_failure(message, self._func_name, call_id=self._call_id)
+                or FunctionError(message)
+            ) from None
+
+        if result.is_completed:
+            return True
+
+        if deadline is not None and time.monotonic() >= deadline:
+            raise self._timeout_error(result.status_name)
+
+        return False
+
     def get(self, timeout: float | None = None) -> Any:
         if _has_running_event_loop():
             return self._async_get(timeout)
@@ -1102,24 +1132,10 @@ class FunctionCallHandle:
         chunks: list[bytes] = []
         while True:
             result = self.poll()
-            last_status = result.status_name
             chunks.extend(result.chunks)
 
-            if result.is_expired:
-                raise FunctionError("Remote call results have expired")
-
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise (
-                    decode_remote_error(message, self._func_name, call_id=self._call_id)
-                    or FunctionError(message)
-                ) from None
-
-            if result.is_completed:
+            if self._raise_if_terminal(result, deadline):
                 return self._function._materialize_result_chunks(chunks)
-
-            if deadline is not None and time.monotonic() >= deadline:
-                raise self._timeout_error(last_status)
 
     async def _async_get(self, timeout: float | None = None) -> Any:
         return await _run_in_worker_thread(self._sync_get, timeout)
@@ -1136,27 +1152,12 @@ class FunctionCallHandle:
 
         while True:
             result = self.poll()
-            last_status = result.status_name
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
-                for batch in reader:
-                    yield batch
+                yield from reader
 
-            if result.is_expired:
-                raise FunctionError("Remote call results have expired")
-
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise (
-                    decode_remote_error(message, self._func_name, call_id=self._call_id)
-                    or FunctionError(message)
-                ) from None
-
-            if result.is_completed:
+            if self._raise_if_terminal(result, deadline):
                 return
-
-            if deadline is not None and time.monotonic() >= deadline:
-                raise self._timeout_error(last_status)
 
     async def _async_stream(self, timeout: float | None = None) -> Any:
         import pyarrow as pa
@@ -1165,27 +1166,13 @@ class FunctionCallHandle:
 
         while True:
             result = await asyncio.to_thread(self.poll)
-            last_status = result.status_name
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                 for batch in reader:
                     yield batch
 
-            if result.is_expired:
-                raise FunctionError("Remote call results have expired")
-
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise (
-                    decode_remote_error(message, self._func_name, call_id=self._call_id)
-                    or FunctionError(message)
-                ) from None
-
-            if result.is_completed:
+            if self._raise_if_terminal(result, deadline):
                 return
-
-            if deadline is not None and time.monotonic() >= deadline:
-                raise self._timeout_error(last_status)
 
 
 def gather(
@@ -3829,6 +3816,8 @@ class RemoteFunction:
         the returned handle's own ``.get()``/``.stream()`` take their own
         ``timeout`` for how long to wait on the *result*.
 
+        Collecting results only polls this invocation. Failed calls are raised
+        to the caller without enqueueing a replacement invocation.
         """
         self._wait_for_background_deploy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
@@ -3844,19 +3833,15 @@ class RemoteFunction:
     ) -> Any:
         """Poll a deferred call once."""
         self._wait_for_background_deploy()
+        # Returned errors describe the call, not this polling connection.
+        # Only raised polling errors may trigger a transport refresh.
         return self._with_remote_call_transport(
             queue=True,
             operation="poll",
             retry_stale=True,
-            stale_result=lambda result: _is_stale_remote_call_error_message(
-                result.error_message
-            ),
             timeout=self._call_timeout,
             call=lambda: self._using_remote_call_client(
                 queue=True,
-                stale_result=lambda result: _is_stale_remote_call_error_message(
-                    result.error_message
-                ),
                 call=lambda client: client.poll_next(call_id, cursor, poll_count),
             ),
         )

@@ -161,6 +161,10 @@ class RemoteCallPollResult:
     def is_failed(self) -> bool:
         return self.status_name.lower() == "failed"
 
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status_name.lower() == "cancelled"
+
 
 class RemoteCallClient:
     """Byte-oriented remote-call client backed by the native Rust implementation."""
