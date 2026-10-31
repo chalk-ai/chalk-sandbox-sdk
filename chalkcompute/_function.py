@@ -446,6 +446,9 @@ class DeployedFunction(Protocol):
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
     def remote(self, *args: Any, **kwargs: Any) -> Any: ...
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle: ...
+    def with_options(
+        self, *, retries: int | RetryPolicy | None = None
+    ) -> RemoteFunction: ...
     def deploy(self, **kwargs: Any) -> DeployedFunction: ...
     def wait_ready(self, **kwargs: Any) -> DeployedFunction: ...
     def delete(self) -> None: ...
@@ -1009,13 +1012,6 @@ def _is_stale_remote_call_error_message(message: str | None) -> bool:
     )
 
 
-def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
-    if not message:
-        return False
-    lower = message.lower()
-    return "fd shutdown" in lower or "goaway" in lower
-
-
 def _is_stale_remote_call_error(error: BaseException) -> bool:
     from chalkcompute._remote_call_client import (
         RemoteCallStatusError,
@@ -1042,12 +1038,6 @@ def _is_stale_remote_call_error(error: BaseException) -> bool:
         except Exception:
             pass
     return _is_stale_remote_call_error_message(_remote_call_error_message(error))
-
-
-def _is_retryable_stale_remote_call_error(error: BaseException) -> bool:
-    return _is_retryable_stale_remote_call_error_message(
-        _remote_call_error_message(error)
-    )
 
 
 def _should_retry_stale_remote_call(
@@ -1134,8 +1124,8 @@ class FunctionCallHandle:
 
     def _sync_get(self, timeout: float | None = None) -> Any:
         deadline = None if timeout is None else time.monotonic() + timeout
-        chunks: list[bytes] = []
 
+        chunks: list[bytes] = []
         while True:
             result = self.poll()
             chunks.extend(result.chunks)
@@ -1920,6 +1910,12 @@ def _apply_function_version(
     *,
     is_current: bool,
 ) -> None:
+    if efv.config is not None:
+        function._retries = (
+            None
+            if efv.config.retry_policy is None
+            else RetryPolicy.from_proto(efv.config.retry_policy)
+        )
     function._function_id = efv.function_id or None
     function._version_info = _parse_function_version(efv, is_current=is_current)
     # A locally defined handle keeps its Python name, signature (including
@@ -2134,10 +2130,6 @@ class RemoteFunction:
     ...         Image.debian_slim()
     ...         .pip_install(["numpy"])
     ...     ),
-    ...     cpu="1",
-    ...     memory="2Gi",
-    ...     min_replicas=1,
-    ...     max_replicas=4,
     ... )
     ... def embed(text: str) -> list[float]:
     ...     import numpy as np
@@ -2148,21 +2140,18 @@ class RemoteFunction:
     Imperative form, for constructing a ``RemoteFunction`` from an existing
     callable:
 
-    >>> from chalkcompute import RemoteFunction, Image
+    >>> from chalkcompute import RemoteFunction
     >>> def square(x: int) -> int:
     ...     return x * x
-    >>> fn = RemoteFunction(
-    ...     square,
-    ...     image=Image.debian_slim(),
-    ...     min_replicas=1,
-    ...     max_replicas=2,
-    ... )
+    >>> fn = RemoteFunction(square)
     >>> fn.deploy()
     >>> fn.remote(7)
     49
     >>> fn(7)  # runs the local Python body in-process
     49
     """
+
+    _call_retry_override: RetryPolicy | None
 
     def __init__(
         self,
@@ -3462,23 +3451,10 @@ class RemoteFunction:
                 feather_stream=feather_bytes,
             )
 
-        from chalkcompute._remote_call_client import (
-            _is_retryable_unavailable_in_place,
-            _retry_direct_call,
-        )
-
-        responses = _retry_direct_call(
-            function_name,
-            lambda: list(
-                stub.call_function(
-                    requests(), headers=dict(metadata), timeout_ms=timeout_ms
-                )
-            ),
-            lambda error: (
-                isinstance(error, ConnectRpcError)
-                and error.code == Code.UNAVAILABLE
-                and _is_retryable_unavailable_in_place(error)
-            ),
+        responses = list(
+            stub.call_function(
+                requests(), headers=dict(metadata), timeout_ms=timeout_ms
+            )
         )
         return [resp.feather_stream for resp in responses]
 
@@ -3489,8 +3465,19 @@ class RemoteFunction:
         metadata: list[tuple[str, str]],
     ) -> list[bytes]:
         def call(client: Any) -> list[bytes]:
+            policy = self._effective_retry_policy()
             if callable(getattr(client, "call_ipc", None)):
-                return client.call_ipc(function_name, feather_bytes, metadata=metadata)
+                return client.call_ipc(
+                    function_name,
+                    feather_bytes,
+                    metadata=metadata,
+                    retry_policy=policy.to_dict(),
+                    timeout=self._call_timeout,
+                )
+            if policy.max_retries:
+                raise FunctionError(
+                    "Handler retries require the native remote-call client"
+                )
             fallback_metadata = [
                 *self._remote_call_metadata(),
                 *metadata,
@@ -3509,27 +3496,18 @@ class RemoteFunction:
         return self._using_remote_call_client(queue=False, call=call)
 
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
-        from chalkcompute._remote_call_client import (
-            RemoteCallTransportError,
-            _retry_direct_call,
-        )
-
         function_name = self._queue_function_name()
         metadata = self._per_call_metadata()
-        return _retry_direct_call(
-            function_name,
-            lambda: self._with_remote_call_transport(
-                queue=False,
-                operation="direct call",
-                retry_stale=_is_retryable_stale_remote_call_error,
-                timeout=self._call_timeout,
-                call=lambda: self._call_direct_chunks_once(
-                    feather_bytes,
-                    function_name,
-                    metadata,
-                ),
+        # Only the native engine owns retries once dispatch begins. An ambiguous
+        # transport failure must not reset the configured invocation budget.
+        return self._with_remote_call_transport(
+            queue=False,
+            operation="direct call",
+            retry_stale=False,
+            timeout=self._call_timeout,
+            call=lambda: self._call_direct_chunks_once(
+                feather_bytes, function_name, metadata
             ),
-            lambda error: isinstance(error, RemoteCallTransportError),
         )
 
     def _queue_function_name(self) -> str:
@@ -3602,8 +3580,55 @@ class RemoteFunction:
         bytes
             Response Arrow IPC bytes.
         """
-        if self._version_info is None:
+        version_info = self._version_info
+        if version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
+        policy = self._effective_retry_policy()
+        from chalkcompute._remote_call_client import (
+            RemoteCallClient,
+            RemoteCallClientUnavailable,
+        )
+
+        self._client._ensure_auth()
+        endpoint = getattr(self._client, "_api_server", None)
+        client = None
+        if endpoint:
+            try:
+                client = RemoteCallClient(
+                    endpoint,
+                    metadata=[
+                        *self._remote_call_metadata(),
+                        ("x-chalk-server", "go-api"),
+                    ],
+                    api_mode=True,
+                )
+            except RemoteCallClientUnavailable:
+                if policy.max_retries:
+                    raise
+        elif policy.max_retries:
+            raise FunctionError("Metadata API endpoint is unavailable")
+        if client is not None:
+            try:
+                chunks = self._with_remote_call_transport(
+                    queue=False,
+                    operation="API call",
+                    timeout=self._call_timeout,
+                    call=lambda: client.call_external_ipc(
+                        version_info.function_name,
+                        version_info.version or None,
+                        feather_bytes,
+                        metadata=self._per_call_metadata(),
+                        retry_policy=policy.to_dict(),
+                        timeout=self._call_timeout,
+                    ),
+                )
+                if len(chunks) != 1:
+                    raise FunctionError(
+                        "Expected one response from CallExternalFunction"
+                    )
+                return chunks[0]
+            finally:
+                client.close()
 
         trace_metadata = self._per_call_metadata()
         stub = self._client.stub(
@@ -3613,8 +3638,8 @@ class RemoteFunction:
             stub.call_external_function,
             catalog_pb.CallExternalFunctionRequest(
                 function=catalog_pb.ExternalFunctionVersionKey(
-                    function_name=self._version_info.function_name,
-                    version=self._version_info.version or None,
+                    function_name=version_info.function_name,
+                    version=version_info.version or None,
                 ),
                 body=Oneof(
                     "remote_call_request",
@@ -3624,7 +3649,7 @@ class RemoteFunction:
                     ),
                 ),
             ),
-            timeout=300,
+            timeout=self._call_timeout or 300,
             extra_headers=dict(trace_metadata) if trace_metadata else None,
         )
         if response.body is None or response.body.field != "remote_call_response":
@@ -3634,6 +3659,31 @@ class RemoteFunction:
         if not response.body.value.feather_stream:
             raise FunctionError("No featherStream in CallExternalFunction response")
         return response.body.value.feather_stream
+
+    def with_options(
+        self, *, retries: int | RetryPolicy | None = None
+    ) -> RemoteFunction:
+        """Return an immutable call-scoped handle. None inherits deployed defaults.
+
+        Retry counts exclude the initial execution. Direct calls execute retries
+        in the client; queued calls use the server's retry budget and fixed delay.
+        Handler keyword arguments, including ``retries``, remain unchanged.
+        """
+        self._wait_for_background_deploy()
+        policy = None if retries is None else RetryPolicy.from_int_or_policy(retries)
+        if policy is not None:
+            policy.validate_execution()
+        clone = self.__class__.__new__(self.__class__)
+        clone.__dict__ = self.__dict__.copy()
+        clone._call_retry_override = policy
+        return clone
+
+    def _effective_retry_policy(self) -> RetryPolicy:
+        policy = getattr(self, "_call_retry_override", None) or self._retries
+        if policy is None:
+            policy = RetryPolicy(max_retries=0)
+        policy.validate_execution()
+        return policy
 
     def with_knowledge_cutoff(
         self, knowledge_cutoff: KnowledgeCutoff
@@ -3701,6 +3751,7 @@ class RemoteFunction:
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
         self._wait_for_background_deploy()
+        self._effective_retry_policy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_type = "api" if _should_call_via_api() else "direct"
 
@@ -3728,9 +3779,16 @@ class RemoteFunction:
         return results
 
     def _enqueue(self, feather_bytes: bytes) -> str:
-        """Enqueue a pre-serialized call payload and return its call id."""
+        """Enqueue a serialized call and return its stable call ID.
+
+        The server owns all execution retries for this queued invocation;
+        per-call retry-count overrides travel with its admission request.
+        """
         self._wait_for_background_deploy()
         function_name = self._queue_function_name()
+        self._effective_retry_policy()
+        override = getattr(self, "_call_retry_override", None)
+        options = {} if override is None else {"max_retries": override.max_retries}
         with remote_function_call_span(function_name, "queue"):
             return self._with_remote_call_transport(
                 queue=True,
@@ -3742,6 +3800,7 @@ class RemoteFunction:
                         function_name,
                         feather_bytes,
                         metadata=self._per_call_metadata(),
+                        **options,
                     ),
                 ),
             )
@@ -4006,6 +4065,11 @@ class _NoOpFunction:
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
         return self._bound().defer(*args, **kwargs)
 
+    def with_options(
+        self, *, retries: int | RetryPolicy | None = None
+    ) -> RemoteFunction:
+        return self._bound().with_options(retries=retries)
+
     def with_knowledge_cutoff(
         self, knowledge_cutoff: KnowledgeCutoff
     ) -> RemoteFunction:
@@ -4176,6 +4240,13 @@ def function(
     The registered name defaults to the Python function's name, including
     underscores, and can be used with ``RemoteFunction.from_name(...)``.
 
+    Add optional configuration only for a concrete workload requirement.
+    Ordinary functions, evaluation tasks, and scorers should omit
+    ``min_replicas``, ``max_replicas``, and ``concurrency``: defaults are one
+    replica and no explicit concurrency policy. Multiple evaluation rows do
+    not require overriding them. Document why any tuning override is needed;
+    do not copy unrelated examples' settings or explicitly repeat defaults.
+
     **Locally**, decoration validates the function, starts deployment in a
     background worker, and returns. The worker:
 
@@ -4219,8 +4290,11 @@ def function(
         Optional registered-name override. Omit this in normal usage to use
         the function's ``__name__``. Set it only when a different registered
         name is intentional, such as preserving an existing deployment's name
-        after renaming the Python function. Changing or removing an override
-        changes the target function; it does not rename an existing deployment.
+        after renaming the Python function. For a new task or scorer, choose
+        a descriptive Python name instead of adding a prefix or replacing
+        underscores with hyphens via this option. Changing or removing an
+        override changes the target function; it does not rename an existing
+        deployment.
     env
         Environment variables as strings or single-value Secret references.
         The mapping key sets the injected name, overriding aliases and prefixes.
@@ -4231,9 +4305,11 @@ def function(
         ``(name_or_volume, mount_path)`` tuples for persistent storage.
         Volume handles preserve their selected ref or pinned version.
     min_replicas
-        Minimum number of replicas.
+        Minimum number of replicas. Defaults to 1; normally omit. Set to 0
+        only when deliberately choosing scale-to-zero behavior.
     max_replicas
-        Maximum number of replicas.
+        Maximum number of replicas. Defaults to 1; normally omit. Increase
+        only when the workload needs additional replica capacity.
     shutdown_delay_seconds
         Graceful termination period in seconds before replicas are forcibly
         killed during scale-down. Defaults to 30s on the server.
@@ -4267,10 +4343,10 @@ def function(
         Defaults to 10 when batching is enabled.
     retries
         Retry policy for handler invocations. An ``int`` is the number of
-        retries after the initial execution. Redis Stream function queues
-        currently honor ``max_retries`` with a fixed reclaim delay; the
-        backoff, jitter, key, and exception-filter fields are reserved for
-        other invocation paths.
+        retries after the initial execution. Direct calls apply the policy's
+        backoff and jitter client-side; Redis Stream queues apply the count
+        with a fixed reclaim delay. Override per call using ``with_options``.
+        Exception filters and shared retry keys are not supported.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-function key, or a
@@ -4279,7 +4355,9 @@ def function(
         one bucket — used when a downstream service imposes a throughput
         limit across callers.
     concurrency
-        Concurrency policy: cap on in-flight handler invocations. Pass an
+        Optional cap on in-flight handler invocations. Defaults to ``None``
+        (no explicit policy); normally omit. It does not enable parallel
+        execution. Set only for a known in-flight limit. Pass an
         ``int`` for a simple ``max_concurrent`` cap with a per-function key,
         or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
         (``max_concurrent``, ``key``). Multiple functions sharing the same

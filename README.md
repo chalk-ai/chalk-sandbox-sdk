@@ -524,7 +524,26 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
-## Function names
+## Function configuration
+
+Start with `@cc.function` and add only options your workload needs, such as an
+image with its dependencies or `chalk_identity=True` for calls to Chalk services.
+These defaults also apply to `@cc.cls`:
+
+| Option | Default | When to override |
+| --- | --- | --- |
+| `name` | Python function or class name | An intentional external naming contract |
+| `min_replicas` | `1` | A deliberate scaling policy, such as scaling to zero |
+| `max_replicas` | `1` | Capacity requirements established for this workload |
+| `concurrency` | `None` (no explicit policy) | A known limit on in-flight calls |
+
+Omit these keywords in ordinary functions, tasks, and scorers. An evaluation
+with many rows does not require custom replica counts or a concurrency policy.
+`concurrency` limits in-flight calls; setting it does not enable parallelism.
+For any tuning override, document the requirement that motivates it. Avoid
+copying values from an unrelated example or explicitly repeating defaults.
+
+### Function names
 
 Omit `name=` when defining functions. The registered name defaults to the Python
 function's name, including underscores:
@@ -1190,3 +1209,41 @@ are omitted. These values are catalog-visible; keep secrets in Chalk-managed
 secret references rather than function defaults. Clients can show descriptions,
 collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
+
+
+## Function retries
+
+Configure a default with `@cc.function(retries=3)`, or scope an override to one
+handle without changing its deployment:
+
+```python
+handle = fetch_status.with_options(retries=2).defer("https://example.com")
+result = handle.get()
+result = fetch_status.with_options(
+    retries=cc.RetryPolicy.exponential(attempts=3, initial=0.5, max_wait=10)
+).remote("https://example.com")
+```
+
+Counts exclude the first execution: `retries=2` allows three attempts. Zero
+disables invocation retries; `with_options(retries=None)` inherits the deployed
+default, which is zero when no policy is configured. Method handles support the
+same API. A handler argument named `retries` remains an ordinary input.
+
+Regular `.remote()` calls retry in the native client, including calls awaited
+from an async Python program. The retry budget, backoff sleeps, and executions
+share the call timeout. Exponential policies multiply the delay up to `max_wait`;
+`linear` policies use a constant delay. Jitter uniformly samples between zero
+and that delay. Generator `.remote()` calls use the queue, like `.defer()`.
+
+Queued calls keep one call ID and retry on the server, even if the submitting
+client exits. Queue overrides currently apply only the retry count; delay and
+jitter remain controlled by the queue's fixed reclaim interval. Failed calls
+are never silently resubmitted under another ID while collecting results.
+Retry-enabled generators buffer output to avoid repeating already emitted
+values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not
+supported and raise an error instead of being ignored.
+
+Retries can execute side effects more than once. Make retried handlers
+idempotent. Transient execution and transport failures share the configured invocation
+retry budget. Connection setup and result polling do not create additional
+invocation budgets.

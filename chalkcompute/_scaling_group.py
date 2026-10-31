@@ -70,6 +70,7 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
+    VolumeMountType,
     cleanup_owned_volumes,
     referenced_volume_mount,
 )
@@ -1167,7 +1168,10 @@ class ScalingGroup:
                 if container_spec is None:
                     continue
                 for volume in container_spec.volumes:
-                    if volume.name.startswith(f"{_OWNED_VOLUME_PREFIX}-"):
+                    if volume.type in (
+                        "",
+                        VolumeMountType.CHALKFS.value,
+                    ) and volume.name.startswith(f"{_OWNED_VOLUME_PREFIX}-"):
                         result[volume.name] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,

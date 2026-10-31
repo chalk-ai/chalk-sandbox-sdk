@@ -111,6 +111,8 @@ from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
+from chalkcompute._sandbox import SandboxSnapshot as SandboxSnapshot
+from chalkcompute._sandbox import SandboxSnapshotError as SandboxSnapshotError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
 from chalkcompute._sandbox_fs import FileDownload as FileDownload
 from chalkcompute._sandbox_fs import FileMatch as FileMatch
@@ -164,6 +166,7 @@ from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeMount as VolumeMount
+from chalkcompute._volume import VolumeMountType as VolumeMountType
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
@@ -301,6 +304,8 @@ __all__ = [
     "SandboxError",
     "SandboxInfo",
     "SandboxNotFoundError",
+    "SandboxSnapshot",
+    "SandboxSnapshotError",
     "SandboxTerminatedError",
     "FileDownload",
     "FileMatch",
@@ -332,6 +337,7 @@ __all__ = [
     "VolumeFileNotFoundError",
     "VolumeInfo",
     "VolumeMount",
+    "VolumeMountType",
     "VolumeNotFoundError",
     "VersionInfo",
     "resolve_referenced_volume_type",

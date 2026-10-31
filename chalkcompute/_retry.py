@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 
 
 @dataclasses.dataclass(frozen=True)
@@ -15,20 +16,15 @@ class RetryPolicy:
     capped at ``max_wait``. With ``linear``, wait times are constant between
     retries. A plain ``int`` passed to ``function(retries=3)`` is shorthand
     for ``RetryPolicy.exponential(attempts=3)``. By default all ``Exception``
-    subclasses trigger a retry; pass a tuple of exception classes to
-    ``retry_on`` to narrow the set. Redis Stream function queues currently
-    enforce only ``max_retries`` and use their fixed pending-entry reclaim
-    delay; the remaining fields are retained in deployment metadata for other
-    invocation paths.
+    subclasses trigger a retry. Direct ``remote()`` calls enforce backoff and
+    jitter in the client. Queued calls enforce only ``max_retries`` with a fixed
+    pending-entry reclaim delay. Exception filters and shared retry keys are
+    reserved and rejected when configuring or invoking a function.
 
     Examples
     --------
     >>> RetryPolicy.exponential(attempts=5, initial=1.0, max_wait=30.0)
     >>> RetryPolicy.linear(attempts=3, delay=2.0)
-    >>> RetryPolicy.exponential(
-    ...     attempts=3,
-    ...     retry_on=(ConnectionError, TimeoutError, OSError),
-    ... )
     """
 
     max_retries: int = 3
@@ -45,21 +41,69 @@ class RetryPolicy:
     """Upper bound on wait time between retries."""
 
     jitter: bool = True
-    """If ``True``, add random jitter to wait times to avoid thundering herd."""
+    """If true, uniformly sample each wait between zero and its backoff cap."""
 
     retry_on: tuple[type[BaseException], ...] = (Exception,)
-    """Tuple of exception types that trigger a retry. Non-matching exceptions
-    propagate immediately without consuming retry budget."""
+    """Reserved exception filter. Only the default ``(Exception,)`` is supported."""
 
     key: str | None = None
-    """Shared-bucket identifier. Functions using the same key share one retry
-    context. Defaults to the function's qualified name if omitted."""
+    """Reserved shared-bucket identifier. Only ``None`` is supported."""
 
     def __post_init__(self) -> None:
         if isinstance(self.max_retries, bool) or not isinstance(self.max_retries, int):
             raise TypeError("max_retries must be an int")
         if self.max_retries < 0:
             raise ValueError("max_retries must be >= 0")
+        if self.max_retries > 2**31 - 1:
+            raise ValueError("max_retries must fit in an int32")
+        for name in ("initial_wait_seconds", "max_wait_seconds", "backoff_multiplier"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be a number")
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative")
+        if self.backoff_multiplier < 1:
+            raise ValueError("backoff_multiplier must be >= 1")
+        if self.max_wait_seconds < self.initial_wait_seconds:
+            raise ValueError("max_wait_seconds must be >= initial_wait_seconds")
+        if not isinstance(self.jitter, bool):
+            raise TypeError("jitter must be a bool")
+        if not isinstance(self.retry_on, tuple) or not all(
+            isinstance(exc, type) and issubclass(exc, Exception)
+            for exc in self.retry_on
+        ):
+            raise TypeError("retry_on must be a tuple of Exception classes")
+        if self.key is not None and not isinstance(self.key, str):
+            raise TypeError("key must be a string or None")
+
+    def validate_execution(self) -> None:
+        """Reject policy fields that invocation runtimes cannot enforce."""
+        if self.retry_on != (Exception,):
+            raise ValueError("retry_on exception filters are not supported yet")
+        if self.key is not None:
+            raise ValueError("shared retry keys are not supported yet")
+
+    @staticmethod
+    def from_proto(value: object) -> RetryPolicy:
+        """Restore deployed defaults, including defaults omitted by older deployments."""
+        from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb
+
+        if not isinstance(value, service_pb.RetryPolicy):
+            raise TypeError("Expected a deployed RetryPolicy")
+        return RetryPolicy(
+            max_retries=value.max_retries,
+            initial_wait_seconds=1.0
+            if not value.has_field("initial_backoff_ms")
+            else value.initial_backoff_ms / 1000,
+            backoff_multiplier=2.0
+            if not value.has_field("backoff_multiplier")
+            else value.backoff_multiplier,
+            max_wait_seconds=60.0
+            if not value.has_field("max_backoff_ms")
+            else value.max_backoff_ms / 1000,
+            jitter=True if not value.has_field("jitter") else value.jitter,
+            key=value.key if value.has_field("key") and value.key else None,
+        )
 
     @staticmethod
     def exponential(
@@ -87,7 +131,7 @@ class RetryPolicy:
         jitter
             If ``True``, add random jitter to wait times.
         retry_on
-            Exception types that trigger a retry.
+            Reserved exception filter; only ``(Exception,)`` is supported.
 
         Returns
         -------
@@ -97,7 +141,6 @@ class RetryPolicy:
         Examples
         --------
         >>> RetryPolicy.exponential(attempts=5, initial=0.5, max_wait=30.0)
-        >>> RetryPolicy.exponential(attempts=3, retry_on=(TimeoutError,))
         """
         return RetryPolicy(
             max_retries=attempts,
@@ -129,7 +172,7 @@ class RetryPolicy:
         jitter
             If ``True``, add random jitter to wait times.
         retry_on
-            Exception types that trigger a retry.
+            Reserved exception filter; only ``(Exception,)`` is supported.
 
         Returns
         -------
@@ -139,11 +182,6 @@ class RetryPolicy:
         Examples
         --------
         >>> RetryPolicy.linear(attempts=3, delay=2.0)
-        >>> RetryPolicy.linear(
-        ...     attempts=5,
-        ...     delay=0.5,
-        ...     retry_on=(ConnectionError, TimeoutError),
-        ... )
         """
         return RetryPolicy(
             max_retries=attempts,
@@ -200,4 +238,6 @@ class RetryPolicy:
             raise TypeError("Expected int or RetryPolicy, got bool")
         if isinstance(value, int):
             return RetryPolicy.exponential(attempts=value)
+        if not isinstance(value, RetryPolicy):
+            raise TypeError("Expected int or RetryPolicy")
         return value

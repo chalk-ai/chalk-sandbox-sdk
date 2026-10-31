@@ -10,62 +10,11 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
-
-_T = TypeVar("_T")
-_DIRECT_CALL_RETRY_TIMEOUT_SECONDS = 60.0
-_DIRECT_CALL_RETRY_INITIAL_BACKOFF_SECONDS = 0.1
-_DIRECT_CALL_RETRY_MAX_BACKOFF_SECONDS = 1.0
-_DIRECT_CALL_RETRY_BACKOFF_MULTIPLIER = 2.0
-
-
-def _is_retryable_unavailable_in_place(error: BaseException) -> bool:
-    message = str(error).lower()
-    return not any(
-        marker in message
-        for marker in (
-            "grpc-status header missing, mapped from http status code 504",
-            "gateway timeout",
-            "upstream request timeout",
-            "your scale-to-zero workload failed to scale in time",
-            "goaway",
-            "fd shutdown",
-        )
-    )
-
-
-def _retry_direct_call(
-    function_name: str,
-    call: Callable[[], _T],
-    is_retryable: Callable[[BaseException], bool],
-) -> _T:
-    deadline = time.monotonic() + _DIRECT_CALL_RETRY_TIMEOUT_SECONDS
-    delay = _DIRECT_CALL_RETRY_INITIAL_BACKOFF_SECONDS
-
-    while True:
-        try:
-            return call()
-        except Exception as exc:
-            if not is_retryable(exc):
-                raise
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise
-            retry_delay = min(delay, remaining)
-            logger.debug(
-                "Remote call to %r is unavailable; retrying in %.1fs",
-                function_name,
-                retry_delay,
-            )
-            time.sleep(retry_delay)
-            delay = min(
-                delay * _DIRECT_CALL_RETRY_BACKOFF_MULTIPLIER,
-                _DIRECT_CALL_RETRY_MAX_BACKOFF_SECONDS,
-            )
 
 
 def _find_native_extension_path(
@@ -231,6 +180,7 @@ class RemoteCallClient:
         requested_permissions: Sequence[int] | None = None,
         auth_rpc_timeout_ms: int | None = None,
         auth_retry_interval_ms: int | None = None,
+        api_mode: bool = False,
     ) -> None:
         if _NativeRemoteCallClient is None:
             raise RemoteCallClientUnavailable(
@@ -246,6 +196,7 @@ class RemoteCallClient:
             auth_retry_interval_ms,
         )
         start = time.monotonic()
+        native_options = {"api_mode": True} if api_mode else {}
         try:
             self._inner = _NativeRemoteCallClient(
                 endpoint,
@@ -262,9 +213,10 @@ class RemoteCallClient:
                 else None,
                 auth_rpc_timeout_ms,
                 auth_retry_interval_ms,
+                **native_options,
             )
         except TypeError as exc:
-            if any(value is not None for value in auth_kwargs):
+            if api_mode or any(value is not None for value in auth_kwargs):
                 raise RemoteCallClientUnavailable(
                     "chalkcompute._native is too old for service-auth "
                     "remote calls; rebuild/reinstall the local chalkcompute package"
@@ -334,41 +286,74 @@ class RemoteCallClient:
         name: str,
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] = (),
+        retry_policy: dict[str, object] | None = None,
+        timeout: float | None = None,
     ) -> list[bytes]:
-        start = time.monotonic()
-
-        def call() -> list[bytes]:
-            if metadata and self._supports_per_call_metadata:
+        if retry_policy is not None:
+            try:
                 return list(
-                    self._inner_or_raise().call_ipc(name, input_ipc, list(metadata))
+                    self._inner_or_raise().call_ipc(
+                        name,
+                        input_ipc,
+                        list(metadata),
+                        retry_policy=retry_policy,
+                        timeout=timeout,
+                    )
                 )
-            return list(self._inner_or_raise().call_ipc(name, input_ipc))
+            except TypeError as exc:
+                if retry_policy.get("max_retries") != 0:
+                    raise RemoteCallClientUnavailable(
+                        "chalkcompute._native is too old for retry options; rebuild or reinstall chalkcompute"
+                    ) from exc
+        # Older native clients can still perform a single execution. Never
+        # redispatch after UNAVAILABLE: the handler may already have executed.
+        if metadata and self._supports_per_call_metadata:
+            return list(
+                self._inner_or_raise().call_ipc(name, input_ipc, list(metadata))
+            )
+        return list(self._inner_or_raise().call_ipc(name, input_ipc))
 
-        chunks = _retry_direct_call(
-            name,
-            call,
-            lambda error: (
-                isinstance(error, RemoteCallUnavailableError)
-                and _is_retryable_unavailable_in_place(error)
-            ),
+    def call_external_ipc(
+        self,
+        name: str,
+        version: int | None,
+        input_ipc: bytes,
+        *,
+        metadata: Sequence[tuple[str, str]],
+        retry_policy: dict[str, object],
+        timeout: float | None,
+    ) -> list[bytes]:
+        return list(
+            self._inner_or_raise().call_external_ipc(
+                name,
+                version,
+                input_ipc,
+                list(metadata),
+                retry_policy=retry_policy,
+                timeout=timeout,
+            )
         )
-        logger.debug(
-            "RemoteCallClient call_ipc function=%s request_bytes=%d chunks=%d elapsed_ms=%.1f",
-            name,
-            len(input_ipc),
-            len(chunks),
-            (time.monotonic() - start) * 1000,
-        )
-        return chunks
 
     def enqueue(
         self,
         name: str,
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] = (),
+        max_retries: int | None = None,
     ) -> str:
         start = time.monotonic()
-        if metadata and self._supports_per_call_metadata:
+        if max_retries is not None:
+            try:
+                call_id = str(
+                    self._inner_or_raise().enqueue(
+                        name, input_ipc, list(metadata), max_retries=max_retries
+                    )
+                )
+            except TypeError as exc:
+                raise RemoteCallClientUnavailable(
+                    "chalkcompute._native is too old for retry overrides; rebuild or reinstall chalkcompute"
+                ) from exc
+        elif metadata and self._supports_per_call_metadata:
             call_id = str(
                 self._inner_or_raise().enqueue(name, input_ipc, list(metadata))
             )

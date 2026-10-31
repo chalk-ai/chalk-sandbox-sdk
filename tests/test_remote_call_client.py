@@ -350,6 +350,8 @@ class FakeRemoteCallClient:
         self.kwargs = kwargs
         self.calls: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.enqueues: list[tuple[str, bytes, list[tuple[str, str]]]] = []
+        self.call_options: list[dict] = []
+        self.enqueue_options: list[dict] = []
         self.purges: list[str] = []
         self.polls: list[tuple[str, str, int]] = []
         self.closed = False
@@ -363,7 +365,9 @@ class FakeRemoteCallClient:
         name: str,
         input_ipc: bytes,
         metadata=(),
+        **options,
     ) -> list[bytes]:
+        self.call_options.append(options)
         if self.hang_forever:
             import threading
 
@@ -378,7 +382,9 @@ class FakeRemoteCallClient:
         name: str,
         input_ipc: bytes,
         metadata=(),
+        **options,
     ) -> str:
+        self.enqueue_options.append(options)
         if self.enqueue_errors:
             raise self.enqueue_errors.pop(0)
         self.enqueues.append((name, input_ipc, list(metadata)))
@@ -671,7 +677,7 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
     )
 
 
-def test_direct_call_refreshes_and_retries_legacy_goaway_error() -> None:
+def test_direct_call_retires_goaway_transport_without_redispatch() -> None:
     FakeRemoteCallClient.call_ipc_errors = [
         RuntimeError('gRPC status: status: Unavailable, message: "GOAWAY"')
     ]
@@ -679,8 +685,9 @@ def test_direct_call_refreshes_and_retries_legacy_goaway_error() -> None:
 
     fn = _remote_function()
 
-    assert fn.remote(41) == 42
-    assert len(FakeRemoteCallClient.instances) == 2
+    with pytest.raises(RuntimeError, match="GOAWAY"):
+        fn.remote(41)
+    assert len(FakeRemoteCallClient.instances) == 1
     assert FakeRemoteCallClient.instances[0].closed is True
 
 
@@ -703,15 +710,16 @@ def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
     assert len(FakeRemoteCallClient.instances) == 2
 
 
-def test_direct_call_refreshes_transport_error(monkeypatch) -> None:
+def test_direct_call_retires_transport_error_without_redispatch(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
     FakeRemoteCallClient.call_ipc_errors = [RemoteCallTransportError("disconnected")]
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
 
-    assert fn.remote(41) == 42
-    assert len(FakeRemoteCallClient.instances) == 2
+    with pytest.raises(RemoteCallTransportError, match="disconnected"):
+        fn.remote(41)
+    assert len(FakeRemoteCallClient.instances) == 1
     assert FakeRemoteCallClient.instances[0].closed is True
 
 
@@ -1454,3 +1462,133 @@ def test_call_timeout_none_disables_deadline() -> None:
 
     assert thread.is_alive()
     assert result == {}
+
+
+def test_retry_options_are_scoped_and_preserve_argument_named_retries() -> None:
+    from chalkcompute._retry import RetryPolicy
+
+    def handler(retries: int) -> int:
+        return retries
+
+    fn = _remote_function()
+    fn._call_parameter_names = ("retries",)
+    fn._input_field_names = ("retries",)
+    fn._bind_call_arguments = function_mod._compile_fixed_argument_binder(
+        ("retries",), positional_count=1, defaults=(function_mod._MISSING_ARGUMENT,)
+    )
+    fn._retries = RetryPolicy.exponential(attempts=4)
+    scoped = fn.with_options(retries=0)
+    scoped.defer(retries=98)
+    fn.defer(retries=99)
+    client = FakeRemoteCallClient.instances[0]
+    assert client.enqueue_options == [{"max_retries": 0}, {}]
+    assert _read_input(client.enqueues[0][1]) == {"retries": [98]}
+    assert fn._retries.max_retries == 4
+    assert scoped._effective_retry_policy().max_retries == 0
+    assert scoped.with_options(retries=None)._effective_retry_policy().max_retries == 4
+
+
+def test_direct_retry_policy_is_forwarded_once_to_native_client() -> None:
+    from chalkcompute._retry import RetryPolicy
+
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+    policy = RetryPolicy.linear(attempts=2, delay=0.25)
+    fn = _remote_function().with_options(retries=policy)
+    assert fn.remote(41) == 42
+    client = FakeRemoteCallClient.instances[0]
+    assert client.call_options == [{"retry_policy": policy.to_dict(), "timeout": 60}]
+    assert len(client.calls) == 1
+
+
+def test_attached_function_hydrates_retry_defaults_and_preserves_override() -> None:
+    fn = _remote_function()
+    fn._has_local_func = False
+    scoped = fn.with_options(retries=0)
+    version = catalog_pb.ExternalFunctionVersion(
+        id="version-1",
+        function_name="catalog-add",
+        version=1,
+        config=catalog_pb.FunctionConfig(
+            retry_policy=catalog_pb.RetryPolicy(
+                max_retries=3,
+                initial_backoff_ms=250,
+                backoff_multiplier=1,
+                max_backoff_ms=250,
+                jitter=False,
+            )
+        ),
+    )
+    function_mod._apply_function_version(fn, version, is_current=True)
+    function_mod._apply_function_version(scoped, version, is_current=True)
+    assert fn._effective_retry_policy().max_retries == 3
+    assert fn._effective_retry_policy().initial_wait_seconds == 0.25
+    assert fn._effective_retry_policy().jitter is False
+    assert scoped._effective_retry_policy().max_retries == 0
+
+
+def test_bound_class_method_supports_scoped_retry_options() -> None:
+    from chalkcompute._cls import _BoundRemoteMethod
+
+    fn = _remote_function()
+    bound = _BoundRemoteMethod("add", remote_function=fn)
+    scoped = bound.with_options(retries=2)
+    assert scoped is not fn
+    assert scoped._effective_retry_policy().max_retries == 2
+    assert fn._effective_retry_policy().max_retries == 0
+
+
+@pytest.mark.parametrize("retries", [None, 0, 2])
+def test_api_retry_call_uses_native_adapter(monkeypatch, retries) -> None:
+    from chalkcompute._retry import RetryPolicy
+
+    calls = []
+
+    class ApiNative:
+        def __init__(self, endpoint, **kwargs):
+            calls.append((endpoint, kwargs))
+
+        def call_external_ipc(self, name, version, payload, **kwargs):
+            calls.append((name, version, payload, kwargs))
+            return [_result_ipc([42])]
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setenv("CHALK_FUNCTION_CALL_VIA_API", "1")
+    # Match the actual route switch rather than depending on process environment.
+    monkeypatch.setattr(function_mod, "_should_call_via_api", lambda: True)
+    monkeypatch.setattr("chalkcompute._remote_call_client.RemoteCallClient", ApiNative)
+    fn = _remote_function().with_options(retries=retries)
+    fn._client._api_server = "https://api.chalk.test"
+    assert fn.remote(41) == 42
+    assert calls[0][0] == "https://api.chalk.test"
+    assert calls[0][1]["api_mode"] is True
+    assert calls[1][0:2] == ("catalog-add", 1)
+    assert (
+        calls[1][3]["retry_policy"]
+        == RetryPolicy.exponential(attempts=retries or 0).to_dict()
+    )
+    assert calls[1][3]["timeout"] == 60
+    assert calls[-1] == "closed"
+
+
+@pytest.mark.parametrize("override", [None, 0])
+def test_zero_retry_native_call_has_one_owner(override):
+    fn = _remote_function().with_options(retries=override)
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallTransportError("response lost")]
+    with pytest.raises(RemoteCallTransportError, match="response lost"):
+        fn.remote(41)
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert len(FakeRemoteCallClient.instances[0].call_options) == 1
+    assert (
+        FakeRemoteCallClient.instances[0].call_options[0]["retry_policy"]["max_retries"]
+        == 0
+    )
+
+
+def test_enqueue_transport_error_never_submits_a_second_call():
+    FakeRemoteCallClient.enqueue_errors = [RemoteCallTransportError("response lost")]
+    with pytest.raises(RemoteCallTransportError, match="response lost"):
+        _remote_function().with_options(retries=2).defer(41)
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert len(FakeRemoteCallClient.instances[0].enqueue_options) == 1
