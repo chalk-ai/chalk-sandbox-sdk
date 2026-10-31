@@ -1,0 +1,1 @@
+- Add `cc.scorers.vlm_judge`, an LLM judge shown image columns as pictures. `images` names the picture columns and `inputs` the text ones; a URL is sent as given, and a path or the image bytes are inlined as a data URL. `detail` sets the provider's image fidelity.
