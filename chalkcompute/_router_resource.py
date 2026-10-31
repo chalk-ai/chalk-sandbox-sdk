@@ -19,7 +19,11 @@ def nonblank(value: str, field: str) -> str:
 
 
 def positive(value: int, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 2**63 - 1:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 < value <= 2**63 - 1
+    ):
         raise ValueError(f"{field} must be an integer between 1 and 2**63 - 1")
     return value
 
@@ -31,7 +35,8 @@ def boolean(value: bool, field: str) -> bool:
 
 
 def scope_for(
-    usage_pool: UsagePool | str | None, api_key_id: str | None,
+    usage_pool: UsagePool | str | None,
+    api_key_id: str | None,
 ) -> tuple[str, UsagePool | str]:
     from chalkcompute._usage_pool import UsagePool
 
@@ -48,7 +53,9 @@ def scope_for(
     return "api_key", nonblank(api_key_id, "api_key_id")
 
 
-def resolve_owner(owner: UsagePool | str, client: ConnectClient, *, create: bool) -> str:
+def resolve_owner(
+    owner: UsagePool | str, client: ConnectClient, *, create: bool
+) -> str:
     """Resolve a local pool only at the API boundary, using the caller's auth."""
     if isinstance(owner, str):
         return owner
@@ -65,7 +72,8 @@ def resolve_owner(owner: UsagePool | str, client: ConnectClient, *, create: bool
 
 
 def rate_dimension(
-    requests_per_minute: int | None, tokens_per_minute: int | None,
+    requests_per_minute: int | None,
+    tokens_per_minute: int | None,
     concurrent_requests: int | None,
 ) -> tuple[str, int]:
     dimensions = {
@@ -73,22 +81,30 @@ def rate_dimension(
         "tokens_per_minute": tokens_per_minute,
         "concurrent_requests": concurrent_requests,
     }
-    selected = [(name, value) for name, value in dimensions.items() if value is not None]
+    selected = [
+        (name, value) for name, value in dimensions.items() if value is not None
+    ]
     if len(selected) != 1:
         raise ValueError("provide exactly one rate-limit dimension")
     return selected[0]
 
 
 def validate_rate_limit(
-    limit_type: str, limit_value: int, burst: int | None,
-    connection_id: str | None, models: Sequence[str], enabled: bool,
+    limit_type: str,
+    limit_value: int,
+    burst: int | None,
+    connection_id: str | None,
+    models: Sequence[str],
+    enabled: bool,
 ) -> None:
     positive(limit_value, "limit_value")
     boolean(enabled, "enabled")
     if burst is not None:
         positive(burst, "burst")
         if limit_type == "concurrent_requests" and burst != limit_value:
-            raise ValueError("concurrent request burst must be absent or equal to the limit")
+            raise ValueError(
+                "concurrent request burst must be absent or equal to the limit"
+            )
     if connection_id is not None:
         nonblank(connection_id, "connection_id")
     if isinstance(models, (str, bytes)):
@@ -110,7 +126,9 @@ def client_for(
     try:
         connection._ensure_auth()
         if not connection._env_id:
-            raise ValueError("select a Chalk environment before managing router resources")
+            raise ValueError(
+                "select a Chalk environment before managing router resources"
+            )
         if environment_id is not None and connection._env_id != environment_id:
             raise ValueError("resource belongs to a different Chalk environment")
         yield connection

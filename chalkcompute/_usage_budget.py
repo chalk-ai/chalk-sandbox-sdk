@@ -8,9 +8,18 @@ from typing import Literal
 from protobuf.wkt import FieldMask
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.router.v1 import usage_budget_connect, usage_budget_pb as pb
+from chalkcompute._gen.chalk.router.v1 import (
+    usage_budget_connect,
+    usage_budget_pb as pb,
+)
 from chalkcompute._router_resource import (
-    RouterResource, boolean, client_for, nonblank, positive, resolve_owner, scope_for,
+    RouterResource,
+    boolean,
+    client_for,
+    nonblank,
+    positive,
+    resolve_owner,
+    scope_for,
 )
 
 from chalkcompute._usage_pool import UsagePool
@@ -90,9 +99,13 @@ class UsageBudget(RouterResource):
         )
         resource._id = budget.id
         resource._environment_id = env
-        resource.created_at = budget.created_at.to_datetime() if budget.created_at else None
+        resource.created_at = (
+            budget.created_at.to_datetime() if budget.created_at else None
+        )
         resource.current_usage = budget.current_usage
-        resource.next_reset_at = budget.next_reset_at.to_datetime() if budget.next_reset_at else None
+        resource.next_reset_at = (
+            budget.next_reset_at.to_datetime() if budget.next_reset_at else None
+        )
         return resource
 
     def _load(self, budget: pb.UsageBudget | None, env: str | None) -> UsageBudget:
@@ -111,40 +124,67 @@ class UsageBudget(RouterResource):
             scope_id = resolve_owner(self._owner, c, create=self._id is None)
             stub = c.stub(usage_budget_connect.UsageBudgetServiceClientSync)
             if self._id is None:
-                budget = c.call(stub.create_usage_budget, pb.CreateUsageBudgetRequest(
-                    scope=self.scope, scope_id=scope_id,
-                    token_limit=self.token_limit, period=_PERIODS[self.period], enabled=self.enabled,
-                )).budget
+                budget = c.call(
+                    stub.create_usage_budget,
+                    pb.CreateUsageBudgetRequest(
+                        scope=self.scope,
+                        scope_id=scope_id,
+                        token_limit=self.token_limit,
+                        period=_PERIODS[self.period],
+                        enabled=self.enabled,
+                    ),
+                ).budget
             else:
-                budget = c.call(stub.update_usage_budget, pb.UpdateUsageBudgetRequest(
-                    id=self.id,
-                    update=pb.UpdateUsageBudgetOperation(token_limit=self.token_limit, enabled=self.enabled),
-                    update_mask=FieldMask(paths=["token_limit", "enabled"]),
-                )).budget
+                budget = c.call(
+                    stub.update_usage_budget,
+                    pb.UpdateUsageBudgetRequest(
+                        id=self.id,
+                        update=pb.UpdateUsageBudgetOperation(
+                            token_limit=self.token_limit, enabled=self.enabled
+                        ),
+                        update_mask=FieldMask(paths=["token_limit", "enabled"]),
+                    ),
+                ).budget
             return self._load(budget, c._env_id)
 
     @classmethod
     def from_id(cls, id: str, *, client: ConnectClient | None = None) -> UsageBudget:
         with client_for(client) as c:
             budget = c.call(
-                c.stub(usage_budget_connect.UsageBudgetServiceClientSync).get_usage_budget,
+                c.stub(
+                    usage_budget_connect.UsageBudgetServiceClientSync
+                ).get_usage_budget,
                 pb.GetUsageBudgetRequest(id=nonblank(id, "id")),
             ).budget
             return cls._from_proto(budget, c._env_id)
 
     @classmethod
     def list(
-        cls, *, usage_pool: UsagePool | str | None = None, api_key_id: str | None = None,
+        cls,
+        *,
+        usage_pool: UsagePool | str | None = None,
+        api_key_id: str | None = None,
         client: ConnectClient | None = None,
     ) -> list[UsageBudget]:
         """List budgets for a pool or key; local pools are looked up by name."""
-        owner = None if usage_pool is None and api_key_id is None else scope_for(usage_pool, api_key_id)
+        owner = (
+            None
+            if usage_pool is None and api_key_id is None
+            else scope_for(usage_pool, api_key_id)
+        )
         with client_for(client) as c:
-            scope, scope_id = (None, None) if owner is None else (
-                owner[0], resolve_owner(owner[1], c, create=False),
+            scope, scope_id = (
+                (None, None)
+                if owner is None
+                else (
+                    owner[0],
+                    resolve_owner(owner[1], c, create=False),
+                )
             )
             response = c.call(
-                c.stub(usage_budget_connect.UsageBudgetServiceClientSync).list_usage_budgets,
+                c.stub(
+                    usage_budget_connect.UsageBudgetServiceClientSync
+                ).list_usage_budgets,
                 pb.ListUsageBudgetsRequest(scope=scope, scope_id=scope_id),
             )
             return [cls._from_proto(budget, c._env_id) for budget in response.budgets]
@@ -154,7 +194,9 @@ class UsageBudget(RouterResource):
         self._require_active()
         with client_for(client, self._environment_id) as c:
             budget = c.call(
-                c.stub(usage_budget_connect.UsageBudgetServiceClientSync).get_usage_budget,
+                c.stub(
+                    usage_budget_connect.UsageBudgetServiceClientSync
+                ).get_usage_budget,
                 pb.GetUsageBudgetRequest(id=self.id),
             ).budget
             return self._load(budget, c._env_id)
@@ -164,7 +206,9 @@ class UsageBudget(RouterResource):
         self._require_active()
         with client_for(client, self._environment_id) as c:
             c.call(
-                c.stub(usage_budget_connect.UsageBudgetServiceClientSync).delete_usage_budget,
+                c.stub(
+                    usage_budget_connect.UsageBudgetServiceClientSync
+                ).delete_usage_budget,
                 pb.DeleteUsageBudgetRequest(id=self.id),
             )
             self._deleted = True

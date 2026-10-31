@@ -10,7 +10,13 @@ from protobuf.wkt import FieldMask
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.router.v1 import rate_limit_connect, rate_limit_pb as pb
 from chalkcompute._router_resource import (
-    RouterResource, client_for, nonblank, rate_dimension, resolve_owner, scope_for, validate_rate_limit,
+    RouterResource,
+    client_for,
+    nonblank,
+    rate_dimension,
+    resolve_owner,
+    scope_for,
+    validate_rate_limit,
 )
 
 from chalkcompute._usage_pool import UsagePool
@@ -44,7 +50,9 @@ class RateLimit(RouterResource):
         super().__init__()
         self._scope, self._owner = scope_for(usage_pool, api_key_id)
         self._limit_type, self.limit_value = rate_dimension(
-            requests_per_minute, tokens_per_minute, concurrent_requests,
+            requests_per_minute,
+            tokens_per_minute,
+            concurrent_requests,
         )
         self.burst = burst
         self.connection_id = connection_id
@@ -69,29 +77,50 @@ class RateLimit(RouterResource):
 
     def _validate(self) -> None:
         validate_rate_limit(
-            self.limit_type, self.limit_value, self.burst, self.connection_id, self.models, self.enabled,
+            self.limit_type,
+            self.limit_value,
+            self.burst,
+            self.connection_id,
+            self.models,
+            self.enabled,
         )
 
     @classmethod
-    def _from_proto(cls, policy: pb.RateLimitPolicy | None, env: str | None) -> RateLimit:
+    def _from_proto(
+        cls, policy: pb.RateLimitPolicy | None, env: str | None
+    ) -> RateLimit:
         if policy is None or not policy.id:
             raise RuntimeError("rate limit API returned no policy")
         if policy.scope not in ("usage_pool", "api_key"):
             raise RuntimeError("rate limit API returned an unsupported scope")
-        if policy.limit_type not in ("requests_per_minute", "tokens_per_minute", "concurrent_requests"):
+        if policy.limit_type not in (
+            "requests_per_minute",
+            "tokens_per_minute",
+            "concurrent_requests",
+        ):
             raise RuntimeError("rate limit API returned an unsupported dimension")
         resource = cls(
             usage_pool=policy.scope_id if policy.scope == "usage_pool" else None,
             api_key_id=policy.scope_id if policy.scope == "api_key" else None,
-            requests_per_minute=policy.limit_value if policy.limit_type == "requests_per_minute" else None,
-            tokens_per_minute=policy.limit_value if policy.limit_type == "tokens_per_minute" else None,
-            concurrent_requests=policy.limit_value if policy.limit_type == "concurrent_requests" else None,
-            burst=policy.burst_value, connection_id=policy.connection_id,
-            models=policy.models, enabled=policy.enabled,
+            requests_per_minute=policy.limit_value
+            if policy.limit_type == "requests_per_minute"
+            else None,
+            tokens_per_minute=policy.limit_value
+            if policy.limit_type == "tokens_per_minute"
+            else None,
+            concurrent_requests=policy.limit_value
+            if policy.limit_type == "concurrent_requests"
+            else None,
+            burst=policy.burst_value,
+            connection_id=policy.connection_id,
+            models=policy.models,
+            enabled=policy.enabled,
         )
         resource._id = policy.id
         resource._environment_id = env
-        resource.created_at = policy.created_at.to_datetime() if policy.created_at else None
+        resource.created_at = (
+            policy.created_at.to_datetime() if policy.created_at else None
+        )
         return resource
 
     def _load(self, policy: pb.RateLimitPolicy | None, env: str | None) -> RateLimit:
@@ -109,22 +138,42 @@ class RateLimit(RouterResource):
             scope_id = resolve_owner(self._owner, c, create=self._id is None)
             stub = c.stub(rate_limit_connect.RateLimitServiceClientSync)
             if self._id is None:
-                policy = c.call(stub.create_rate_limit, pb.CreateRateLimitRequest(
-                    scope=self.scope, scope_id=scope_id, limit_type=self.limit_type,
-                    limit_value=self.limit_value, burst_value=self.burst,
-                    connection_id=self.connection_id, models=list(self.models), enabled=self.enabled,
-                )).policy
-            else:
-                policy = c.call(stub.update_rate_limit, pb.UpdateRateLimitRequest(
-                    id=self.id,
-                    update=pb.UpdateRateLimitOperation(
-                        limit_value=self.limit_value, burst_value=self.burst,
-                        connection_id=self.connection_id, models=list(self.models), enabled=self.enabled,
+                policy = c.call(
+                    stub.create_rate_limit,
+                    pb.CreateRateLimitRequest(
+                        scope=self.scope,
+                        scope_id=scope_id,
+                        limit_type=self.limit_type,
+                        limit_value=self.limit_value,
+                        burst_value=self.burst,
+                        connection_id=self.connection_id,
+                        models=list(self.models),
+                        enabled=self.enabled,
                     ),
-                    update_mask=FieldMask(paths=[
-                        "limit_value", "burst_value", "connection_id", "models", "enabled",
-                    ]),
-                )).policy
+                ).policy
+            else:
+                policy = c.call(
+                    stub.update_rate_limit,
+                    pb.UpdateRateLimitRequest(
+                        id=self.id,
+                        update=pb.UpdateRateLimitOperation(
+                            limit_value=self.limit_value,
+                            burst_value=self.burst,
+                            connection_id=self.connection_id,
+                            models=list(self.models),
+                            enabled=self.enabled,
+                        ),
+                        update_mask=FieldMask(
+                            paths=[
+                                "limit_value",
+                                "burst_value",
+                                "connection_id",
+                                "models",
+                                "enabled",
+                            ]
+                        ),
+                    ),
+                ).policy
             return self._load(policy, c._env_id)
 
     @classmethod
@@ -138,21 +187,35 @@ class RateLimit(RouterResource):
 
     @classmethod
     def list(
-        cls, *, usage_pool: UsagePool | str | None = None, api_key_id: str | None = None,
+        cls,
+        *,
+        usage_pool: UsagePool | str | None = None,
+        api_key_id: str | None = None,
         client: ConnectClient | None = None,
     ) -> list[RateLimit]:
         """Read every page, optionally selecting one pool or key's policies."""
-        owner = None if usage_pool is None and api_key_id is None else scope_for(usage_pool, api_key_id)
+        owner = (
+            None
+            if usage_pool is None and api_key_id is None
+            else scope_for(usage_pool, api_key_id)
+        )
         policies: list[RateLimit] = []
         cursor: str | None = None
         seen: set[str] = set()
         with client_for(client) as c:
-            resolved = None if owner is None else (owner[0], resolve_owner(owner[1], c, create=False))
+            resolved = (
+                None
+                if owner is None
+                else (owner[0], resolve_owner(owner[1], c, create=False))
+            )
             stub = c.stub(rate_limit_connect.RateLimitServiceClientSync)
             while True:
-                response = c.call(stub.list_rate_limits, pb.ListRateLimitsRequest(cursor=cursor))
+                response = c.call(
+                    stub.list_rate_limits, pb.ListRateLimitsRequest(cursor=cursor)
+                )
                 policies.extend(
-                    cls._from_proto(policy, c._env_id) for policy in response.policies
+                    cls._from_proto(policy, c._env_id)
+                    for policy in response.policies
                     if resolved is None or (policy.scope, policy.scope_id) == resolved
                 )
                 cursor = response.next_cursor
