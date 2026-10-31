@@ -120,6 +120,13 @@ class RetryInterceptor:
             and ctx.method.name in {"ExecuteSqlQuery", "PollSqlQuery"}
         ):
             return call_next(request, ctx)
+        # Router creates have no idempotency key. A lost response must not
+        # replay a successful creation. Reconcile by name/ID before retrying.
+        if (
+            ctx.method.service_name.startswith("chalk.router.v1.")
+            and ctx.method.name.startswith("Create")
+        ):
+            return call_next(request, ctx)
         delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         last_error: ConnectError | None = None
         for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):
