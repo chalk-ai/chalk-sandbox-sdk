@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from chalkcompute._usage_pool import UsagePool
 
 from chalkcompute._connect import ConnectClient
 
@@ -26,13 +30,73 @@ def boolean(value: bool, field: str) -> bool:
     return value
 
 
-def scope_for(usage_pool_id: str | None, api_key_id: str | None) -> tuple[str, str]:
-    if (usage_pool_id is None) == (api_key_id is None):
-        raise ValueError("provide exactly one of usage_pool_id or api_key_id")
-    if usage_pool_id is not None:
-        return "usage_pool", nonblank(usage_pool_id, "usage_pool_id")
+def scope_for(
+    usage_pool: UsagePool | str | None, api_key_id: str | None,
+) -> tuple[str, UsagePool | str]:
+    from chalkcompute._usage_pool import UsagePool
+
+    if (usage_pool is None) == (api_key_id is None):
+        raise ValueError("provide exactly one of usage_pool or api_key_id")
+    if usage_pool is not None:
+        if isinstance(usage_pool, str):
+            return "usage_pool", nonblank(usage_pool, "usage_pool")
+        if not isinstance(usage_pool, UsagePool):
+            raise TypeError("usage_pool must be a UsagePool or pool ID")
+        usage_pool._require_active()
+        return "usage_pool", usage_pool
     assert api_key_id is not None
     return "api_key", nonblank(api_key_id, "api_key_id")
+
+
+def resolve_owner(owner: UsagePool | str, client: ConnectClient, *, create: bool) -> str:
+    """Resolve a local pool only at the API boundary, using the caller's auth."""
+    if isinstance(owner, str):
+        return owner
+    owner._require_active()
+    if owner._environment_id is not None and owner._environment_id != client._env_id:
+        raise ValueError("usage pool belongs to a different Chalk environment")
+    if owner._id is None:
+        if create:
+            owner.deploy(client=client)
+        else:
+            # Reads must not deploy the definition or consume its pending policies.
+            return type(owner).from_name(owner.name, client=client).id
+    return owner.id
+
+
+def rate_dimension(
+    requests_per_minute: int | None, tokens_per_minute: int | None,
+    concurrent_requests: int | None,
+) -> tuple[str, int]:
+    dimensions = {
+        "requests_per_minute": requests_per_minute,
+        "tokens_per_minute": tokens_per_minute,
+        "concurrent_requests": concurrent_requests,
+    }
+    selected = [(name, value) for name, value in dimensions.items() if value is not None]
+    if len(selected) != 1:
+        raise ValueError("provide exactly one rate-limit dimension")
+    return selected[0]
+
+
+def validate_rate_limit(
+    limit_type: str, limit_value: int, burst: int | None,
+    connection_id: str | None, models: Sequence[str], enabled: bool,
+) -> None:
+    positive(limit_value, "limit_value")
+    boolean(enabled, "enabled")
+    if burst is not None:
+        positive(burst, "burst")
+        if limit_type == "concurrent_requests" and burst != limit_value:
+            raise ValueError("concurrent request burst must be absent or equal to the limit")
+    if connection_id is not None:
+        nonblank(connection_id, "connection_id")
+    if isinstance(models, (str, bytes)):
+        raise TypeError("models must be a sequence of model names, not a string")
+    if models and connection_id is None:
+        raise ValueError("models requires connection_id")
+    for model in models:
+        nonblank(model, "model")
 
 
 @contextmanager
