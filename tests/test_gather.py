@@ -105,6 +105,7 @@ def test_gather_handles_concurrently(async_context: bool, kind: str) -> None:
             is_completed=True,
             is_failed=False,
             is_expired=False,
+            is_cancelled=False,
         )
 
     client = Mock()

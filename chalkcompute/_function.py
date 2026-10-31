@@ -1103,6 +1103,9 @@ class FunctionCallHandle:
         if result.is_expired:
             raise FunctionError("Remote call results have expired")
 
+        if result.is_cancelled:
+            raise FunctionError("Remote call was cancelled")
+
         if result.is_failed:
             message = result.error_message or "Remote call failed"
             raise (

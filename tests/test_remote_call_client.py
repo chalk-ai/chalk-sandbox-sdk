@@ -746,9 +746,14 @@ def _err(exc_type: str, message: str) -> str:
 
 
 def _poll(status_name, *, chunks=None, error_message=None, cursor="", poll_count=0):
-    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[
-        status_name
-    ]
+    status = {
+        "pending": 1,
+        "running": 2,
+        "completed": 3,
+        "failed": 4,
+        "expired": 5,
+        "cancelled": 6,
+    }[status_name]
     return RemoteCallPollResult(
         status=status,
         status_name=status_name,
@@ -925,6 +930,23 @@ def test_deferred_get_fails_when_results_have_expired() -> None:
 
     with pytest.raises(FunctionError, match="results have expired"):
         handle.get()
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_result_fails_when_call_was_cancelled(mode: str) -> None:
+    FakeRemoteCallClient.poll_results = [_poll("cancelled")]
+
+    handle = _remote_function().defer(98)
+
+    # A cancelled call is terminal; without a timeout, polling must not spin.
+    with pytest.raises(FunctionError, match="was cancelled"):
+        if mode == "get":
+            handle.get()
+        elif mode == "stream":
+            list(handle.stream())
+        else:
+            function_mod.gather([handle])
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
