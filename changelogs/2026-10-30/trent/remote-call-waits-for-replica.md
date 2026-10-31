@@ -1,0 +1,1 @@
+- Keep resending `.remote()` calls rejected by the gateway for lack of a ready replica until `call_timeout` (indefinitely when `None`), without consuming handler retries.

@@ -23,7 +23,10 @@ from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_c
 from chalkcompute._remote_call_client import (
     RemoteCallPollResult,
     RemoteCallClientUnavailable,
+    RemoteCallNotFoundError,
+    RemoteCallStatusError,
     RemoteCallTransportError,
+    RemoteCallUnavailableError,
     ServiceAuthContext,
 )
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -1300,7 +1303,9 @@ def test_direct_retry_policy_is_forwarded_once_to_native_client() -> None:
     fn = _remote_function().with_options(retries=policy)
     assert fn.remote(41) == 42
     client = FakeRemoteCallClient.instances[0]
-    assert client.call_options == [{"retry_policy": policy.to_dict(), "timeout": 60}]
+    assert client.call_options == [
+        {"retry_policy": policy.to_dict(), "timeout": pytest.approx(60, abs=1)}
+    ]
     assert len(client.calls) == 1
 
 
@@ -1372,7 +1377,7 @@ def test_api_retry_call_uses_native_adapter(monkeypatch, retries) -> None:
         calls[1][3]["retry_policy"]
         == RetryPolicy.exponential(attempts=retries or 0).to_dict()
     )
-    assert calls[1][3]["timeout"] == 60
+    assert calls[1][3]["timeout"] == pytest.approx(60, abs=1)
     assert calls[-1] == "closed"
 
 
@@ -1396,3 +1401,240 @@ def test_enqueue_transport_error_never_submits_a_second_call():
         _remote_function().with_options(retries=2).defer(41)
     assert len(FakeRemoteCallClient.instances) == 1
     assert len(FakeRemoteCallClient.instances[0].enqueue_options) == 1
+
+
+_NO_REPLICA = (
+    "upstream connect error or disconnect/reset before headers. "
+    "reset reason: remote connection failure"
+)
+
+
+class FakeClock:
+    """Stands in for ``time`` inside ``_function`` so backoff runs instantly."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds >= 0
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+@pytest.fixture
+def clock(monkeypatch) -> FakeClock:
+    fake = FakeClock()
+    monkeypatch.setattr(function_mod, "time", fake)
+    return fake
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        _NO_REPLICA,
+        "no healthy upstream",
+        "upstream connect error or disconnect/reset before headers. "
+        "retried and the latest reset reason: connection timeout",
+    ],
+)
+def test_direct_call_resends_until_a_replica_accepts(clock, message) -> None:
+    from chalkcompute._retry import RetryPolicy
+
+    FakeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError(message) for _ in range(3)
+    ]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+    policy = RetryPolicy.linear(attempts=2, delay=0.25)
+    fn = _remote_function().with_options(retries=policy)
+    fn._call_timeout = 180
+
+    assert fn.remote(41) == 42
+    assert clock.sleeps == [0.25, 0.5, 1.0]
+    options = [o for c in FakeRemoteCallClient.instances for o in c.call_options]
+    assert [o["retry_policy"] for o in options] == [policy.to_dict()] * 4
+    assert [o["timeout"] for o in options] == [180, 179.75, 179.25, 178.25]
+
+
+def test_no_replica_retries_stop_at_call_timeout(clock) -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError(_NO_REPLICA) for _ in range(1000)
+    ]
+    fn = _remote_function()
+    fn._call_timeout = 180
+    started = clock.now
+
+    with pytest.raises(RemoteCallUnavailableError, match="remote connection failure"):
+        fn.remote(41)
+
+    assert clock.now - started == pytest.approx(180)
+    assert max(clock.sleeps) == function_mod._NO_REPLICA_MAX_BACKOFF_SECONDS
+    assert 36 < len(clock.sleeps) < 45
+
+
+def test_no_replica_retries_without_limit_when_call_timeout_is_none(clock) -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError(_NO_REPLICA) for _ in range(2000)
+    ]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+    fn = _remote_function()
+    fn._call_timeout = None
+    started = clock.now
+
+    assert fn.remote(41) == 42
+    assert clock.now - started > 9000
+    options = [o for c in FakeRemoteCallClient.instances for o in c.call_options]
+    assert len(options) == 2001
+    assert all(o["timeout"] is None for o in options)
+
+
+def _user_error() -> BaseException:
+    import json
+    from tests.test_remote_execution_error import payload
+
+    wire = json.loads(payload())
+    wire["exception"]["message"] = "no healthy upstream"
+    return RemoteCallStatusError(2, json.dumps(wire))
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (_user_error, "RemoteExecutionError"),
+        (lambda: RemoteCallNotFoundError("function not found"), None),
+        (lambda: ConnectRpcError(Code.UNAUTHENTICATED, "no healthy upstream"), None),
+        (lambda: ConnectRpcError(Code.PERMISSION_DENIED, "denied"), None),
+        (lambda: RemoteCallTransportError("connection failure"), None),
+        (
+            lambda: RemoteCallUnavailableError(
+                "upstream connect error or disconnect/reset before headers. "
+                "reset reason: connection termination"
+            ),
+            None,
+        ),
+        (lambda: RemoteCallUnavailableError("GOAWAY"), None),
+    ],
+)
+def test_errors_after_dispatch_or_not_capacity_fail_fast(
+    clock, error, expected
+) -> None:
+    from chalkcompute import RemoteExecutionError
+
+    instance = error()
+    FakeRemoteCallClient.call_ipc_errors = [instance]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+    fn = _remote_function()
+
+    expected_type = RemoteExecutionError if expected else type(instance)
+    with pytest.raises(expected_type):
+        fn.remote(41)
+    assert clock.sleeps == []
+    assert sum(len(c.call_options) for c in FakeRemoteCallClient.instances) == 1
+
+
+def test_no_replica_deadline_includes_client_rebuilds(clock, monkeypatch) -> None:
+    # A Connect UNAVAILABLE also marks the cached client stale, so each resend
+    # rebuilds it; that time must come out of the same call_timeout budget.
+    FakeRemoteCallClient.call_ipc_errors = [
+        ConnectRpcError(Code.UNAVAILABLE, "no healthy upstream") for _ in range(100)
+    ]
+    original_init = FakeRemoteCallClient.__init__
+
+    def slow_init(self, *args, **kwargs):
+        clock.now += 10
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeRemoteCallClient, "__init__", slow_init)
+    fn = _remote_function()
+    fn._call_timeout = 30
+    started = clock.now
+
+    with pytest.raises(ConnectRpcError, match="no healthy upstream"):
+        fn.remote(41)
+
+    timeouts = [c.call_options[0]["timeout"] for c in FakeRemoteCallClient.instances]
+    assert timeouts == pytest.approx([20, 9.75, 0])
+    assert all(c.closed for c in FakeRemoteCallClient.instances)
+    assert clock.now - started == pytest.approx(30.75)
+
+
+def test_call_timeout_shorter_than_backoff_makes_one_attempt(clock) -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError(_NO_REPLICA) for _ in range(10)
+    ]
+    fn = _remote_function()
+    fn._call_timeout = 0.1
+
+    with pytest.raises(RemoteCallUnavailableError):
+        fn.remote(41)
+    assert clock.sleeps == [pytest.approx(0.1)]
+    assert sum(len(c.call_options) for c in FakeRemoteCallClient.instances) == 1
+
+
+@pytest.mark.parametrize("call_timeout", [0, -5])
+def test_nonpositive_call_timeout_fails_without_dispatch(clock, call_timeout) -> None:
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallUnavailableError(_NO_REPLICA)]
+    fn = _remote_function()
+    fn._call_timeout = call_timeout
+
+    with pytest.raises(TimeoutError):
+        fn.remote(41)
+    assert clock.sleeps == []
+    assert sum(len(c.call_options) for c in FakeRemoteCallClient.instances) == 0
+
+
+def test_api_call_resends_until_a_replica_accepts(clock, monkeypatch) -> None:
+    attempts = []
+
+    class ApiNative:
+        def __init__(self, endpoint, **kwargs):
+            pass
+
+        def call_external_ipc(self, name, version, payload, **kwargs):
+            attempts.append(kwargs["timeout"])
+            if len(attempts) < 3:
+                raise RemoteCallUnavailableError("no healthy upstream")
+            return [_result_ipc([42])]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(function_mod, "_should_call_via_api", lambda: True)
+    monkeypatch.setattr("chalkcompute._remote_call_client.RemoteCallClient", ApiNative)
+    fn = _remote_function()
+    fn._client._api_server = "https://api.chalk.test"
+
+    assert fn.remote(41) == 42
+    assert attempts == [60, 59.75, 59.25]
+
+
+def test_concurrent_calls_each_wait_for_a_replica(monkeypatch) -> None:
+    monkeypatch.setattr(function_mod, "_NO_REPLICA_INITIAL_BACKOFF_SECONDS", 0.001)
+    monkeypatch.setattr(function_mod, "_NO_REPLICA_MAX_BACKOFF_SECONDS", 0.005)
+    lock = threading.Lock()
+    failures: dict[bytes, int] = {}
+
+    class ColdClient(FakeRemoteCallClient):
+        def call_ipc(self, name, input_ipc, metadata=(), **options):
+            with lock:
+                failures[input_ipc] = failures.get(input_ipc, 0) + 1
+                if failures[input_ipc] <= 5:
+                    raise RemoteCallUnavailableError(_NO_REPLICA)
+            value = _read_input(input_ipc)["x"][0]
+            return [_result_ipc([value + 1])]
+
+    monkeypatch.setattr("chalkcompute._remote_call_client.RemoteCallClient", ColdClient)
+    fn = _remote_function()
+    fn._call_timeout = 10
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(fn.remote, range(16)))
+
+    assert results == [x + 1 for x in range(16)]
+    assert sorted(failures.values()) == [6] * 16
