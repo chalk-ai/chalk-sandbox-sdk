@@ -193,6 +193,34 @@ def _remote_function_startup_probe() -> dict[str, dict[str, object]]:
     return {"grpc": {}}
 
 
+def _remote_function_readiness_probe(
+    configured: _ReadinessProbe | None,
+) -> dict[str, dict[str, object]]:
+    """The replica readiness probe, defaulting to the runtime's gRPC health check.
+
+    Kubernetes retires a previous revision's replica only once its replacement is
+    Ready. Without a probe a replica is Ready as soon as its process starts, so a
+    revision that never serves would still displace the healthy one.
+    """
+    from chalkcompute._scaling_group import ReadinessProbe
+
+    probe = (
+        configured if configured is not None else ReadinessProbe.grpc(period_seconds=1)
+    )
+    return probe.to_dict()
+
+
+# Response header in which the remote-call runtime reports its scaling-group revision.
+_SCALING_GROUP_REVISION_HEADER = "x-chalk-scaling-group-revision"
+# Probes in a row, each on a fresh connection, that must report the new revision before a
+# deploy returns. Fresh connections reach different gateway replicas and upstream connections.
+_ROUTE_REVISION_CONFIRMATIONS = 3
+# How long a route may answer without reporting any revision before the deploy stops
+# waiting. Such replicas run a runtime or controller that predates the header.
+_ROUTE_REVISION_UNREPORTED_GRACE_SECONDS = 30.0
+_ROUTE_REVISION_PROBE_TIMEOUT_MS = 5_000
+
+
 # ---------------------------------------------------------------------------
 # Background decorator deployments
 # ---------------------------------------------------------------------------
@@ -2944,11 +2972,7 @@ class RemoteFunction:
                 port=6666,
                 protocol="grpc",
                 startup_probe=_remote_function_startup_probe(),
-                readiness_probe=(
-                    self._readiness_probe.to_dict()
-                    if self._readiness_probe is not None
-                    else None
-                ),
+                readiness_probe=_remote_function_readiness_probe(self._readiness_probe),
                 authentication="AUTHENTICATED" if self._authenticated else None,
                 tags=self._tags,
                 chalk_identity=self._chalk_identity,
@@ -3031,6 +3055,7 @@ class RemoteFunction:
             progress_update(rkey, status="done", label="Function registered")
 
             # 7. Poll until the backing pod is actually ready to serve.
+            ready_deadline = time.monotonic() + ready_timeout
             if not (
                 sg_data
                 and _scaling_group_is_ready(
@@ -3044,6 +3069,19 @@ class RemoteFunction:
                     poll_interval=poll_interval,
                     timeout=ready_timeout,
                     require_ready_replicas=self._min_replicas > 0,
+                )
+
+            # 8. A redeploy rolls the same stable route from the previous revision to
+            # this one, and the group reports ready while the previous replica still
+            # serves. Wait until the route answers from this revision. A scale-to-zero
+            # group is skipped: probing it would wake it.
+            revision_id = sg_data.revision_id if sg_data is not None else ""
+            if revision_id and self._min_replicas > 0:
+                progress_update(fkey, detail="Waiting for traffic to reach new version")
+                self._wait_for_route_revision(
+                    revision_id=revision_id,
+                    poll_interval=poll_interval,
+                    deadline=ready_deadline,
                 )
 
             progress_done(fkey, detail="ready")
@@ -3119,6 +3157,106 @@ class RemoteFunction:
         if status_details:
             message = f"{message}\n{status_details}"
         raise FunctionError(message)
+
+    def _probe_route_revision(self) -> str | None:
+        """Health-check the stable route on a fresh connection; return the serving revision.
+
+        ``None`` means the replica answered without reporting a revision. Transport and
+        RPC failures propagate.
+        """
+        from connectrpc.client import ConnectClientSync, ResponseMetadata
+        from connectrpc.method import IdempotencyLevel, MethodInfo
+        from protobuf.wkt import Empty
+        from pyqwest import SyncClient, SyncHTTPTransport
+
+        from chalkcompute._http import SYNC_HTTP_VERSION
+
+        if self._web_url is None:
+            raise FunctionError("Function is not deployed. Call .deploy() first.")
+        target, use_tls = grpc_target_from_url(self._web_url, insecure_port=self._port)
+        transport = SyncHTTPTransport(
+            http_version=SYNC_HTTP_VERSION,
+            tls_include_system_certs=True,
+            connect_timeout=_ROUTE_REVISION_PROBE_TIMEOUT_MS / 1000,
+        )
+        try:
+            client = ConnectClientSync(
+                rpc_address_from_target(target, use_tls=use_tls),
+                protocol=ProtocolType.GRPC,
+                # The runtime's tonic services accept only uncompressed requests.
+                send_compression=None,
+                http_client=SyncClient(transport=transport),
+            )
+            # A HealthCheckRequest for the overall server ("") encodes to no bytes, as
+            # Empty does; the response status is not needed, only that it succeeded.
+            with ResponseMetadata() as response:
+                client.execute_unary(
+                    request=Empty(),
+                    method=MethodInfo(
+                        name="Check",
+                        service_name="grpc.health.v1.Health",
+                        input=Empty,
+                        output=Empty,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    headers=dict(self._remote_call_metadata(queue=False)),
+                    timeout_ms=_ROUTE_REVISION_PROBE_TIMEOUT_MS,
+                )
+            return response.headers.get(_SCALING_GROUP_REVISION_HEADER)
+        finally:
+            transport.close()
+
+    def _wait_for_route_revision(
+        self, *, revision_id: str, poll_interval: float, deadline: float
+    ) -> None:
+        """Wait until the stable route consistently answers from ``revision_id``.
+
+        Kubernetes keeps the previous revision's replica serving until this one is
+        Ready, so when this revision never becomes healthy the previous version keeps
+        answering and this raises once ``deadline`` passes.
+        """
+        confirmations = 0
+        unreported_since: float | None = None
+        last_seen = "no response"
+        while True:
+            now = time.monotonic()
+            try:
+                observed = self._probe_route_revision()
+            except Exception as exc:
+                observed = None
+                last_seen = f"error: {exc}"
+                unreported_since = None
+            else:
+                last_seen = observed or "a replica that reports no revision"
+                if observed is None:
+                    unreported_since = unreported_since or now
+                else:
+                    unreported_since = None
+            if observed == revision_id:
+                confirmations += 1
+                if confirmations >= _ROUTE_REVISION_CONFIRMATIONS:
+                    return
+                continue
+            confirmations = 0
+            if (
+                unreported_since is not None
+                and now - unreported_since >= _ROUTE_REVISION_UNREPORTED_GRACE_SECONDS
+            ):
+                logger.info(
+                    "Function %r does not report its revision; not waiting for the "
+                    "route to switch to revision %s",
+                    self._explicit_name or self._func_name,
+                    revision_id,
+                )
+                return
+            if now >= deadline:
+                raise FunctionError(
+                    f"Function {self._explicit_name or self._func_name!r} revision "
+                    f"{revision_id} is not serving traffic; the route still answers "
+                    f"from {last_seen}. The previous version keeps serving until the "
+                    "new one becomes healthy."
+                )
+            time.sleep(poll_interval)
 
     def _requires_ready_replicas(self, sg: Any) -> bool:
         """Whether readiness demands a live replica for this scaling group.

@@ -94,6 +94,7 @@ from chalkcompute._function import (
     _normalize_schedule,
     _remote_call_container_env,
     _remote_call_runtime_package_with_extras,
+    _remote_function_readiness_probe,
     _remote_function_startup_probe,
     _scaling_group_is_ready,
     _should_strip_source,
@@ -1262,6 +1263,7 @@ class RemoteClass:
 
             # 3. Register each method as a function version
             sg_names: list[str] = []
+            route_revisions: list[tuple[RemoteFunction, str]] = []
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
@@ -1297,10 +1299,8 @@ class RemoteClass:
                     port=6666,
                     protocol="grpc",
                     startup_probe=_remote_function_startup_probe(),
-                    readiness_probe=(
-                        self._readiness_probe.to_dict()
-                        if self._readiness_probe is not None
-                        else None
+                    readiness_probe=_remote_function_readiness_probe(
+                        self._readiness_probe
                     ),
                     authentication="AUTHENTICATED" if self._authenticated else None,
                     tags=self._tags,
@@ -1383,6 +1383,8 @@ class RemoteClass:
                 version_info = rf.version_info
                 assert version_info is not None
                 sg_data = ensured.scaling_group
+                if sg_data is not None and sg_data.revision_id:
+                    route_revisions.append((rf, sg_data.revision_id))
 
                 logger.info(
                     "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
@@ -1399,6 +1401,7 @@ class RemoteClass:
                     sg_names.append(version_info.scaling_group_name)
 
             # 5. Poll scaling groups until their backing pods can serve.
+            ready_deadline = time.monotonic() + ready_timeout
             if sg_names:
                 progress_update(ckey, detail="Waiting for readiness")
             for sg_name in sg_names:
@@ -1408,6 +1411,17 @@ class RemoteClass:
                     timeout=ready_timeout,
                     require_ready_replicas=self._min_replicas > 0,
                 )
+
+            # 6. Wait until each method's route answers from its new revision rather
+            # than the previous one; scale-to-zero groups are not woken to check.
+            if route_revisions and self._min_replicas > 0:
+                progress_update(ckey, detail="Waiting for traffic to reach new version")
+                for rf, revision_id in route_revisions:
+                    rf._wait_for_route_revision(
+                        revision_id=revision_id,
+                        poll_interval=poll_interval,
+                        deadline=ready_deadline,
+                    )
 
             self._deployed = True
             progress_done(ckey, detail="ready")
