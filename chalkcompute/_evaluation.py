@@ -425,8 +425,9 @@ class Evaluation:
     ) -> EvaluationRun:
         """Queue a run of this evaluation and return its handle.
 
-        ``execution_mode`` selects how the server drives the run to completion;
-        the server defaults to ``"on_read"`` when it is omitted.
+        ``execution_mode`` selects how the server drives the run to completion.
+        When it is omitted the server uses ``"workflow"`` if the environment has a
+        workflow orchestrator, and ``"on_read"`` otherwise.
         """
         return self._require_client().run(
             self.id, metadata=metadata, execution_mode=execution_mode
@@ -779,8 +780,9 @@ class EvaluationClient:
     ) -> EvaluationRun:
         """Queue a run for an existing evaluation.
 
-        ``execution_mode`` selects how the server drives the run to completion;
-        the server defaults to ``"on_read"`` when it is omitted.
+        ``execution_mode`` selects how the server drives the run to completion.
+        When it is omitted the server uses ``"workflow"`` if the environment has a
+        workflow orchestrator, and ``"on_read"`` otherwise.
         """
         evaluation_id = evaluation_id.strip()
         if not evaluation_id:
