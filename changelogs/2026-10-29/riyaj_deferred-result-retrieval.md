@@ -1,15 +1,12 @@
-Deferred function result retrieval now only polls the original call. `get()`,
-`stream()`, and `gather()` raise reported failures, including `ProxyError`,
-without enqueueing another invocation. Successful calls continue polling through
-pending and running states, and selected connection failures while reading
-results still retry against the same call ID. Execution retries remain governed
-by the server-side invocation or queue policy, including `function(retries=...)`.
-This prevents result retrieval from initiating another execution; it does not
-guarantee exactly-once execution.
+Deferred results now report a call's failure exactly as the server returned
+it. A failed result whose message resembles a transport error is no longer
+treated as a dropped polling connection; only raised polling errors refresh the
+connection and re-poll the same call ID and cursor.
 
-Returned deferred-call failures now retain their original error message even
-when it resembles a transport error; only raised polling errors can trigger a
-connection refresh.
+Structured proxy failures from `get()`, `stream()`, and `gather()` now show the
+error type, message, and call ID instead of a raw JSON envelope, and a proxy
+failure that wraps a runtime error reports that error. `.remote()` errors are
+unchanged.
 
-Structured proxy failures now display the error type, message, and deferred call
-ID instead of a raw JSON envelope, while preserving nested runtime tracebacks.
+Result collection never retries a failed call, including `ProxyError`; any
+execution retries happen on the server under the same call ID.

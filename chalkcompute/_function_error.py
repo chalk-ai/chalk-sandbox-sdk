@@ -111,20 +111,19 @@ class RemoteExecutionError(FunctionError):
 def decode_remote_error(
     payload: Any, function_name: str, *, call_id: str | None = None
 ) -> RemoteExecutionError | None:
-    """Decode versioned runtime errors and structured proxy failure envelopes.
+    """Decode the versioned runtime payload or a queue envelope around it.
 
-    Never classify a free-text error by words in its message. Unknown payload
-    versions and unrecognized legacy errors retain their existing behavior.
+    Never classify a free-text error by words in its message. Older runtimes
+    and unknown payload versions retain their existing error behavior.
     """
-    proxy_error: RemoteExecutionError | None = None
     for _ in range(3):
         if isinstance(payload, str):
             try:
                 payload = json.loads(payload)
             except (ValueError, TypeError):
-                return proxy_error
+                return None
         if not isinstance(payload, dict):
-            return proxy_error
+            return None
         if payload.get("chalk_remote_error") == 1:
             exception = payload.get("exception")
             if not isinstance(exception, dict):
@@ -143,24 +142,60 @@ def decode_remote_error(
         if "chalk_remote_error" in payload:
             return None
         if not isinstance(payload.get("exc_type"), str):
-            return proxy_error
-        if payload["exc_type"] == "ProxyError" and isinstance(
-            payload.get("message"), str
-        ):
-            proxy_error = RemoteExecutionError(
+            return None
+        payload = payload.get("message")
+    return None
+
+
+def _json_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_legacy_error(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("exc_type"), str) and isinstance(
+        payload.get("message"), str
+    )
+
+
+def decode_deferred_failure(
+    payload: Any, function_name: str, *, call_id: str | None = None
+) -> RemoteExecutionError | None:
+    """Decode a failure reported for a deferred call, including proxy failures.
+
+    Only deferred result collection uses this. Transport errors keep
+    :func:`decode_remote_error`, so a proxy envelope on a ``.remote()`` RPC
+    error keeps its original exception and stale-connection handling.
+    """
+    error = decode_remote_error(payload, function_name, call_id=call_id)
+    if error is not None:
+        return error
+    envelope = _json_object(payload)
+    for _ in range(3):
+        if envelope is None or not _is_legacy_error(envelope):
+            return None
+        inner = _json_object(envelope["message"])
+        if envelope["exc_type"] == "ProxyError":
+            # A proxy may wrap a legacy runtime error; report that error
+            # rather than its JSON text.
+            source = (
+                inner if inner is not None and _is_legacy_error(inner) else envelope
+            )
+            traceback_text = source.get("traceback")
+            return RemoteExecutionError(
                 function_name,
-                "ProxyError",
-                payload["message"],
-                payload["traceback"]
-                if isinstance(payload.get("traceback"), str)
-                else "",
+                source["exc_type"],
+                source["message"],
+                traceback_text if isinstance(traceback_text, str) else "",
                 "",
                 call_id=call_id,
             )
-        # A proxy envelope may carry a richer runtime error. Prefer its
-        # original exception and traceback over the proxy fallback.
-        payload = payload.get("message")
-    return proxy_error
+        envelope = inner
+    return None
 
 
 def remote_error_from_exception(

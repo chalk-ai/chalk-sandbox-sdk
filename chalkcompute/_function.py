@@ -77,6 +77,7 @@ from chalkcompute._traceback import format_exception, format_frame
 from chalkcompute._terminal import styled, supports_color
 from chalkcompute._function_error import (
     FunctionError,
+    decode_deferred_failure,
     decode_remote_error,
     remote_error_from_exception,
 )
@@ -1053,9 +1054,9 @@ class FunctionCallHandle:
     """Handle returned by :meth:`RemoteFunction.defer`.
 
     Result retrieval polls the original call and never submits another
-    invocation. Terminal failures, including proxy errors, are raised to the
-    caller. Execution retries are controlled separately by the server-side
-    function retry policy.
+    invocation. Failures the server reports for the call, including proxy
+    errors, are raised to the caller; any execution retries happen on the
+    server under the same call ID.
     """
 
     def __init__(
@@ -1105,7 +1106,7 @@ class FunctionCallHandle:
         if result.is_failed:
             message = result.error_message or "Remote call failed"
             raise (
-                decode_remote_error(message, self._func_name, call_id=self._call_id)
+                decode_deferred_failure(message, self._func_name, call_id=self._call_id)
                 or FunctionError(message)
             ) from None
 
