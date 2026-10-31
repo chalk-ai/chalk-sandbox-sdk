@@ -1,0 +1,1 @@
+- Expose lazy, read-only connection routing and current request headers for direct Chalk API integrations, including rotating workload identity. Add in-memory consumer-scoped secrets without process environment exports.

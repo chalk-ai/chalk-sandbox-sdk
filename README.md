@@ -18,7 +18,7 @@ pip install chalkcompute
 import chalkcompute as cc
 
 # Omitting image= uses Image.sandbox(): Python, Git and SSH in /workspace.
-# Credentials come from the environment, as with SandboxClient.from_env().
+# Credentials and routing come from your existing chalk login.
 sandbox = cc.Sandbox(
     image=cc.Image.sandbox().with_tmux(),
     cpu="1",
@@ -35,6 +35,41 @@ finally:
 `Sandbox(...)` only describes the sandbox; `.run()` builds the image, starts it
 and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
 sandbox with Claude Code, `gh` and Git identity configured.
+
+## Ambient authentication
+
+Clients automatically use the current terminal login in `~/.chalk.yml`, including
+its API server and selected environment. No CLI subprocess, token export, or
+configuration bootstrap is needed. Deployed workloads use the credentials and
+routing supplied by Chalk.
+
+For direct HTTP calls to Chalk APIs, use the public connection context and obtain
+fresh headers for each request:
+
+```python
+import httpx
+from chalkcompute import ConnectClient
+
+with ConnectClient() as connection:
+    response = httpx.post(
+        connection.api_server + "/v1/router/chat/completions",
+        headers=connection.request_headers(),
+        json={
+            "model": "anthropic/claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+```
+
+`connection.environment_id` exposes the resolved environment ID. These accessors
+resolve authentication lazily and do not mutate `os.environ`. Request headers
+include a bearer credential; only send them to the selected Chalk API server.
+Ordinary SDK operations do not need these accessors.
+
+When an application already holds a secret value in memory, it can supply
+`Secret.from_value("API_TOKEN", value)` without exporting it through the process
+environment. Like `Secret.from_local_env`, this stores the value in a
+consumer-scoped secret when deployed and keeps it out of deployment specs.
 
 ## Logging and progress
 

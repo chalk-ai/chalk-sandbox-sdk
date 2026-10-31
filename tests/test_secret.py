@@ -18,6 +18,54 @@ class _Client(StubbedConnectClient):
         return secrets_pb.UpsertSecretResponse()
 
 
+def test_in_memory_secret_uses_normal_scope_and_does_not_export_or_serialize_value(
+    monkeypatch,
+):
+    monkeypatch.delenv("TOKEN", raising=False)
+    secret = Secret.from_value("TOKEN", "private-bearer")
+    assert secret.is_lazy
+    assert "private-bearer" not in repr(secret)
+    assert "private-bearer" not in str(secret._to_proto_dict())
+    client = _Client()
+    scope = SecretScope.sandbox("agent")
+    refs, names = resolve_lazy_secrets([secret], client, scope=scope)
+    assert refs == [Secret.from_chalk_env("TOKEN")]
+    assert names == ["TOKEN"]
+    request = client.calls[0][1]
+    assert request.scope == scope._to_proto()
+    assert request.config.value.value == "private-bearer"
+    import os
+
+    assert "TOKEN" not in os.environ
+
+
+def test_in_memory_secret_works_in_environment_and_host_bound_credentials():
+    from chalkcompute import Image, NetworkPolicy, Sandbox
+    from chalkcompute._env import normalize_env
+    from chalkcompute._secret import prepare_lazy_secrets
+
+    secret = Secret.from_value("TOKEN", "private-bearer")
+    literals, refs = normalize_env({"ALIASED": secret})
+    assert literals == {}
+    resolved, values = prepare_lazy_secrets(refs)
+    assert values == {"TOKEN": "private-bearer"}
+    assert resolved == [Secret.from_chalk_env("TOKEN", alias="ALIASED")]
+    sandbox = Sandbox(
+        image=Image.base("python:3.12"), network_policy=NetworkPolicy(allowed_hosts=[])
+    )
+    sandbox.add_credentials("api.example.com", secret)
+    assert sandbox._env["TOKEN"].startswith("__chalk-secret-")
+    assert "private-bearer" not in repr(sandbox._network_policy)
+
+
+@pytest.mark.parametrize(
+    "name,value,error", [("", "value", ValueError), ("TOKEN", 123, TypeError)]
+)
+def test_in_memory_secret_validates_without_exposing_value(name, value, error):
+    with pytest.raises(error):
+        Secret.from_value(name, value)
+
+
 def test_resolve_lazy_secrets_sends_scope_on_every_upsert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
