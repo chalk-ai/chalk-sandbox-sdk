@@ -109,11 +109,27 @@ def worker_requirements(source: str) -> list[str]:
     others = [r for r in declared if _requirement_name(r) != "chalkpy"]
     if not chalkpy:
         return ["chalkpy[workflows]", *others]
-    # Re-state each chalkpy requirement with the extra, keeping its version constraint.
-    return [
-        re.sub(r"^(chalkpy)(\[[^\]]*\])?", r"chalkpy[workflows]", r.strip(), flags=re.I)
-        for r in chalkpy
-    ] + others
+    return [_with_extra(r, "workflows") for r in chalkpy] + others
+
+
+_REQUIREMENT_EXTRAS_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9._-]+)(?:\s*\[(?P<extras>[^\]]*)\])?"
+)
+
+
+def _normalize_extra(extra: str) -> str:
+    return re.sub(r"[-_.]+", "-", extra).lower()
+
+
+def _with_extra(requirement: str, extra: str) -> str:
+    requirement = requirement.strip()
+    match = _REQUIREMENT_EXTRAS_RE.match(requirement)
+    assert match is not None
+    extras = [e.strip() for e in (match.group("extras") or "").split(",") if e.strip()]
+    if _normalize_extra(extra) not in {_normalize_extra(e) for e in extras}:
+        extras.append(extra)
+    rest = requirement[match.end() :]
+    return f"{match.group('name')}[{','.join(extras)}]{rest}"
 
 
 def _installed_version(distribution: str) -> str:
