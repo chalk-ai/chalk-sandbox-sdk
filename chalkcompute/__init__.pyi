@@ -84,6 +84,7 @@ from chalkcompute._http import HTTPHeaders as HTTPHeaders
 from chalkcompute._http import HTTPResponse as HTTPResponse
 from chalkcompute._image import Image as Image
 from chalkcompute._image import LazyLocalFile as LazyLocalFile
+from chalkcompute._model import ModelBindingSpec as ModelBindingSpec
 from chalkcompute._model import ModelError as ModelError
 from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
 from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
@@ -268,6 +269,7 @@ __all__ = [
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",
+    "ModelBindingSpec",
     "ModelError",
     "ModelNotFoundError",
     "ModelNotDeployedError",
