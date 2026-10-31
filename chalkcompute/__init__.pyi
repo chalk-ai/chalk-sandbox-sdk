@@ -1,4 +1,3 @@
-from chalkcompute._usage_budget import UsageBudget as UsageBudget
 from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
@@ -32,6 +31,7 @@ from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
 )
+from chalkcompute._usage_budget import UsageBudget as UsageBudget
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
 from chalkcompute._container import ContainerInfo as ContainerInfo
@@ -194,7 +194,6 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
-    "UsageBudget",
     "configure_logging",
     "SandboxGit",
     "GitFileStatus",
@@ -212,6 +211,7 @@ __all__ = [
     "ArtifactClient",
     "ArtifactError",
     "ArtifactNotFoundError",
+    "UsageBudget",
     "Container",
     "ContainerError",
     "ContainerInfo",
