@@ -33,7 +33,13 @@ key's record ID, not its secret token. Periods are `daily`, `weekly`, and
 Only one budget per owner and period is allowed. Creating a new definition does
 not silently overwrite an existing budget. Use `from_id()` or
 `UsageBudget.list(usage_pool=pool)` to manage existing budgets.
-Omit the filter to list all budgets in the environment. A local pool passed to
+Listing returns a lazy generator: the request happens when iteration starts and
+budget handles are constructed one at a time. The current server API returns all
+matching budgets in one response, so this does not bound the underlying response
+size. Prefer a pool/key filter for large environments; omitting it requests every
+budget. Use `list(...)` to explicitly collect results. Close the generator if you
+stop early (for example, with `contextlib.closing`); supplied clients remain
+caller-owned. A local pool passed to
 `list()` is looked up by name without creating anything.
 
 `usage_pool` accepts either `cc.UsagePool("...")` or a deployed/loaded pool handle.

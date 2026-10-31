@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import builtins
-
+from collections.abc import Generator
 from datetime import datetime
 from typing import Literal
 
@@ -167,8 +166,12 @@ class UsageBudget(RouterResource):
         usage_pool: UsagePool | str | None = None,
         api_key_id: str | None = None,
         client: ConnectClient | None = None,
-    ) -> builtins.list[UsageBudget]:
-        """List budgets for a pool or key; local pools are looked up by name."""
+    ) -> Generator[UsageBudget, None, None]:
+        """Yield budgets; local pools are looked up by name without deployment.
+
+        The server returns one unpaginated response. Filter by pool or key to
+        bound that response. Close the generator when stopping early.
+        """
         owner = (
             None
             if usage_pool is None and api_key_id is None
@@ -189,7 +192,9 @@ class UsageBudget(RouterResource):
                 ).list_usage_budgets,
                 pb.ListUsageBudgetsRequest(scope=scope, scope_id=scope_id),
             )
-            return [cls._from_proto(budget, c._env_id) for budget in response.budgets]
+            yield from (
+                cls._from_proto(budget, c._env_id) for budget in response.budgets
+            )
 
     def refresh(self, *, client: ConnectClient | None = None) -> UsageBudget:
         """Reload configuration and the current admission counter, when available."""

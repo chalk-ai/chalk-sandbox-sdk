@@ -25,6 +25,26 @@ for existing in cc.UsagePool.list():
     print(existing.id, existing.name)
 ```
 
+`UsagePool.list()` returns a lazy generator. Iteration fetches pages of up to 100
+pools and retains only the current page, without collecting every result or a
+history of cursors. Use `list(cc.UsagePool.list())` only when you intentionally
+want to collect everything in memory. Network calls and validation happen when
+you iterate. If you stop early, close the generator to release its owned client:
+
+```python
+from contextlib import closing
+
+with closing(cc.UsagePool.list()) as pools:
+    for pool in pools:
+        print(pool.name)
+        if pool.name == "customer-support":
+            break
+```
+
+Fully consuming the generator also closes an owned client. An explicitly supplied
+client remains caller-owned. The same lifecycle applies to budget and rate-limit
+listing.
+
 Assign router API keys to the resulting pool ID through existing gateway key
 management. Creating an empty pool does not move any keys or enforce a quota.
 Budgets and rate limits are separate resources owned by the pool. The fluent

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import builtins
-
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from datetime import datetime
 from typing import Literal
 
@@ -228,12 +226,13 @@ class UsagePool(RouterResource):
         *,
         include_archived: bool = False,
         client: ConnectClient | None = None,
-    ) -> builtins.list[UsagePool]:
-        """List all pages of pools in the active environment."""
+    ) -> Generator[UsagePool, None, None]:
+        """Yield pools lazily, fetching one page at a time.
+
+        Close the generator when stopping early to release an owned client.
+        """
         boolean(include_archived, "include_archived")
-        pools: list[UsagePool] = []
         cursor: str | None = None
-        seen: set[str] = set()
         with client_for(client) as c:
             stub = c.stub(usage_pool_connect.UsagePoolServiceClientSync)
             while True:
@@ -241,16 +240,20 @@ class UsagePool(RouterResource):
                     stub.list_usage_pools,
                     pb.ListUsagePoolsRequest(
                         cursor=cursor,
+                        limit=100,
                         include_archived=include_archived,
                     ),
                 )
-                pools.extend(cls(p.name)._load(p, c._env_id) for p in response.pools)
-                cursor = response.next_cursor
-                if not cursor:
-                    return pools
-                if cursor in seen:
-                    raise RuntimeError("usage pool API repeated a pagination cursor")
-                seen.add(cursor)
+                yield from (cls(p.name)._load(p, c._env_id) for p in response.pools)
+                next_cursor = response.next_cursor
+                if not next_cursor:
+                    return
+                if next_cursor == cursor:
+                    raise RuntimeError(
+                        "usage pool API did not advance its pagination cursor"
+                    )
+                cursor = next_cursor
+                del response
 
     def refresh(self, *, client: ConnectClient | None = None) -> UsagePool:
         """Reload pool metadata, preserving locally queued policies."""

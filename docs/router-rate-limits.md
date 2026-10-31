@@ -73,8 +73,14 @@ field masks, preserving false flags and allowing filters to be cleared.
 
 A new definition creates a new policy, even if an identical policy exists.
 Repeated `deploy()` on the same handle updates its ID. Save IDs for later use;
-`RateLimit.list(usage_pool=pool)` reads all pages and filters policies
-for that owner. Omit the filter to list all policies. After an ambiguous create
+`RateLimit.list(usage_pool=pool)` returns a lazy generator that fetches pages of
+up to 100 policies as needed and filters for that owner. It retains only the
+current page, without accumulating results or cursor history. Owner filtering
+happens locally, so finding the next match may require fetching more pages. Omit
+the filter to iterate all policies, or use `list(...)` to explicitly collect them.
+Network calls and validation happen during iteration. Close the generator when
+stopping early (for example, with `contextlib.closing`); supplied clients remain
+caller-owned. After an ambiguous create
 failure, reconcile through `list()` before trying again: creates are not retried
 automatically. Updates remain last-writer-wins.
 

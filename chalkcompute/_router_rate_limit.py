@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import builtins
-
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from datetime import datetime
 
 from protobuf.wkt import FieldMask
@@ -194,16 +192,17 @@ class RateLimit(RouterResource):
         usage_pool: UsagePool | str | None = None,
         api_key_id: str | None = None,
         client: ConnectClient | None = None,
-    ) -> builtins.list[RateLimit]:
-        """Read every page, optionally selecting one pool or key's policies."""
+    ) -> Generator[RateLimit, None, None]:
+        """Yield matching policies lazily, fetching one page at a time.
+
+        Close the generator when stopping early to release an owned client.
+        """
         owner = (
             None
             if usage_pool is None and api_key_id is None
             else scope_for(usage_pool, api_key_id)
         )
-        policies: list[RateLimit] = []
         cursor: str | None = None
-        seen: set[str] = set()
         with client_for(client) as c:
             resolved = (
                 None
@@ -213,19 +212,23 @@ class RateLimit(RouterResource):
             stub = c.stub(rate_limit_connect.RateLimitServiceClientSync)
             while True:
                 response = c.call(
-                    stub.list_rate_limits, pb.ListRateLimitsRequest(cursor=cursor)
+                    stub.list_rate_limits,
+                    pb.ListRateLimitsRequest(cursor=cursor, limit=100),
                 )
-                policies.extend(
+                yield from (
                     cls._from_proto(policy, c._env_id)
                     for policy in response.policies
                     if resolved is None or (policy.scope, policy.scope_id) == resolved
                 )
-                cursor = response.next_cursor
-                if not cursor:
-                    return policies
-                if cursor in seen:
-                    raise RuntimeError("rate limit API repeated a pagination cursor")
-                seen.add(cursor)
+                next_cursor = response.next_cursor
+                if not next_cursor:
+                    return
+                if next_cursor == cursor:
+                    raise RuntimeError(
+                        "rate limit API did not advance its pagination cursor"
+                    )
+                cursor = next_cursor
+                del response
 
     def refresh(self, *, client: ConnectClient | None = None) -> RateLimit:
         self._require_active()
