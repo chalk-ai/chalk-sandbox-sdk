@@ -60,6 +60,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "get_call_context": ("chalkcompute._call_context", "get_call_context"),
     "get_row_metadata": ("chalkcompute._call_context", "get_row_metadata"),
     "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
+    "RateLimit": ("chalkcompute._router_rate_limit", "RateLimit"),
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),

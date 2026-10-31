@@ -89,6 +89,7 @@ from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
 from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
+from chalkcompute._router_rate_limit import RateLimit as RateLimit
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
 from chalkcompute._remote_call_client import RemoteCallClient as RemoteCallClient
 from chalkcompute._remote_call_client import (
@@ -243,6 +244,7 @@ __all__ = [
     "get_call_context",
     "get_row_metadata",
     "RetryPolicy",
+    "RateLimit",
     "RateLimitPolicy",
     "ConcurrencyPolicy",
     "QueuePolicy",
