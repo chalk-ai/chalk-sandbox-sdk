@@ -76,7 +76,7 @@ impl PyRemoteCallClient {
         metadata=None,
         use_tls=None,
         initial_poll_delay_ms=50,
-        max_poll_delay_ms=5000,
+        max_poll_delay_ms=1000,
         poll_backoff_multiplier=1.7,
         max_message_size=None,
         auth_endpoint=None,

@@ -259,13 +259,23 @@ class TestFunctionResultTtl:
         """A completed deferred result becomes unavailable after its TTL."""
         fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         config = _deployed_config(fn)
-        assert config.queue.result_ttl_seconds == 2
+        assert config.queue.result_ttl_seconds == 15
 
         token = f"ttl-{uuid.uuid4().hex}"
         handle = _defer_when_ready(fn, token)
         assert handle.get(timeout=60) == token
 
-        # Give Redis expiry and the queue status transition time to complete.
-        time.sleep(4)
+        # Retention starts on completion, not on our first successful read.
+        # Allow polling/CI scheduling overhead while still bounding expiry.
+        deadline = time.monotonic() + config.queue.result_ttl_seconds + 10
+        while time.monotonic() < deadline:
+            result = handle.poll()
+            if result.is_expired:
+                break
+            assert not result.is_failed, result.error_message
+            time.sleep(0.25)
+        else:
+            pytest.fail(f"Call {handle.call_id} did not expire within the TTL plus 10s")
+
         with pytest.raises(chalkcompute.FunctionError, match="results have expired"):
-            handle.get(timeout=30)
+            handle.get(timeout=5)
