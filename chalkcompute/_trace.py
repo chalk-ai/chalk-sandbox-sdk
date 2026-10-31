@@ -226,34 +226,6 @@ class Span:
                 return value
         return None
 
-    @property
-    def metrics(self) -> dict[str, int | float]:
-        """Available usage and timing metrics, using Braintrust metric names.
-
-        Includes ``tokens``, ``prompt_tokens``, ``completion_tokens``,
-        ``prompt_cached_tokens``, ``prompt_cache_creation_tokens``,
-        ``completion_reasoning_tokens`` and ``estimated_cost`` when available.
-        ``start`` and ``end`` are Unix seconds; ``duration`` is seconds.
-        Missing metrics are omitted. The returned dictionary is a fresh copy.
-        """
-        values: dict[str, int | float | None] = {
-            "tokens": self.total_tokens,
-            "prompt_tokens": self.input_tokens,
-            "completion_tokens": self.output_tokens,
-            "prompt_cached_tokens": self.cache_read_tokens,
-            "prompt_cache_creation_tokens": self.cache_write_tokens,
-            "completion_reasoning_tokens": self.reasoning_tokens,
-            "estimated_cost": self.cost,
-            "start": self.start_time.timestamp()
-            if self.start_time is not None
-            else None,
-            "end": self.end_time.timestamp() if self.end_time is not None else None,
-            "duration": self.duration.total_seconds()
-            if self.duration is not None
-            else None,
-        }
-        return {key: value for key, value in values.items() if value is not None}
-
     def _first_attribute(self, *keys: str) -> str | None:
         return next(
             (self.attributes[key] for key in keys if self.attributes.get(key)), None

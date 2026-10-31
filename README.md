@@ -659,14 +659,9 @@ known. Cache and reasoning breakdowns are not added again. Values describe one
 span; when summing a trace, select the spans of interest if your instrumentation
 also emits parent rollups. The example explicitly treats missing usage as zero.
 
-`span.metrics` returns a fresh dictionary of available metrics using Braintrust's
-names: `tokens`, `prompt_tokens`, `completion_tokens`, `prompt_cached_tokens`,
-`prompt_cache_creation_tokens`, `completion_reasoning_tokens`, and
-`estimated_cost`. It also includes recorded `start` and `end` as Unix seconds
-and `duration` in seconds. Missing values are omitted. These helpers make no
-additional requests and do not infer pricing. `span.attributes`,
-`span.attribute_int(key)`, and `span.attribute_float(key)` remain available for
-other telemetry fields.
+These helpers make no additional requests and do not infer pricing.
+`span.attributes`, `span.attribute_int(key)`, and `span.attribute_float(key)`
+remain available for other telemetry fields.
 
 ### Built-in scorers
 

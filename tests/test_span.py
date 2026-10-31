@@ -1,5 +1,3 @@
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from chalkcompute import Span
@@ -181,43 +179,6 @@ def test_model_and_provider(property_name: str, keys: tuple[str, ...]) -> None:
         attributes.update({later: "fallback" for later in keys[index + 1 :]})
         attributes[key] = "expected"
         assert getattr(_span(**attributes), property_name) == "expected"
-
-
-def test_metrics_are_numeric_and_use_braintrust_names() -> None:
-    span = Span(
-        span_id="span",
-        trace_id="trace",
-        operation_name="llm",
-        start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        end_time=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=1.5),
-        duration=timedelta(seconds=1.5),
-        attributes={
-            "llm.token_count.prompt": "100",
-            "llm.token_count.completion": "50",
-            "llm.token_count.prompt_details.cache_read": "20",
-            "llm.token_count.prompt_details.cache_write": "0",
-            "llm.token_count.completion_details.reasoning": "5",
-            "llm.cost.total": "0.125",
-        },
-    )
-    assert span.metrics == {
-        "tokens": 150,
-        "prompt_tokens": 100,
-        "completion_tokens": 50,
-        "prompt_cached_tokens": 20,
-        "prompt_cache_creation_tokens": 0,
-        "completion_reasoning_tokens": 5,
-        "estimated_cost": 0.125,
-        "start": 1767225600.0,
-        "end": 1767225601.5,
-        "duration": 1.5,
-    }
-    span.metrics["tokens"] = 999
-    assert span.metrics["tokens"] == 150
-    assert _span().metrics == {}
-    assert _span(
-        **{"llm.token_count.prompt": "0", "llm.cost.total": "NaN"}
-    ).metrics == {"prompt_tokens": 0}
 
 
 @pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", "1e999", "bad", ""])
