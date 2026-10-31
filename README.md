@@ -639,6 +639,30 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### Reading span metrics
+
+Scorers can accept `trace: cc.Trace` and read typed usage values from each span:
+
+```python
+@cc.function
+def task_token_count(trace: cc.Trace) -> int:
+    return sum(span.total_tokens or 0 for span in trace.get_spans())
+```
+
+`Span` exposes `input_tokens`, `output_tokens`, `total_tokens`,
+`cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost` (USD),
+`model`, and `provider`. These read Chalk's normalized attributes, OpenInference
+attributes, and GenAI attributes. Numeric helpers skip invalid values and return
+`None` when unavailable; recorded zeroes stay zero. An explicit total takes
+precedence; otherwise `total_tokens` adds input and output only when both are
+known. Cache and reasoning breakdowns are not added again. Values describe one
+span; when summing a trace, select the spans of interest if your instrumentation
+also emits parent rollups. The example explicitly treats missing usage as zero.
+
+These helpers make no additional requests and do not infer pricing.
+`span.attributes`, `span.attribute_int(key)`, and `span.attribute_float(key)`
+remain available for other telemetry fields.
+
 ### Built-in scorers
 
 `cc.scorers` deploys common scorers without a function body. Each one takes an

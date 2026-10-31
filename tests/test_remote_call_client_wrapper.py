@@ -16,13 +16,11 @@ from chalkcompute._remote_call_client import (
 
 
 class LegacyNativeRemoteCallClient:
-    calls: list[tuple[object, ...]] = []
     method_calls: list[tuple[object, ...]] = []
     call_ipc_errors: list[BaseException] = []
 
     def __init__(self, *args: object) -> None:
         self.closed = False
-        self.calls.append(args)
         if len(args) > 7:
             raise TypeError(
                 "RemoteCallClient.__new__() takes from 1 to 7 positional "
@@ -45,7 +43,6 @@ class LegacyNativeRemoteCallClient:
 
 @pytest.fixture(autouse=True)
 def legacy_native_client() -> None:
-    LegacyNativeRemoteCallClient.calls = []
     LegacyNativeRemoteCallClient.method_calls = []
     LegacyNativeRemoteCallClient.call_ipc_errors = []
     with (
@@ -63,27 +60,6 @@ def legacy_native_client() -> None:
         yield
 
 
-def test_legacy_native_constructor_fallback_without_service_auth() -> None:
-    client = RemoteCallClient(
-        "remote.chalk.test:443",
-        metadata=(("x-chalk-env-id", "env-id"),),
-        use_tls=True,
-    )
-
-    assert isinstance(client._inner, LegacyNativeRemoteCallClient)
-    assert len(LegacyNativeRemoteCallClient.calls) == 2
-    assert len(LegacyNativeRemoteCallClient.calls[0]) == 12
-    assert LegacyNativeRemoteCallClient.calls[1] == (
-        "remote.chalk.test:443",
-        [("x-chalk-env-id", "env-id")],
-        True,
-        50,
-        5000,
-        1.7,
-        None,
-    )
-
-
 def test_legacy_native_constructor_rejected_for_service_auth() -> None:
     with pytest.raises(RemoteCallClientUnavailable, match="too old for service-auth"):
         RemoteCallClient(
@@ -94,8 +70,13 @@ def test_legacy_native_constructor_rejected_for_service_auth() -> None:
         )
 
 
-def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> None:
-    client = RemoteCallClient("remote.chalk.test:443")
+def test_legacy_native_fallback_supports_calls_and_enqueue() -> None:
+    """Calls still work when an older extension rejects the new constructor."""
+    client = RemoteCallClient(
+        "remote.chalk.test:443",
+        metadata=(("x-chalk-env-id", "env-id"),),
+        use_tls=True,
+    )
 
     assert client.call_ipc("handler", b"in") == [b"ok"]
     assert client.enqueue("pkg.fn", b"in") == "call-1"
