@@ -2701,6 +2701,7 @@ class RemoteFunction:
             Declarative image ready to be built.
         """
         module_name = _deploy_module_name(self._func)
+        scorer_source = getattr(self._func, "__chalk_scorer_source__", None)
         package_dir = _package_dir_for_module(module_name)
         source_root = function_source_root(
             self._image,
@@ -2736,6 +2737,19 @@ class RemoteFunction:
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
                 base_image, temp_files, shim_module, source_root
+            )
+
+        if scorer_source is not None:
+            # The factory may have run inside main(), a setup function, or a
+            # conditional. Import a captured entrypoint, not the factory's
+            # caller, to avoid requiring that invocation at module import.
+            generated_source = scorer_source.render(shim_module)
+            shim_module = _available_module_name("_chalk_scorer", taken)
+            taken.add(shim_module)
+            source_file = _write_temp(generated_source)
+            temp_files.append(source_file)
+            deploy_image = deploy_image.add_local_file(
+                source_file, f"{source_root}/{shim_module}.py"
             )
 
         self._handler_module = _available_module_name("handler", taken)

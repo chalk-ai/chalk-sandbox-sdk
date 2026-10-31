@@ -22,6 +22,7 @@ from chalkcompute._function import function as _function
 from chalkcompute._image import Image
 from chalkcompute._local_dev import should_strip_source
 from chalkcompute._naming import sanitize_dns_label
+from chalkcompute._scorer_source import ScorerSource
 from chalkcompute._secret import Secret
 from chalkcompute._trace import Trace
 
@@ -95,6 +96,10 @@ def llm_judge(
     ``response_model`` needs a ``score`` field, which becomes the scorer's
     score; its other fields are recorded as row metadata. A reply that fails
     validation fails the row.
+
+    This factory can be called inside a function or ``__main__`` block. For
+    those declarations, the response model and custom prompt/parse functions
+    must be importable definitions in the shipped source.
 
     ``inputs`` are the dataset columns to grade (``output`` is the task's).
     Naming ``trace`` among them hands the judge the row's
@@ -183,9 +188,9 @@ def _declare_scorer(
     as ``None`` for a row that recorded no telemetry. The wire type is the same
     ``large_utf8`` either way.
 
-    The generated function is defined in the caller's module so the deploy
-    ships that file, where anything the body closes over lives, and the
-    pod-side shim imports it back. ``stamp`` sets attributes on it and
+    Keep the caller's module for shipping user models and hooks, but capture
+    the generated entrypoint separately: workers must not need to rerun the
+    caller's factory invocation. ``stamp`` sets attributes on it and
     ``extra_globals`` names values in its module namespace.
     """
     frame = sys._getframe(frame_depth)
@@ -211,6 +216,9 @@ def _declare_scorer(
     scorer = namespace[py_name]
     for attribute, value in (stamp or {}).items():
         setattr(scorer, attribute, value)
+    scorer.__chalk_scorer_source__ = ScorerSource(
+        caller_module, py_name, source, body, extra_globals or {}, stamp or {}
+    )
 
     base_image = image if image is not None else Image.debian_slim()
     declared = list(function_kwargs.pop("secrets", None) or []) + list(secrets)
@@ -233,8 +241,8 @@ def _assert_deployable(what: str = "cc.scorers.llm_judge") -> None:
         raise FunctionBuildError(
             f"{what} cannot be deployed in strip mode "
             "(CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 source checkout): the scorer "
-            "is generated at import time and stripping removes the chalkcompute "
-            "import the deployed module needs. Deploy with a published chalkcompute "
+            "requires the chalkcompute runtime and stripping removes the chalkcompute "
+            "imports the deployed module needs. Deploy with a published chalkcompute "
             "installed, or set CHALK_FUNCTION_LOCAL_SDK_COPY=1 with "
             "CHALK_FUNCTION_STRIP_SOURCE=0."
         )
