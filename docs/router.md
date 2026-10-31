@@ -166,11 +166,18 @@ last-writer-wins; there is no compare-and-swap operation.
 
 ## Server rollout
 
-Deploy the matching router PR before using the additive SDK API. Function
-classifiers additionally require operator configuration of
-`ROUTER_FUNCTION_API_ENDPOINT` and `ROUTER_FUNCTION_API_TOKEN`. The latter is a
-Chalk internal exchange token authorized for `DEPLOY_REDEPLOY` and `QUERY_ONLINE`
-in the environments served by the router. Endpoint and credentials are never
-accepted from route definitions. The metadata API resolves function IDs within
-the authenticated request's environment. A caller granted a router alias also
-grants execution of its configured classifier.
+Deploy the matching metadata API, then the router, before using the additive SDK
+API. Hosted routers receive the metadata API address automatically through the
+existing `CHALK_API_HOST`; no new environment variables or secrets are needed
+from the SDK user.
+
+Function classification uses the incoming Chalk credential or router API key.
+The metadata API checks the caller's route access and the current published
+function binding with the router, then invokes that function in the router's
+environment using Chalk's existing signing infrastructure. A route grant permits
+its configured classifier; it does not grant arbitrary function invocation.
+
+Creating or editing a function-backed route requires `deploy.redeploy`. Inference
+callers only need access to invoke the route. The function retains its own runtime
+identity and permissions. Endpoint and credentials are never route fields, and
+the public `CallExternalFunction` RPC's permission policy is unchanged.
