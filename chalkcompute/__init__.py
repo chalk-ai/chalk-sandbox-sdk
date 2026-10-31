@@ -6,6 +6,7 @@ import importlib
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     "configure_logging": ("chalkcompute._logging", "configure_logging"),
+    "UsageBudget": ("chalkcompute._usage_budget", "UsageBudget"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),
     "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
