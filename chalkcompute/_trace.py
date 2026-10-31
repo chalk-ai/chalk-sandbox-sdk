@@ -6,7 +6,7 @@ scoring::
     @chalkcompute.function
     def total_cost(expected: str, output: str, trace: chalkcompute.Trace) -> float:
         return sum(
-            span.attribute_float("llm.cost") or 0.0
+            span.cost or 0.0
             for span in trace.get_spans()
         )
 
@@ -34,11 +34,13 @@ a published ``chalkcompute`` for session-aware scoring.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -100,7 +102,13 @@ class SpanStatusCode(str, Enum):
 
 @dataclass(frozen=True)
 class Span:
-    """One span of a session's telemetry."""
+    """One span of a session's telemetry.
+
+    Token, cost, model and provider properties normalize common telemetry
+    attributes without making additional requests. Numeric properties return
+    ``None`` when unavailable or invalid; a recorded zero remains zero.
+    Metrics describe this span only, never an aggregate over its children.
+    """
 
     span_id: str
     trace_id: str
@@ -122,8 +130,152 @@ class Span:
             SESSION_ID_ATTRIBUTE
         ) or self.resource_attributes.get(SESSION_ID_ATTRIBUTE)
 
+    @property
+    def model(self) -> str | None:
+        """Model used, preferring Chalk's normalized value and the response model."""
+        return self._first_attribute(
+            "chalk.ai.model",
+            "gen_ai.response.model",
+            _MODEL_NAME_ATTRIBUTE,
+            "gen_ai.request.model",
+        )
+
+    @property
+    def provider(self) -> str | None:
+        """LLM provider, from OpenInference or GenAI attributes."""
+        return self._first_attribute(
+            "llm.provider", "gen_ai.provider.name", "gen_ai.system"
+        )
+
+    @property
+    def input_tokens(self) -> int | None:
+        """Prompt tokens, including any cache tokens already included by the emitter."""
+        return self._token_count(
+            "chalk.ai.input_tokens",
+            "llm.token_count.prompt",
+            "gen_ai.usage.input_tokens",
+        )
+
+    @property
+    def output_tokens(self) -> int | None:
+        """Completion tokens, including any reasoning tokens reported in that total."""
+        return self._token_count(
+            "chalk.ai.output_tokens",
+            "llm.token_count.completion",
+            "gen_ai.usage.output_tokens",
+        )
+
+    @property
+    def total_tokens(self) -> int | None:
+        """Recorded total, or input plus output when both counts are available.
+
+        Cache and reasoning counts are breakdowns and are not added again.
+        A partial count does not imply the missing count is zero.
+        """
+        total = self._token_count(
+            "chalk.ai.total_tokens", _TOKEN_TOTAL_ATTRIBUTE, "gen_ai.usage.total_tokens"
+        )
+        if total is not None:
+            return total
+        input_tokens, output_tokens = self.input_tokens, self.output_tokens
+        if input_tokens is None or output_tokens is None:
+            return None
+        return input_tokens + output_tokens
+
+    @property
+    def cache_read_tokens(self) -> int | None:
+        """Prompt tokens read from the provider's cache."""
+        return self._token_count(
+            "chalk.ai.cache_read_tokens",
+            "llm.token_count.prompt_details.cache_read",
+            "gen_ai.usage.cache_read.input_tokens",
+        )
+
+    @property
+    def cache_write_tokens(self) -> int | None:
+        """Prompt tokens written to the provider's cache."""
+        return self._token_count(
+            "chalk.ai.cache_write_tokens",
+            "llm.token_count.prompt_details.cache_write",
+            "gen_ai.usage.cache_creation.input_tokens",
+        )
+
+    @property
+    def reasoning_tokens(self) -> int | None:
+        """Reasoning tokens within the completion, when reported."""
+        return self._token_count(
+            "llm.token_count.completion_details.reasoning",
+            "gen_ai.usage.reasoning.output_tokens",
+        )
+
+    @property
+    def cost(self) -> float | None:
+        """Recorded total cost in USD; no model pricing is inferred.
+
+        Tries Chalk's normalized cost, OpenInference total/legacy cost, then
+        GenAI cost, skipping malformed, negative and non-finite values.
+        """
+        for key in (
+            "chalk.ai.cost_usd",
+            "llm.cost.total",
+            "llm.cost",
+            "gen_ai.usage.cost",
+        ):
+            value = self.attribute_float(key)
+            if value is not None and value >= 0:
+                return value
+        return None
+
+    @property
+    def metrics(self) -> dict[str, int | float]:
+        """Available usage and timing metrics, using Braintrust metric names.
+
+        Includes ``tokens``, ``prompt_tokens``, ``completion_tokens``,
+        ``prompt_cached_tokens``, ``prompt_cache_creation_tokens``,
+        ``completion_reasoning_tokens`` and ``estimated_cost`` when available.
+        ``start`` and ``end`` are Unix seconds; ``duration`` is seconds.
+        Missing metrics are omitted. The returned dictionary is a fresh copy.
+        """
+        values: dict[str, int | float | None] = {
+            "tokens": self.total_tokens,
+            "prompt_tokens": self.input_tokens,
+            "completion_tokens": self.output_tokens,
+            "prompt_cached_tokens": self.cache_read_tokens,
+            "prompt_cache_creation_tokens": self.cache_write_tokens,
+            "completion_reasoning_tokens": self.reasoning_tokens,
+            "estimated_cost": self.cost,
+            "start": self.start_time.timestamp()
+            if self.start_time is not None
+            else None,
+            "end": self.end_time.timestamp() if self.end_time is not None else None,
+            "duration": self.duration.total_seconds()
+            if self.duration is not None
+            else None,
+        }
+        return {key: value for key, value in values.items() if value is not None}
+
+    def _first_attribute(self, *keys: str) -> str | None:
+        return next(
+            (self.attributes[key] for key in keys if self.attributes.get(key)), None
+        )
+
+    def _token_count(self, *keys: str) -> int | None:
+        # Unlike the generic integer accessor, token counts must not truncate
+        # fractional values or accept negative counts.
+        for key in keys:
+            raw = self.attributes.get(key)
+            if raw is None:
+                continue
+            try:
+                value = Decimal(raw)
+            except InvalidOperation:
+                continue
+            if value.is_finite() and value >= 0 and value == value.to_integral_value():
+                return int(value)
+        return None
+
     def attribute_float(self, key: str) -> float | None:
-        """Return an attribute parsed as a float, or ``None`` if absent or unparseable.
+        """Return a finite float, or ``None`` if absent, unparseable or non-finite.
 
         Span attributes arrive as strings — ``ChalkSpan.attributes`` is a
         ``map<string, string>`` — so summing ``span.attributes["llm.cost"]``
@@ -133,12 +285,21 @@ class Span:
         if raw is None:
             return None
         try:
-            return float(raw)
+            value = float(raw)
+            return value if math.isfinite(value) else None
         except (TypeError, ValueError):
             return None
 
     def attribute_int(self, key: str) -> int | None:
         """Return an attribute parsed as an int, or ``None`` if absent or unparseable."""
+        raw = self.attributes.get(key)
+        if raw is None:
+            return None
+        try:
+            # Preserve integer precision instead of rounding through float.
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
         value = self.attribute_float(key)
         if value is None:
             return None
@@ -542,8 +703,8 @@ def _format_transcript(
         return _NO_TURNS_NOTE
     parts: list[str] = []
     for index, span in enumerate(turns, start=1):
-        model = span.attributes.get(_MODEL_NAME_ATTRIBUTE) or "unknown model"
-        tokens = span.attribute_int(_TOKEN_TOTAL_ATTRIBUTE)
+        model = span.model or "unknown model"
+        tokens = span.total_tokens
         heading = f"### turn {index} ({model}"
         heading += f", {tokens:,} tokens)" if tokens is not None else ")"
         lines = [heading]

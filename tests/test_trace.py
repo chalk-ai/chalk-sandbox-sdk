@@ -493,6 +493,33 @@ def test_transcript_accepts_an_empty_session_when_asked_to(
 # --- Span decoding --------------------------------------------------------
 
 
+def test_transcript_uses_normalized_model_and_derived_tokens() -> None:
+    client, _ = _client(
+        {
+            "list_span": [
+                _response(
+                    {
+                        "spans": [
+                            _span_dict(
+                                "s",
+                                **{
+                                    "gen_ai.response.model": "actual-model",
+                                    "gen_ai.request.model": "requested-model",
+                                    "gen_ai.usage.input_tokens": "100",
+                                    "gen_ai.usage.output_tokens": "20",
+                                    "input.value": "hello",
+                                },
+                            )
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+    text = Trace("session-1", _client=client).transcript(wait=False)
+    assert "### turn 1 (actual-model, 120 tokens)" in text
+
+
 def test_get_spans_queries_by_session_and_decodes_spans() -> None:
     client, connect = _client(
         {"list_span": [_response({"spans": [_span_dict("span-1")]})]}
