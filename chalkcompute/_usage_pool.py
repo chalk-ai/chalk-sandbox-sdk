@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal
@@ -226,7 +228,7 @@ class UsagePool(RouterResource):
         *,
         include_archived: bool = False,
         client: ConnectClient | None = None,
-    ) -> list[UsagePool]:
+    ) -> builtins.list[UsagePool]:
         """List all pages of pools in the active environment."""
         boolean(include_archived, "include_archived")
         pools: list[UsagePool] = []

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+
 from datetime import datetime
 from typing import Literal
 
@@ -165,7 +167,7 @@ class UsageBudget(RouterResource):
         usage_pool: UsagePool | str | None = None,
         api_key_id: str | None = None,
         client: ConnectClient | None = None,
-    ) -> list[UsageBudget]:
+    ) -> builtins.list[UsageBudget]:
         """List budgets for a pool or key; local pools are looked up by name."""
         owner = (
             None

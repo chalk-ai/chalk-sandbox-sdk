@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -192,7 +194,7 @@ class RateLimit(RouterResource):
         usage_pool: UsagePool | str | None = None,
         api_key_id: str | None = None,
         client: ConnectClient | None = None,
-    ) -> list[RateLimit]:
+    ) -> builtins.list[RateLimit]:
         """Read every page, optionally selecting one pool or key's policies."""
         owner = (
             None

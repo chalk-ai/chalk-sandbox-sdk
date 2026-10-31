@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -119,7 +119,7 @@ def validate_rate_limit(
 def client_for(
     client: ConnectClient | None,
     environment_id: str | None = None,
-) -> Iterator[ConnectClient]:
+) -> Generator[ConnectClient, None, None]:
     owned = client is None
     connection = ConnectClient() if owned else client
     assert connection is not None
