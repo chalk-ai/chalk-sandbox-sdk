@@ -79,6 +79,9 @@ from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._function import gather as gather
 from chalkcompute._gather import gather_handles as gather_handles
+from chalkcompute._function_error import (
+    FunctionUnavailableError as FunctionUnavailableError,
+)
 from chalkcompute._function_error import RemoteExecutionError as RemoteExecutionError
 from chalkcompute._http import HTTPHeaders as HTTPHeaders
 from chalkcompute._http import HTTPResponse as HTTPResponse
@@ -234,6 +237,7 @@ __all__ = [
     "DeployedFunction",
     "FunctionError",
     "RemoteExecutionError",
+    "FunctionUnavailableError",
     "FunctionBuildError",
     "FunctionSignatureError",
     "FunctionCallHandle",

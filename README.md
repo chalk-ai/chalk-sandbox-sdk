@@ -1209,6 +1209,18 @@ Remote handler failures raise `chalkcompute.RemoteExecutionError`, a subclass of
 the original Python exception. `internal_traceback` retains runtime diagnostics;
 `call_id` and `trace_id` are available when supplied by the call path.
 
+A call that fails before the function returns or raises, because no replica
+accepted it or the connection dropped, raises `chalkcompute.FunctionUnavailableError`
+instead. It is not a `FunctionError`, so a caller can retry it while capacity
+comes up and still fail fast on `RemoteExecutionError`:
+
+```python
+try:
+    result = fn.remote(x)
+except cc.FunctionUnavailableError:
+    ...  # no worker took the call; retry later
+```
+
 IPython and Chalk notebooks show the local call site followed by the remote
 traceback, preserving exception chains. Notebook source locations refer to the
 snapshot deployed with the function, so editing a cell cannot change the source
