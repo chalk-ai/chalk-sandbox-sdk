@@ -767,6 +767,33 @@ Metadata records `confidence`, `escalated`, `judge_model`, and
 confidence is not calibrated on every task, so choose `threshold` on a small
 labeled sample. `jev` reaches models the same way `llm_judge` does.
 
+`cc.scorers.vlm_judge` is `llm_judge` shown pictures. `images` names the
+columns the model sees as images (default `("output",)`, the task's result) and
+`inputs` the columns it reads as text. An image column holds a URL (`https://`
+or `data:`), which is sent as given; a path readable in the scorer's container;
+or the image bytes themselves. PNG, JPEG, GIF, and WebP bytes are inlined as
+data URLs, and a JSON array shows several pictures. `detail` asks the provider
+for `low`, `high`, or `auto` image fidelity.
+
+```python
+@dataclass
+class ChartQuality:
+    score: float = field(metadata={"description": "Does the chart show what was asked, from 0 to 1."})
+    reason: str
+
+chart_quality = cc.scorers.vlm_judge(
+    ChartQuality,
+    model="gpt-4.1",
+    inputs=("input",),
+    images=("output",),
+)
+```
+
+The judge reaches models the way `llm_judge` does, so the model must accept
+images on the route it is called through. Through Chalk's AI router that is any
+OpenAI-compatible connection; an Anthropic connection rejects image parts sent
+as chat completions, and Bedrock accepts only data URLs.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment
