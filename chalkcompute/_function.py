@@ -1151,13 +1151,14 @@ class FunctionCallHandle:
         return self._call_id
 
     def cancel(self, *, terminate_containers: bool = False) -> Any:
-        """Cancel this call, optionally terminating its executing containers.
+        """Cancel this Stream-backed call before a consumer acquires it.
 
-        The first successful cancellation fixes ``terminate_containers``.
-        Repeating it with a different value is rejected by the server. Running
-        work finishes by default, but its output and outcome are discarded.
-        Inside an event loop, await the returned coroutine.
+        Successful repeats are idempotent. Once acquired, cancellation raises
+        FailedPrecondition and execution continues unchanged. Container termination
+        is unsupported. Inside an event loop, await the returned coroutine.
         """
+        if terminate_containers:
+            raise NotImplementedError("terminate_containers=True is not supported")
         if _has_running_event_loop():
             return _run_in_worker_thread(self._sync_cancel, terminate_containers)
         return self._sync_cancel(terminate_containers)
@@ -3985,6 +3986,8 @@ class RemoteFunction:
         )
 
     def _cancel(self, call_id: str, terminate_containers: bool) -> Any:
+        if terminate_containers:
+            raise NotImplementedError("terminate_containers=True is not supported")
         self._wait_for_background_deploy()
         return self._with_remote_call_transport(
             queue=True,

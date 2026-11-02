@@ -1307,15 +1307,15 @@ def test_call_timeout_none_disables_deadline() -> None:
     assert result == {}
 
 
-@pytest.mark.parametrize("terminate_containers", [False, True])
-def test_deferred_cancel_threads_policy_and_stops_get(terminate_containers):
+def test_deferred_cancel_is_idempotent_and_stops_get():
     from chalkcompute import CallCancelledError
 
     handle = _remote_function().defer(98)
-    result = handle.cancel(terminate_containers=terminate_containers)
+    result = handle.cancel()
     assert result.is_cancelled
     client = FakeRemoteCallClient.instances[-1]
-    assert client.cancellations == [("call-1", terminate_containers)]
+    assert handle.cancel() == result
+    assert client.cancellations == [("call-1", False), ("call-1", False)]
     with pytest.raises(CallCancelledError, match="call-1"):
         handle.get()
     assert len(client.enqueues) == 1
@@ -1363,34 +1363,74 @@ def test_deferred_cancel_during_retry_backoff_prevents_resubmission(monkeypatch)
 def test_deferred_cancel_awaitable_in_event_loop():
     async def run():
         handle = _remote_function().defer(98)
-        result = await handle.cancel(terminate_containers=True)
+        result = await handle.cancel()
         assert result.is_cancelled
 
     asyncio.run(run())
 
 
 @pytest.mark.parametrize("async_call", [False, True])
-def test_cancelling_suspended_stream_discards_buffered_chunks(async_call):
-    from chalkcompute import CallCancelledError
-
+def test_failed_cancel_preserves_suspended_stream(monkeypatch, async_call):
     FakeRemoteCallClient.poll_results = [
-        _poll("running", chunks=[_result_ipc([1]), _result_ipc([2])]),
+        _poll("completed", chunks=[_result_ipc([1]), _result_ipc([2])]),
     ]
     handle = _remote_function().defer(98)
     handle._is_async = async_call
+    attempts = []
+
+    def already_acquired(self, call_id, *, terminate_containers=False):
+        attempts.append(call_id)
+        raise RuntimeError(9, "call has already been acquired and cannot be cancelled")
+
+    monkeypatch.setattr(FakeRemoteCallClient, "cancel", already_acquired)
 
     async def run():
         stream = handle.stream()
         assert (await anext(stream)).column(0).to_pylist() == [1]
-        await handle.cancel()
-        with pytest.raises(CallCancelledError):
-            await anext(stream)
+        with pytest.raises(RuntimeError, match="already been acquired"):
+            await handle.cancel()
+        assert (await anext(stream)).column(0).to_pylist() == [2]
 
     if async_call:
         asyncio.run(run())
     else:
         stream = handle.stream()
         assert next(stream).column(0).to_pylist() == [1]
-        handle.cancel()
-        with pytest.raises(CallCancelledError):
-            next(stream)
+        with pytest.raises(RuntimeError, match="already been acquired"):
+            handle.cancel()
+        assert next(stream).column(0).to_pylist() == [2]
+    assert not handle._cancelled
+    assert attempts == ["call-1"]
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_termination_rejected_before_transport(monkeypatch, async_call):
+    handle = _remote_function().defer(98)
+
+    def unexpected_cancel(*args):
+        pytest.fail("unsupported termination must not access transport or deploy")
+
+    monkeypatch.setattr(handle._function, "_cancel", unexpected_cancel)
+
+    async def run():
+        with pytest.raises(NotImplementedError, match="terminate_containers=True"):
+            await handle.cancel(terminate_containers=True)
+
+    if async_call:
+        asyncio.run(run())
+    else:
+        with pytest.raises(NotImplementedError, match="terminate_containers=True"):
+            handle.cancel(terminate_containers=True)
+    assert not handle._cancelled
+
+
+def test_remote_function_termination_rejected_before_deployment(monkeypatch):
+    fn = _remote_function()
+
+    def unexpected_deploy():
+        pytest.fail("unsupported termination must not wait for deployment")
+
+    monkeypatch.setattr(fn, "_wait_for_background_deploy", unexpected_deploy)
+    with pytest.raises(NotImplementedError, match="terminate_containers=True"):
+        fn._cancel("call-1", True)

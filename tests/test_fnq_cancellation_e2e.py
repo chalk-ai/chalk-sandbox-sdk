@@ -51,17 +51,13 @@ def function():
     function._drop_remote_call_clients()
 
 
-@pytest.mark.parametrize("terminate", [False, True])
-def test_native_function_handle_cancellation(function, terminate):
+def test_native_function_handle_cancellation(function):
     handle = function.defer(21)
-    result = handle.cancel(terminate_containers=terminate)
+    result = handle.cancel()
     assert result.is_cancelled
-    assert handle.cancel(terminate_containers=terminate) == result
-    with pytest.raises(
-        RuntimeError, match="termination policy is already fixed"
-    ) as conflict:
-        handle.cancel(terminate_containers=not terminate)
-    assert conflict.value.args[0] == 9  # gRPC FAILED_PRECONDITION
+    assert handle.cancel() == result
+    with pytest.raises(NotImplementedError, match="terminate_containers=True"):
+        handle.cancel(terminate_containers=True)
     with pytest.raises(CallCancelledError):
         handle.get(timeout=5)
     with pytest.raises(CallCancelledError):

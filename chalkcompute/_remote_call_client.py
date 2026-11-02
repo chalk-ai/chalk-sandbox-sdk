@@ -410,11 +410,13 @@ class RemoteCallClient:
     def cancel(
         self, call_id: str, *, terminate_containers: bool = False
     ) -> RemoteCallCancelResult:
-        """Cancel a Stream-backed call; the first request fixes termination policy.
+        """Cancel a Stream-backed call before acquisition; successful repeats are idempotent.
 
-        A conflicting repeat is rejected by the server. Success durably schedules
-        any required container termination; it does not wait for the container to stop.
+        Acquired calls raise FailedPrecondition and continue running unchanged.
+        Container termination is unsupported and is rejected before making an RPC.
         """
+        if terminate_containers:
+            raise NotImplementedError("terminate_containers=True is not supported")
         raw = self._inner_or_raise().cancel(call_id, terminate_containers)
         return RemoteCallCancelResult(
             status=int(raw["status"]),

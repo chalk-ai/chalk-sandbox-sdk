@@ -297,24 +297,35 @@ def test_cancel_preserves_server_outcome(monkeypatch):
 
     monkeypatch.setattr(LegacyNativeRemoteCallClient, "cancel", cancel, raising=False)
     client = RemoteCallClient("remote.chalk.test:443")
-    result = client.cancel("call-1", terminate_containers=True)
+    result = client.cancel("call-1")
     assert result.is_cancelled
-    assert requests == [("call-1", True)]
+    assert requests == [("call-1", False)]
 
 
-def test_cancel_conflicting_policy_error_is_not_retried(monkeypatch):
+def test_cancel_acquired_error_is_not_retried(monkeypatch):
     attempts = []
 
     def cancel(self, call_id, terminate_containers):
         attempts.append((call_id, terminate_containers))
         raise remote_call_client.RemoteCallStatusError(
-            "cancellation policy already fixed"
+            "call has already been acquired and cannot be cancelled"
         )
 
     monkeypatch.setattr(LegacyNativeRemoteCallClient, "cancel", cancel, raising=False)
     client = RemoteCallClient("remote.chalk.test:443")
     with pytest.raises(
-        remote_call_client.RemoteCallStatusError, match="policy already fixed"
+        remote_call_client.RemoteCallStatusError, match="already been acquired"
     ):
+        client.cancel("call-1")
+    assert attempts == [("call-1", False)]
+
+
+def test_cancel_termination_rejected_before_native_client_access(monkeypatch):
+    client = RemoteCallClient("remote.chalk.test:443")
+
+    def unexpected_access():
+        pytest.fail("unsupported termination must not access the native client")
+
+    monkeypatch.setattr(client, "_inner_or_raise", unexpected_access)
+    with pytest.raises(NotImplementedError, match="terminate_containers=True"):
         client.cancel("call-1", terminate_containers=True)
-    assert attempts == [("call-1", True)]

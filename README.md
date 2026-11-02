@@ -20,9 +20,7 @@ Handles returned by function and class-method `defer()` calls support cancellati
 import chalkcompute as cc
 
 call = worker.defer(inputs)
-result = call.cancel()  # Running work finishes, but its result is discarded.
-# To also kill containers executing a call, select this on its first cancellation:
-# result = call.cancel(terminate_containers=True)
+result = call.cancel()  # Succeeds only before a consumer acquires the input.
 
 try:
     call.get()
@@ -30,35 +28,23 @@ except cc.CallCancelledError:
     pass
 ```
 
-Inside an event loop, use `await call.cancel(...)`. The result reports the call
-status. Success commits cancellation and durably schedules any required container
-termination; it does not wait for the container to stop. The first successful
-cancellation fixes the termination
-choice. Repeating the same choice is idempotent; changing it is rejected.
+Inside an event loop, use `await call.cancel()`. Successful cancellation removes
+queued input, returns the cancelled status, and makes `get()` and `stream()` raise
+`CallCancelledError` without resubmitting work. Repeating a successful cancellation
+is idempotent. A result timeout does not cancel the call.
 
-Cancellation requires a Stream-backed queue and cancellation-capable consumers.
-Calls cancelled before acquisition are removed. Acquisition is the execution
-boundary: buffered inputs and deliveries whose acquisition response was lost count
-as acquired. With the default cancellation, their handlers may run and retain
-their concurrency reservations until execution finishes or their consumer dies. `get()` and `stream()` raise
-`CallCancelledError` and never resubmit cancelled work. Output already delivered
-by a stream cannot be retracted. A result timeout does not cancel the call.
-Terminating a replica also interrupts unrelated acquired calls. For Stream-backed
-inputs, these calls are rescheduled with the original call ID and input, a fresh
-work handle, and no charge to their handler retry budget. The replica stops
-acquiring work before termination; recovery starts after termination is confirmed
-and survives API-server restarts. Legacy List inputs retain their existing
-crash behavior.
+Acquisition is the execution boundary: buffered/coalesced inputs and deliveries
+whose acquisition response was lost already count as acquired. Cancellation after
+that boundary raises `FailedPrecondition` (the call has already been acquired),
+and execution, output, and normal retries continue unchanged. There is no
+cancellation-induced generator restart or output replay. `terminate_containers=True`
+raises `NotImplementedError` locally before any RPC.
 
-Recovered generators restart from the beginning. Default generators continue to
-stream incrementally; positive retry policies retain their existing per-attempt
-buffering. Either can replay an already-published prefix if termination interrupts
-publication. Streaming is at-least-once across recovery, with no checkpointing or
-chunk deduplication.
-
-Generated function/class images advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`.
-Set it to `false` in the deployment environment to opt out. Custom images must
-advertise support only when their shim implements the cancellation protocol.
+Cancellation requires a Stream-backed queue and a cancellation-capable consumer;
+legacy Redis List queues do not support it. Generated function/class images
+advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`. Set it to `false` in the
+deployment environment to opt out. Custom images must advertise support only when
+their shim implements the cancellation protocol.
 
 ## Quick start
 
