@@ -412,7 +412,7 @@ class RemoteCallClient:
     ) -> RemoteCallCancelResult:
         """Cancel a Stream-backed call before acquisition; successful repeats are idempotent.
 
-        Acquired calls raise FailedPrecondition and continue running unchanged.
+        Acquired calls fail with gRPC FAILED_PRECONDITION and keep running unchanged.
         Container termination is unsupported and is rejected before making an RPC.
         """
         if terminate_containers:

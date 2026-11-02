@@ -1153,8 +1153,8 @@ class FunctionCallHandle:
     def cancel(self, *, terminate_containers: bool = False) -> Any:
         """Cancel this Stream-backed call before a consumer acquires it.
 
-        Successful repeats are idempotent. Once acquired, cancellation raises
-        FailedPrecondition and execution continues unchanged. Container termination
+        Successful repeats are idempotent. Once acquired, cancellation fails with
+        gRPC FAILED_PRECONDITION and execution continues unchanged. Container termination
         is unsupported. Inside an event loop, await the returned coroutine.
         """
         if terminate_containers:

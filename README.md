@@ -35,7 +35,7 @@ is idempotent. A result timeout does not cancel the call.
 
 Acquisition is the execution boundary: buffered/coalesced inputs and deliveries
 whose acquisition response was lost already count as acquired. Cancellation after
-that boundary raises `FailedPrecondition` (the call has already been acquired),
+that boundary fails with gRPC `FAILED_PRECONDITION` (the call has already been acquired),
 and execution, output, and normal retries continue unchanged. There is no
 cancellation-induced generator restart or output replay. `terminate_containers=True`
 raises `NotImplementedError` locally before any RPC.
