@@ -57,6 +57,13 @@ class RemoteExecutionError(FunctionError):
         )
 
     def _remote_lines(self) -> list[str]:
+        if (
+            self.exception_type == "ProxyError"
+            and not self.remote_traceback
+            and not self.trace_id
+        ):
+            suffix = f" (call {self.call_id})" if self.call_id else ""
+            return [f"ProxyError: {self.message}{suffix}"]
         lines = [f"Remote execution failed: {self.function_name}"]
         if self.call_id:
             lines.append(f"Call ID: {self.call_id}")
@@ -137,6 +144,57 @@ def decode_remote_error(
         if not isinstance(payload.get("exc_type"), str):
             return None
         payload = payload.get("message")
+    return None
+
+
+def _json_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_legacy_error(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("exc_type"), str) and isinstance(
+        payload.get("message"), str
+    )
+
+
+def decode_deferred_failure(
+    payload: Any, function_name: str, *, call_id: str | None = None
+) -> RemoteExecutionError | None:
+    """Decode a failure reported for a deferred call, including proxy failures.
+
+    Only deferred result collection uses this. Transport errors keep
+    :func:`decode_remote_error`, so a proxy envelope on a ``.remote()`` RPC
+    error keeps its original exception and stale-connection handling.
+    """
+    error = decode_remote_error(payload, function_name, call_id=call_id)
+    if error is not None:
+        return error
+    envelope = _json_object(payload)
+    for _ in range(3):
+        if envelope is None or not _is_legacy_error(envelope):
+            return None
+        inner = _json_object(envelope["message"])
+        if envelope["exc_type"] == "ProxyError":
+            # A proxy may wrap a legacy runtime error; report that error
+            # rather than its JSON text.
+            source = (
+                inner if inner is not None and _is_legacy_error(inner) else envelope
+            )
+            traceback_text = source.get("traceback")
+            return RemoteExecutionError(
+                function_name,
+                source["exc_type"],
+                source["message"],
+                traceback_text if isinstance(traceback_text, str) else "",
+                "",
+                call_id=call_id,
+            )
+        envelope = inner
     return None
 
 

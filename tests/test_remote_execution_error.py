@@ -8,7 +8,9 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 
 from chalkcompute import FunctionError, RemoteExecutionError
+from chalkcompute._function import _is_stale_remote_call_error
 from chalkcompute._function_error import (
+    decode_deferred_failure,
     decode_remote_error,
     remote_error_from_exception,
 )
@@ -41,6 +43,103 @@ def test_decodes_without_double_unescaping(queued: bool) -> None:
     assert error.call_id == "call-123"
     assert error.internal_traceback == "full runtime diagnostics"
     assert '\n  File "user.py"' in str(error)
+
+
+@pytest.mark.parametrize("call_id", [None, "call-123"])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_decodes_proxy_error_with_optional_call_id(call_id, wrapped) -> None:
+    message = "CallFunction RPC failed"
+    wire = json.dumps({"exc_type": "ProxyError", "message": message})
+    if wrapped:
+        wire = json.dumps({"exc_type": "RemoteFunctionError", "message": wire})
+
+    error = decode_deferred_failure(wire, "score", call_id=call_id)
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.function_name == "score"
+    assert error.exception_type == "ProxyError"
+    assert error.message == message
+    assert error.call_id == call_id
+    suffix = f" (call {call_id})" if call_id else ""
+    assert str(error) == f"ProxyError: {message}{suffix}"
+
+
+def test_proxy_envelope_preserves_versioned_runtime_error() -> None:
+    wire = json.dumps({"exc_type": "ProxyError", "message": payload()})
+
+    error = decode_deferred_failure(wire, "score", call_id="call-123")
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.exception_type == "ValueError"
+    assert error.call_id == "call-123"
+    assert error.internal_traceback == "full runtime diagnostics"
+
+
+def test_versioned_proxy_error_preserves_trace_id() -> None:
+    wire = json.loads(payload())
+    wire["exception"]["kind"] = "ProxyError"
+    wire["exception"]["stacktrace"] = ""
+    wire["trace_id"] = "trace-123"
+
+    error = decode_deferred_failure(wire, "score", call_id="call-123")
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.call_id == "call-123"
+    assert error.trace_id == "trace-123"
+    assert "Trace ID: trace-123" in str(error)
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        '{"exc_type": "ProxyError", "message": null}',
+        '{"exc_type": "ProxyError", "message": 123}',
+        '{"exc_type": "RuntimeError", "message": "legacy failure"}',
+    ],
+)
+def test_unsupported_legacy_errors_keep_fallback(wire) -> None:
+    assert decode_deferred_failure(wire, "score") is None
+
+
+def test_proxy_wrapped_legacy_error_reports_inner_error() -> None:
+    inner = json.dumps(
+        {
+            "exc_type": "RuntimeError",
+            "message": "Exception raised during handler execution: ValueError: bad",
+        }
+    )
+    wire = json.dumps({"exc_type": "ProxyError", "message": inner})
+
+    error = decode_deferred_failure(wire, "score", call_id="call-123")
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.exception_type == "RuntimeError"
+    assert error.message.endswith("ValueError: bad")
+    assert error.call_id == "call-123"
+    assert "exc_type" not in str(error)
+
+
+def test_proxy_wrapped_unknown_payload_keeps_proxy_fallback() -> None:
+    inner = json.dumps({"chalk_remote_error": 99, "exception": {}})
+    wire = json.dumps({"exc_type": "ProxyError", "message": inner})
+
+    error = decode_deferred_failure(wire, "score", call_id="call-123")
+
+    assert isinstance(error, RemoteExecutionError)
+    assert error.exception_type == "ProxyError"
+    assert error.message == inner
+    assert str(error).endswith("(call call-123)")
+
+
+def test_transport_errors_do_not_decode_proxy_failures() -> None:
+    wire = json.dumps({"exc_type": "ProxyError", "message": "CallFunction RPC failed"})
+    error = ConnectError(Code.UNAVAILABLE, wire)
+
+    # Proxy decoding is limited to deferred results; .remote() keeps the
+    # transport exception and its stale-connection retry.
+    assert decode_remote_error(wire, "score") is None
+    assert remote_error_from_exception(error, "score") is None
+    assert _is_stale_remote_call_error(error)
 
 
 @pytest.mark.parametrize(
