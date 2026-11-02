@@ -1,0 +1,1 @@
+- Print the environment and API server the SDK selected, and where the environment came from, once per process on stderr, worded like `chalk config`'s Source column; warn when the environment came from the `~/.chalk.yml` default token.
