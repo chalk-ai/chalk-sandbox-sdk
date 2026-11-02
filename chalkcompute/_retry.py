@@ -17,9 +17,10 @@ class RetryPolicy:
     retries. A plain ``int`` passed to ``function(retries=3)`` is shorthand
     for ``RetryPolicy.exponential(attempts=3)``. By default all ``Exception``
     subclasses trigger a retry. Direct ``remote()`` calls enforce backoff and
-    jitter in the client. Queued calls enforce only ``max_retries`` with a fixed
-    pending-entry reclaim delay. Exception filters and shared retry keys are
-    reserved and rejected when configuring or invoking a function.
+    jitter in the client. Redis Stream queues enforce only ``max_retries`` with
+    a fixed pending-entry reclaim delay. Legacy Redis List queues ignore the
+    policy. Exception filters and shared retry keys are reserved and rejected
+    when configuring or invoking a function.
 
     Examples
     --------

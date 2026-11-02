@@ -1055,8 +1055,9 @@ class FunctionCallHandle:
 
     Result retrieval polls the original call and never submits another
     invocation. Failures the server reports for the call, including proxy
-    errors, are raised to the caller; any execution retries happen on the
-    server under the same call ID.
+    errors, are raised to the caller. Server-side execution retries require
+    Redis Stream transport and follow the configured retry policy under
+    the same call ID.
     """
 
     def __init__(
@@ -3670,7 +3671,8 @@ class RemoteFunction:
         """Return an immutable call-scoped handle. None inherits deployed defaults.
 
         Retry counts exclude the initial execution. Direct calls execute retries
-        in the client; queued calls use the server's retry budget and fixed delay.
+        in the client. Queued execution retries require Redis Stream transport
+        and use the server's retry budget and fixed delay.
         Handler keyword arguments, including ``retries``, remain unchanged.
         """
         self._wait_for_background_deploy()
