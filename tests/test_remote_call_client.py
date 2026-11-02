@@ -1372,7 +1372,7 @@ def test_deferred_cancel_awaitable_in_event_loop():
 @pytest.mark.parametrize("async_call", [False, True])
 def test_failed_cancel_preserves_suspended_stream(monkeypatch, async_call):
     FakeRemoteCallClient.poll_results = [
-        _poll("completed", chunks=[_result_ipc([1]), _result_ipc([2])]),
+        _poll("running", chunks=[_result_ipc([1]), _result_ipc([2])]),
     ]
     handle = _remote_function().defer(98)
     handle._is_async = async_call
