@@ -294,6 +294,7 @@ def exit_session(token: object) -> None:
         otel_context.detach(context)
     if span is not None:
         span.end()
+        flush_session_tracing()
 
 
 def current_session_id() -> str | None:

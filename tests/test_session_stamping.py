@@ -703,6 +703,23 @@ def test_teardown_flushes_buffered_children_and_session_root(
         processor.shutdown()
 
 
+def test_only_the_root_owning_session_scope_flushes(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flushed_roots: list[int] = []
+    monkeypatch.setattr(
+        _tracing,
+        "flush_session_tracing",
+        lambda: flushed_roots.append(len(_session_roots(exporter))),
+    )
+    outer = _tracing.enter_session("session-1")
+    inner = _tracing.enter_session("session-1")
+    _tracing.exit_session(inner)
+    assert flushed_roots == []
+    _tracing.exit_session(outer)
+    assert flushed_roots == [1]
+
+
 def test_teardown_flushes_the_installed_provider(
     exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
 ) -> None:

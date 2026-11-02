@@ -122,10 +122,9 @@ def reset_call_scope(token: CallScopeToken) -> None:
     _CALL_CONTEXT.reset(token.context)
     _ROW_METADATA.reset(token.row_metadata)
     if token.session is not None:
-        from chalkcompute._tracing import exit_session, flush_session_tracing
+        from chalkcompute._tracing import exit_session
 
         exit_session(token.session)
-        flush_session_tracing()
 
 
 def _headers_from_context(context: Mapping[str, Any] | None) -> Mapping[str, str]:
