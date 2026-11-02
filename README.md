@@ -1235,15 +1235,20 @@ share the call timeout. Exponential policies multiply the delay up to `max_wait`
 `linear` policies use a constant delay. Jitter uniformly samples between zero
 and that delay. Generator `.remote()` calls use the queue, like `.defer()`.
 
-Queued calls keep one call ID and retry on the server, even if the submitting
-client exits. Queue overrides currently apply only the retry count; delay and
-jitter remain controlled by the queue's fixed reclaim interval. Failed calls
-are never silently resubmitted under another ID while collecting results.
+Queued calls on Redis Stream queues retry on the server under the same call ID,
+even if the submitting client exits. Legacy Redis List queues ignore the retry
+policy. Queue overrides currently apply only the retry count; delay and jitter
+remain controlled by the queue's fixed reclaim interval.
+
+Terminal call failures are raised by `get()`, `stream()`, and `gather()` without
+submitting another invocation, even if the handler never started. Retryable polling transport errors are handled separately by refreshing
+the client and re-polling the same call ID and cursor.
+
 Retry-enabled generators buffer output to avoid repeating already emitted
 values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not
 supported and raise an error instead of being ignored.
 
 Retries can execute side effects more than once. Make retried handlers
-idempotent. Transient execution and transport failures share the configured invocation
-retry budget. Connection setup and result polling do not create additional
-invocation budgets.
+idempotent. Retryable execution and transport failures share the configured
+invocation retry budget. Connection setup and result polling do not create
+additional invocation budgets.
