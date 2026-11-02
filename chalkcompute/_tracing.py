@@ -13,12 +13,16 @@ import contextlib
 import functools
 import importlib
 import inspect
+import logging
 import os
 import weakref
 from collections.abc import Callable, Generator
 from typing import Any, NamedTuple, TypeVar, cast, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+_logger = logging.getLogger(__name__)
+_SESSION_FLUSH_TIMEOUT_MILLIS = 30000
 
 _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
@@ -164,6 +168,10 @@ def _session_processor_class() -> Any:
             if session_id:
                 span.set_attribute(SESSION_ID_ATTRIBUTE, str(session_id))
 
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            # This processor buffers nothing and must not veto exporter flushes.
+            return True
+
     return _SessionIdSpanProcessor
 
 
@@ -286,6 +294,7 @@ def exit_session(token: object) -> None:
         otel_context.detach(context)
     if span is not None:
         span.end()
+        flush_session_tracing()
 
 
 def current_session_id() -> str | None:
@@ -295,6 +304,31 @@ def current_session_id() -> str | None:
         return None
     value = baggage_api.get_baggage(SESSION_ID_ATTRIBUTE)
     return None if value is None else str(value)
+
+
+def flush_session_tracing() -> None:
+    """Flush ended spans through the installed provider, without changing call outcomes.
+
+    The provider is process-wide, so this may also flush concurrent calls' ended spans.
+    Exporter completion does not acknowledge queryability in the downstream trace store.
+    """
+    trace_api = _get_trace_api()
+    if trace_api is None:
+        return
+    provider = _installed_provider(trace_api)
+    if provider is None:
+        return
+    try:
+        force_flush = getattr(provider, "force_flush", None)
+        if force_flush is None or not force_flush(_SESSION_FLUSH_TIMEOUT_MILLIS):
+            _logger.warning(
+                "OpenTelemetry did not flush session telemetry within the teardown deadline"
+            )
+    except Exception:
+        # Teardown also runs while unwinding user exceptions; telemetry must not mask them.
+        _logger.warning(
+            "Failed to flush session telemetry at call teardown", exc_info=True
+        )
 
 
 def _installed_provider(trace_api: Any) -> Any | None:
