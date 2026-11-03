@@ -199,8 +199,9 @@ class StartupProbe:
         """Create a gRPC startup probe.
 
         An explicit ``method`` must be fully qualified and return OK. An unset
-        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED
-        to confirm that the routed endpoint speaks gRPC.
+        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED.
+        Gateways can also return that status, so use an explicit health method
+        when backend readiness must be verified.
         """
         return cls(_kind="grpc", _value=method)
 
@@ -319,17 +320,18 @@ class ScalingGroup:
     Orchestrates image building, local file upload via volumes, and
     scaling-group lifecycle in a single high-level API.
 
-    ``readiness_probe`` checks each replica directly. For groups with a positive
-    replica minimum, deployment also checks the externally routed endpoint:
-    HTTP groups reuse their HTTP readiness path, and gRPC groups use a generic
-    gRPC startup probe. Explicit ``startup_probe`` settings take precedence.
-    These probes support authenticated groups.
+    ``readiness_probe`` checks each replica directly. HTTP groups with a positive
+    replica minimum also reuse their configured HTTP readiness path for an
+    externally routed startup probe. Explicit ``startup_probe`` settings take
+    precedence. These probes support authenticated groups.
 
-    HTTP groups without a readiness path must set e.g.
-    ``startup_probe=StartupProbe.http("/health")`` to wait for routed readiness;
-    otherwise deployment only waits for replica readiness. Portless and
-    scale-to-zero groups do not receive an automatic startup probe. A successful
-    startup probe does not guarantee a redeploy is serving the new revision.
+    HTTP groups without a configured readiness probe must set e.g.
+    ``startup_probe=StartupProbe.http("/health")`` to wait for routed readiness.
+    gRPC groups can configure an explicit startup probe for a known health RPC;
+    no generic gRPC probe is inferred, since a gateway can itself return
+    UNIMPLEMENTED. Portless and scale-to-zero groups do not receive an automatic
+    startup probe. A successful startup probe does not guarantee a redeploy is
+    serving the new revision.
 
     ``network_policy`` configures host egress. Omit it for the server default;
     ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
@@ -421,14 +423,18 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
-        if startup_probe is None and port is not None and min_replicas > 0:
+        if (
+            startup_probe is None
+            and port is not None
+            and min_replicas > 0
+            and protocol != "grpc"
+            and readiness_probe is not None
+            and readiness_probe._kind == "http"
+        ):
             # Replica readiness can precede gateway propagation. Reuse the
             # controller's routed probe rather than retrying callers' traffic.
             # Do not guess an HTTP path: healthy API-only services may 404 at /.
-            if protocol == "grpc":
-                startup_probe = StartupProbe.grpc()
-            elif readiness_probe is not None and readiness_probe._kind == "http":
-                startup_probe = StartupProbe.http(readiness_probe._value)
+            startup_probe = StartupProbe.http(readiness_probe._value)
         if startup_probe is not None:
             if port is None:
                 raise ValueError("startup_probe requires port")

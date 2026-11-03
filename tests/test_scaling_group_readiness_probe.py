@@ -179,14 +179,14 @@ def test_http_readiness_probe_also_gates_routed_startup(
 
 
 @pytest.mark.parametrize("authenticated", [False, True])
-def test_grpc_deploy_gates_routed_startup_without_health_service(
+def test_grpc_deploy_does_not_infer_ambiguous_generic_startup_probe(
     authenticated: bool,
 ) -> None:
     sg = ScalingGroup(
         image="ubuntu:latest", protocol="grpc", authenticated=authenticated
     )
     spec = _deployed_container_spec(sg)
-    assert spec.startup_probe == container_pb.StartupProbe.from_json('{"grpc":{}}')
+    assert spec.startup_probe is None
 
 
 def test_explicit_startup_probe_overrides_http_readiness_path() -> None:
