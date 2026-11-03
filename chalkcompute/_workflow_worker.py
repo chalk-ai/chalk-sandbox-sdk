@@ -11,6 +11,7 @@ sleeps, retries, or outlives the script still finishes.
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import re
 import sys
@@ -21,9 +22,15 @@ from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._image import Image
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._scaling_group import ScalingGroup
+from chalkcompute._workflow_definitions import (
+    collect_definition_specs,
+    register_workflow_definitions,
+)
 
 if TYPE_CHECKING:
     from chalkcompute._secret import Secret
+
+logger = logging.getLogger(__name__)
 
 # Queues outside the `chalk-workflows` family, so the offline-query consumer's workflow
 # supervisor (which starts workers for `chalk-workflows.<deployment>` queues) never claims them.
@@ -216,7 +223,30 @@ def deploy_workflow_worker(
         chalk_identity=chalk_identity,
         chalk_client=chalk_client,
     ).deploy()
+    _register_definitions(scaling_group, source, chalk_client)
     return WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
+
+
+def _register_definitions(
+    scaling_group: ScalingGroup, source: str, chalk_client: Any | None
+) -> None:
+    """Tell the orchestrator which workflows and tasks the new revision serves, so the
+    dashboard can show their code. The worker runs either way, so nothing here fails the
+    deploy."""
+    info = scaling_group.info
+    if info is None or info.current_revision_id is None:
+        return
+    try:
+        specs = collect_definition_specs(source)
+    except Exception:
+        logger.warning(
+            "Could not read the workflow definitions in %s", source, exc_info=True
+        )
+        return
+    if specs:
+        register_workflow_definitions(
+            info.name, info.current_revision_id, specs, chalk_client=chalk_client
+        )
 
 
 def run_workflow(
