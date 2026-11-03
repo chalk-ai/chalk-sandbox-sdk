@@ -1300,8 +1300,11 @@ policy. Queue overrides currently apply only the retry count; delay and jitter
 remain controlled by the queue's fixed reclaim interval.
 
 Terminal call failures are raised by `get()`, `stream()`, and `gather()` without
-submitting another invocation, even if the handler never started. Retryable polling transport errors are handled separately by refreshing
-the client and re-polling the same call ID and cursor.
+submitting another invocation, even if the handler never started. When the
+polling connection drops, they refresh the client and re-poll the same call ID
+and cursor with backoff until the `timeout` passes, or for up to 60 seconds of
+continuous unavailability without one. The `timeout` also bounds each poll, so a
+hung poll cannot outlast it.
 
 Retry-enabled generators buffer output to avoid repeating already emitted
 values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not

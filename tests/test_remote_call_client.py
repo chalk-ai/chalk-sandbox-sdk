@@ -23,6 +23,7 @@ from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_c
 from chalkcompute._remote_call_client import (
     RemoteCallPollResult,
     RemoteCallClientUnavailable,
+    RemoteCallStatusError,
     RemoteCallTransportError,
     RemoteCallUnavailableError,
     ServiceAuthContext,
@@ -1156,6 +1157,127 @@ def test_poll_refreshes_stale_queue_client_and_retries(error) -> None:
         FakeRemoteCallClient.instances[1].endpoint
         == "dataplane-api-server.chalk.test:443"
     )
+
+
+def _collect(handle, mode: str, *, async_context: bool = False, timeout=None):
+    async def collect_async():
+        if mode == "stream":
+            return [
+                batch.column("result").to_pylist()
+                async for batch in handle.stream(timeout=timeout)
+            ]
+        if mode == "gather":
+            return await function_mod.gather([handle], timeout=timeout)
+        return await handle.get(timeout=timeout)
+
+    if async_context:
+        return asyncio.run(collect_async())
+    if mode == "stream":
+        return [
+            batch.column("result").to_pylist()
+            for batch in handle.stream(timeout=timeout)
+        ]
+    if mode == "gather":
+        return function_mod.gather([handle], timeout=timeout)
+    return handle.get(timeout=timeout)
+
+
+def _all_polls() -> list[tuple[str, str, int]]:
+    return [poll for client in FakeRemoteCallClient.instances for poll in client.polls]
+
+
+def _poll_always_unavailable(self, call_id, cursor="", poll_count=0):
+    self.polls.append((call_id, cursor, poll_count))
+    raise RemoteCallUnavailableError("connection dropped")
+
+
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_collection_repolls_through_repeated_connection_drops(
+    monkeypatch, async_context, mode
+) -> None:
+    monkeypatch.setattr(function_mod, "RPC_RETRY_INITIAL_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(function_mod, "RPC_RETRY_MAX_BACKOFF_SECONDS", 0.0)
+    FakeRemoteCallClient.poll_results = [
+        _poll("completed", chunks=[_result_ipc([99])], cursor="c1"),
+    ]
+    fn = _async_remote_function() if async_context else _remote_function()
+    handle = fn.defer(98)
+    # Each poll refreshes its client once, so these drops outlast two polls.
+    FakeRemoteCallClient.poll_errors = [
+        RemoteCallUnavailableError("connection dropped") for _ in range(4)
+    ]
+
+    expected = {"get": 99, "stream": [[99]], "gather": [99]}
+    assert _collect(handle, mode, async_context=async_context) == expected[mode]
+    # Every retry re-polls the original call at the same cursor.
+    assert _all_polls() == [("call-1", "", 0)] * 5
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+def test_deferred_get_times_out_while_polling_connection_is_down(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(function_mod, "RPC_RETRY_INITIAL_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr(function_mod, "RPC_RETRY_MAX_BACKOFF_SECONDS", 0.01)
+    FakeRemoteCallClient.poll_results = [_poll("running", cursor="c1")]
+    handle = _remote_function().defer(98)
+    assert handle.poll().status_name == "running"
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", _poll_always_unavailable)
+
+    with pytest.raises(TimeoutError, match="last status: running") as exc_info:
+        handle.get(timeout=0.1)
+
+    assert isinstance(exc_info.value.__cause__, RemoteCallUnavailableError)
+    polls = _all_polls()[1:]
+    assert len(polls) > 2
+    assert set(polls) == {("call-1", "c1", 0)}
+
+
+def test_deferred_get_gives_up_after_sustained_unavailability(monkeypatch) -> None:
+    monkeypatch.setattr(function_mod, "RPC_RETRY_INITIAL_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr(function_mod, "RPC_RETRY_MAX_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.1)
+    handle = _remote_function().defer(98)
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", _poll_always_unavailable)
+
+    with pytest.raises(RemoteCallUnavailableError, match="connection dropped"):
+        handle.get()
+
+    assert len(_all_polls()) > 2
+
+
+def test_deferred_get_does_not_repoll_after_non_transport_error() -> None:
+    handle = _remote_function().defer(98)
+    FakeRemoteCallClient.poll_errors = [RemoteCallStatusError(13, "internal error")]
+
+    with pytest.raises(RemoteCallStatusError):
+        handle.get()
+
+    assert _all_polls() == [("call-1", "", 0)]
+
+
+def test_deferred_get_deadline_bounds_a_hung_poll(monkeypatch) -> None:
+    release = threading.Event()
+
+    def hang(self, call_id, cursor="", poll_count=0):
+        self.polls.append((call_id, cursor, poll_count))
+        release.wait(5)
+        return _poll("running")
+
+    handle = _remote_function().defer(98)
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", hang)
+
+    started = time.monotonic()
+    try:
+        # call_timeout is 60s; the result deadline must bound the poll.
+        with pytest.raises(
+            TimeoutError, match=r"Remote call call-1 .* timed out \(last status"
+        ):
+            handle.get(timeout=0.2)
+    finally:
+        release.set()
+    assert time.monotonic() - started < 2.0
 
 
 def test_deferred_get_can_be_awaited_in_async_context() -> None:
