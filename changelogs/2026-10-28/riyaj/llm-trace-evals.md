@@ -1,0 +1,1 @@
+- Associate SDK scorer and Model Gateway calls with the active evaluation row session and trace so their LLM metrics can be included in session summaries.

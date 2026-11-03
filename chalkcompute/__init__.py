@@ -6,11 +6,13 @@ import importlib
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     "configure_logging": ("chalkcompute._logging", "configure_logging"),
+    "UsagePool": ("chalkcompute._usage_pool", "UsagePool"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),
     "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
     "ArtifactError": ("chalkcompute._artifact", "ArtifactError"),
     "ArtifactNotFoundError": ("chalkcompute._artifact", "ArtifactNotFoundError"),
+    "UsageBudget": ("chalkcompute._usage_budget", "UsageBudget"),
     # _container.py
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
@@ -65,6 +67,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "get_call_context": ("chalkcompute._call_context", "get_call_context"),
     "get_row_metadata": ("chalkcompute._call_context", "get_row_metadata"),
     "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
+    "RateLimit": ("chalkcompute._router_rate_limit", "RateLimit"),
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),
@@ -178,6 +181,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SandboxError": ("chalkcompute._sandbox", "SandboxError"),
     "SandboxInfo": ("chalkcompute._sandbox", "SandboxInfo"),
     "SandboxNotFoundError": ("chalkcompute._sandbox", "SandboxNotFoundError"),
+    "SandboxSnapshot": ("chalkcompute._sandbox", "SandboxSnapshot"),
+    "SandboxSnapshotError": ("chalkcompute._sandbox", "SandboxSnapshotError"),
     "SandboxTerminatedError": ("chalkcompute._sandbox", "SandboxTerminatedError"),
     # _sandbox_fs.py
     "FileDownload": ("chalkcompute._sandbox_fs", "FileDownload"),
@@ -226,9 +231,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
     "VolumeMount": ("chalkcompute._volume", "VolumeMount"),
+    "VolumeMountType": ("chalkcompute._volume", "VolumeMountType"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
-    # Imported by chalkpy's model-deploy path; every volume mounts as
-    # MOUNT_TYPE, so this only validates existence now.
+    # Imported by chalkpy's model-deploy path; persistent volumes use ChalkFS,
+    # so this only validates existence now.
     "resolve_referenced_volume_type": (
         "chalkcompute._volume",
         "resolve_referenced_volume_type",

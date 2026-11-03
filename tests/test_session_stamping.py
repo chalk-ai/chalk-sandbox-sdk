@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 from opentelemetry import baggage, context as otel_context, trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from chalkcompute import _tracing
@@ -673,3 +673,129 @@ def test_the_environment_id_is_not_stamped_on_local_spans(
     for span in exporter.get_finished_spans():
         attributes = span.attributes or {}
         assert _tracing.ENVIRONMENT_ID_ATTRIBUTE not in attributes
+
+
+# --- Telemetry flush at call teardown -------------------------------------
+
+
+def test_session_processor_does_not_veto_flush() -> None:
+    assert _tracing._session_processor_class()().force_flush(0) is True
+
+
+def test_teardown_flushes_buffered_children_and_session_root(
+    exporter: InMemorySpanExporter,
+) -> None:
+    buffered_exporter = InMemorySpanExporter()
+    processor = BatchSpanProcessor(buffered_exporter, schedule_delay_millis=3600000)
+    trace_api.get_tracer_provider().add_span_processor(processor)
+    try:
+        token = set_call_scope({SESSION_ID_HEADER: "session-1"}, None)
+        _emit()
+        assert buffered_exporter.get_finished_spans() == ()
+        reset_call_scope(token)
+        assert [span.name for span in buffered_exporter.get_finished_spans()] == [
+            "llm.completion",
+            _tracing.SESSION_ROOT_SPAN_NAME,
+        ]
+        assert _tracing.current_session_id() is None
+        assert get_call_context() == {}
+    finally:
+        processor.shutdown()
+
+
+def test_teardown_flushes_the_installed_provider(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeouts: list[int] = []
+    provider = trace_api.get_tracer_provider()
+
+    def force_flush(timeout_millis: int) -> bool:
+        assert len(_session_roots(exporter)) == 1
+        timeouts.append(timeout_millis)
+        return True
+
+    monkeypatch.setattr(provider, "force_flush", force_flush)
+    monkeypatch.setattr(_tracing, "_provider", None)
+    token = set_call_scope({}, _blob("session-1"))
+    reset_call_scope(token)
+    assert timeouts == [30000]
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_flush_failure_preserves_function_results_and_exceptions(
+    exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    raises: bool,
+) -> None:
+    def force_flush(timeout_millis: int) -> bool:
+        if raises:
+            raise RuntimeError("export failed")
+        return False
+
+    monkeypatch.setattr(trace_api.get_tracer_provider(), "force_flush", force_flush)
+
+    def echo(x: int) -> int:
+        _emit()
+        if x < 0:
+            raise ValueError("task failed")
+        return x
+
+    with _shim_for(echo) as handler:
+        assert handler({"x": pa.array([1])}, {SESSION_ID_HEADER: "session-1"}) == [1]
+        with pytest.raises(ValueError, match="task failed"):
+            handler({"x": pa.array([-1])}, {SESSION_ID_HEADER: "session-2"})
+
+    assert "flush session telemetry" in caplog.text
+    assert _tracing.current_session_id() is None
+    assert get_call_context() == {}
+
+
+def test_call_without_session_does_not_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_flush() -> None:
+        pytest.fail("a call without a session must not flush the process provider")
+
+    monkeypatch.setattr(_tracing, "flush_session_tracing", unexpected_flush)
+    reset_call_scope(set_call_scope({}, None))
+
+
+@pytest.mark.parametrize(
+    "provider", [trace_api.NoOpTracerProvider(), trace_api.ProxyTracerProvider()]
+)
+def test_flush_without_recording_provider_is_inert(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, provider: Any
+) -> None:
+    monkeypatch.setattr(trace_api, "get_tracer_provider", lambda: provider)
+    _tracing.flush_session_tracing()
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("processor_installed", [True, False])
+def test_completion_count_requires_a_stamping_processor(
+    exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+    processor_installed: bool,
+) -> None:
+    if not processor_installed:
+        monkeypatch.setattr(_tracing, "_install_session_processor", lambda _: False)
+    # Duplicate callbacks reproduce overlapping processor installation.
+    trace_api.get_tracer_provider().add_span_processor(
+        _tracing._session_processor_class()()
+    )
+    token = set_call_scope({SESSION_ID_HEADER: "counted"}, None)
+    unfinished = trace_api.get_tracer("other-library").start_span("unfinished")
+    _emit()
+    reset_call_scope(token)
+    root = _session_roots(exporter)[0]
+    if not processor_installed:
+        assert _tracing.CALL_ID_ATTRIBUTE not in root.attributes
+        assert _tracing.CALL_SPAN_COUNT_ATTRIBUTE not in root.attributes
+        unfinished.end()
+        return
+    assert root.attributes[_tracing.CALL_SPAN_COUNT_ATTRIBUTE] == 3
+    assert (
+        _emitted(exporter)[0].attributes[_tracing.CALL_ID_ATTRIBUTE]
+        == root.attributes[_tracing.CALL_ID_ATTRIBUTE]
+    )
+    unfinished.end()
+    assert len(exporter.get_finished_spans()) == 3

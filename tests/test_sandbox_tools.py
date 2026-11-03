@@ -8,6 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from chalkcompute._containerspec import ComputeClass
+from chalkcompute._sandbox import SandboxInfo
+
 from chalkcompute import (
     ExecResult,
     GitError,
@@ -46,6 +49,12 @@ class LocalProcess:
 @pytest.fixture
 def sandbox(tmp_path):
     handle = Sandbox(sandbox_id="local-test")
+    handle._info = SandboxInfo(
+        id="local-test",
+        status="running",
+        created_at="",
+        compute_class=ComputeClass.HOST,
+    )
     # Isolate Git from developer/global config and hooks.
     env = {
         **os.environ,

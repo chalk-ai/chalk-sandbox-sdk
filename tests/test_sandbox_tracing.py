@@ -11,7 +11,8 @@ from protobuf.wkt import Timestamp
 
 from chalkcompute import Sandbox, _tracing
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
-from chalkcompute._sandbox import SandboxClient, SandboxCreationError
+from chalkcompute._containerspec import ComputeClass
+from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxInfo
 
 
 @pytest.fixture
@@ -77,7 +78,9 @@ def test_creation_span_keeps_identity_when_readiness_fails(recorded_spans):
         sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client)
         with pytest.raises(SandboxCreationError):
             sandbox.run(poll_interval=0, timeout=1)
-        assert sandbox.id is None
+        # The id is bound before readiness polling, so a failed poll still
+        # leaves the caller a usable handle (e.g. to call .terminate()).
+        assert sandbox.id == "sandbox-traced"
 
     span = next(
         span
@@ -90,6 +93,12 @@ def test_creation_span_keeps_identity_when_readiness_fails(recorded_spans):
 
 def test_exec_failure_keeps_the_target_sandbox_id(recorded_spans, monkeypatch):
     sandbox = Sandbox(sandbox_id="sandbox-exec")
+    sandbox._info = SandboxInfo(
+        id="sandbox-exec",
+        status="running",
+        created_at="",
+        compute_class=ComputeClass.HOST,
+    )
     process = MagicMock()
     process.wait.side_effect = RuntimeError("process session failed")
     monkeypatch.setattr(sandbox, "exec_start", lambda *args, **kwargs: process)

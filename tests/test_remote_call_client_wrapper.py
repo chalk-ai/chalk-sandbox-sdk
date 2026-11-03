@@ -16,13 +16,11 @@ from chalkcompute._remote_call_client import (
 
 
 class LegacyNativeRemoteCallClient:
-    calls: list[tuple[object, ...]] = []
     method_calls: list[tuple[object, ...]] = []
     call_ipc_errors: list[BaseException] = []
 
     def __init__(self, *args: object) -> None:
         self.closed = False
-        self.calls.append(args)
         if len(args) > 7:
             raise TypeError(
                 "RemoteCallClient.__new__() takes from 1 to 7 positional "
@@ -45,7 +43,6 @@ class LegacyNativeRemoteCallClient:
 
 @pytest.fixture(autouse=True)
 def legacy_native_client() -> None:
-    LegacyNativeRemoteCallClient.calls = []
     LegacyNativeRemoteCallClient.method_calls = []
     LegacyNativeRemoteCallClient.call_ipc_errors = []
     with (
@@ -63,27 +60,6 @@ def legacy_native_client() -> None:
         yield
 
 
-def test_legacy_native_constructor_fallback_without_service_auth() -> None:
-    client = RemoteCallClient(
-        "remote.chalk.test:443",
-        metadata=(("x-chalk-env-id", "env-id"),),
-        use_tls=True,
-    )
-
-    assert isinstance(client._inner, LegacyNativeRemoteCallClient)
-    assert len(LegacyNativeRemoteCallClient.calls) == 2
-    assert len(LegacyNativeRemoteCallClient.calls[0]) == 12
-    assert LegacyNativeRemoteCallClient.calls[1] == (
-        "remote.chalk.test:443",
-        [("x-chalk-env-id", "env-id")],
-        True,
-        50,
-        5000,
-        1.7,
-        None,
-    )
-
-
 def test_legacy_native_constructor_rejected_for_service_auth() -> None:
     with pytest.raises(RemoteCallClientUnavailable, match="too old for service-auth"):
         RemoteCallClient(
@@ -94,8 +70,13 @@ def test_legacy_native_constructor_rejected_for_service_auth() -> None:
         )
 
 
-def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> None:
-    client = RemoteCallClient("remote.chalk.test:443")
+def test_legacy_native_fallback_supports_calls_and_enqueue() -> None:
+    """Calls still work when an older extension rejects the new constructor."""
+    client = RemoteCallClient(
+        "remote.chalk.test:443",
+        metadata=(("x-chalk-env-id", "env-id"),),
+        use_tls=True,
+    )
 
     assert client.call_ipc("handler", b"in") == [b"ok"]
     assert client.enqueue("pkg.fn", b"in") == "call-1"
@@ -110,18 +91,14 @@ def test_remote_call_errors_remain_runtime_errors() -> None:
     assert issubclass(RemoteCallTransportError, RuntimeError)
 
 
-def test_call_ipc_retries_unavailable(monkeypatch) -> None:
-    monkeypatch.setattr(remote_call_client.time, "sleep", lambda _seconds: None)
+def test_call_ipc_does_not_redispatch_unavailable() -> None:
     LegacyNativeRemoteCallClient.call_ipc_errors = [
         RemoteCallUnavailableError("not ready")
     ]
     client = RemoteCallClient("remote.chalk.test:443")
-
-    assert client.call_ipc("handler", b"in") == [b"ok"]
-    assert LegacyNativeRemoteCallClient.method_calls == [
-        ("call_ipc", "handler", b"in"),
-        ("call_ipc", "handler", b"in"),
-    ]
+    with pytest.raises(RemoteCallUnavailableError, match="not ready"):
+        client.call_ipc("handler", b"in")
+    assert LegacyNativeRemoteCallClient.method_calls == [("call_ipc", "handler", b"in")]
 
 
 @pytest.mark.parametrize(
@@ -143,16 +120,13 @@ def test_call_ipc_does_not_retry_gateway_timeout(message: str) -> None:
     assert LegacyNativeRemoteCallClient.method_calls == [("call_ipc", "handler", b"in")]
 
 
-def test_call_ipc_stops_retrying_at_deadline(monkeypatch) -> None:
-    monkeypatch.setattr(remote_call_client, "_DIRECT_CALL_RETRY_TIMEOUT_SECONDS", 0)
+def test_legacy_call_with_explicit_zero_is_single_attempt() -> None:
     LegacyNativeRemoteCallClient.call_ipc_errors = [
         RemoteCallUnavailableError("not ready")
     ]
     client = RemoteCallClient("remote.chalk.test:443")
-
     with pytest.raises(RemoteCallUnavailableError, match="not ready"):
-        client.call_ipc("handler", b"in")
-
+        client.call_ipc("handler", b"in", retry_policy={"max_retries": 0})
     assert LegacyNativeRemoteCallClient.method_calls == [("call_ipc", "handler", b"in")]
 
 
@@ -329,3 +303,45 @@ def test_cancel_termination_rejected_before_native_client_access(monkeypatch):
     monkeypatch.setattr(client, "_inner_or_raise", unexpected_access)
     with pytest.raises(NotImplementedError, match="terminate_containers=True"):
         client.cancel("call-1", terminate_containers=True)
+
+
+def test_native_retry_options_own_the_retry_budget(monkeypatch) -> None:
+    class Native:
+        def __init__(self, *args, **kwargs):
+            self.calls = []
+
+        def call_ipc(
+            self, name, payload, metadata=None, retry_policy=None, timeout=None
+        ):
+            self.calls.append((name, payload, metadata, retry_policy, timeout))
+            raise RemoteCallUnavailableError("terminal unavailable")
+
+    monkeypatch.setattr(remote_call_client, "_NativeRemoteCallClient", Native)
+    client = RemoteCallClient("localhost:50051")
+    policy = {"max_retries": 3}
+    with pytest.raises(RemoteCallUnavailableError, match="terminal unavailable"):
+        client.call_ipc("fn", b"request", retry_policy=policy, timeout=2)
+    assert client._inner.calls == [("fn", b"request", [], policy, 2)]
+
+
+def test_native_enqueue_preserves_explicit_zero_override(monkeypatch) -> None:
+    class Native:
+        def __init__(self, *args, **kwargs):
+            self.calls = []
+
+        def call_ipc(self, name, payload, metadata=None):
+            return []
+
+        def enqueue(self, name, payload, metadata=None, max_retries=None):
+            self.calls.append((name, payload, metadata, max_retries))
+            return "stable-call"
+
+    monkeypatch.setattr(remote_call_client, "_NativeRemoteCallClient", Native)
+    client = RemoteCallClient("localhost:50051")
+    assert client.enqueue("fn", b"request", max_retries=0) == "stable-call"
+    assert client._inner.calls == [("fn", b"request", [], 0)]
+
+
+def test_api_mode_requires_current_native_client() -> None:
+    with pytest.raises(RemoteCallClientUnavailable):
+        RemoteCallClient("https://api.chalk.test", api_mode=True)

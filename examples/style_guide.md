@@ -108,6 +108,16 @@ details into examples.
 
 ## Names and concurrency
 
+Use the smallest decorator that expresses the example's teaching goal. Omit
+`min_replicas`, `max_replicas`, and `concurrency` unless the example demonstrates
+scaling or has a concrete capacity or downstream limit to satisfy. The defaults
+are one replica and no explicit concurrency policy. Multiple evaluation rows do
+not require these options, and `concurrency` is a cap, not an enablement flag.
+Explain a necessary override next to the option; do not copy arbitrary values
+or restate defaults. The same rule applies to resource requests, retries, and
+timeouts. Remove temporary troubleshooting overrides before presenting a final
+example, while keeping dependencies and authentication the workload requires.
+
 For `@cc.function` and `@cc.cls`, omit `name=` and choose a descriptive Python
 name. The default registered name already supports cross-process lookup and
 reuse across runs. An override is appropriate only for an intentional naming
@@ -193,6 +203,8 @@ the example is current; say when verification was static only.
 - The example uses current public SDK surfaces and published packages.
 - It contains no personal path, private API, staging-only assumption, or credential.
 - Names are absent, stable by necessity, or unique for resources owned by the run.
+- Every optional configuration override serves a stated requirement; ordinary
+  function and scorer examples use the SDK defaults for capacity and concurrency.
 - Every created resource has an explicit lifecycle classification.
 - Ephemeral cleanup covers startup failures and does not stop after the first cleanup
   error.

@@ -40,11 +40,12 @@ and execution, output, and normal retries continue unchanged. There is no
 cancellation-induced generator restart or output replay. `terminate_containers=True`
 raises `NotImplementedError` locally before any RPC.
 
-Cancellation requires a Stream-backed queue and a cancellation-capable consumer;
-legacy Redis List queues do not support it. Generated function/class images
-advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`. Set it to `false` in the
-deployment environment to opt out. Custom images must advertise support only when
-their shim implements the cancellation protocol.
+Cancellation requires a Stream-backed queue whose consumer uses the DP API
+`AcquireWork` path; legacy Redis List queues do not support it. The SDK's pinned
+`chalk-remote-call-python==1.10.13` already supports that path. Generated
+function/class images advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`; set it to
+`false` in the deployment environment to opt out. Custom images must advertise
+support only when their consumers use the DP API acquisition path.
 
 ## Quick start
 
@@ -558,7 +559,26 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
-## Function names
+## Function configuration
+
+Start with `@cc.function` and add only options your workload needs, such as an
+image with its dependencies or `chalk_identity=True` for calls to Chalk services.
+These defaults also apply to `@cc.cls`:
+
+| Option | Default | When to override |
+| --- | --- | --- |
+| `name` | Python function or class name | An intentional external naming contract |
+| `min_replicas` | `1` | A deliberate scaling policy, such as scaling to zero |
+| `max_replicas` | `1` | Capacity requirements established for this workload |
+| `concurrency` | `None` (no explicit policy) | A known limit on in-flight calls |
+
+Omit these keywords in ordinary functions, tasks, and scorers. An evaluation
+with many rows does not require custom replica counts or a concurrency policy.
+`concurrency` limits in-flight calls; setting it does not enable parallelism.
+For any tuning override, document the requirement that motivates it. Avoid
+copying values from an unrelated example or explicitly repeating defaults.
+
+### Function names
 
 Omit `name=` when defining functions. The registered name defaults to the Python
 function's name, including underscores:
@@ -654,6 +674,30 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### Reading span metrics
+
+Scorers can accept `trace: cc.Trace` and read typed usage values from each span:
+
+```python
+@cc.function
+def task_token_count(trace: cc.Trace) -> int:
+    return sum(span.total_tokens or 0 for span in trace.get_spans())
+```
+
+`Span` exposes `input_tokens`, `output_tokens`, `total_tokens`,
+`cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost` (USD),
+`model`, and `provider`. These read Chalk's normalized attributes, OpenInference
+attributes, and GenAI attributes. Numeric helpers skip invalid values and return
+`None` when unavailable; recorded zeroes stay zero. An explicit total takes
+precedence; otherwise `total_tokens` adds input and output only when both are
+known. Cache and reasoning breakdowns are not added again. Values describe one
+span; when summing a trace, select the spans of interest if your instrumentation
+also emits parent rollups. The example explicitly treats missing usage as zero.
+
+These helpers make no additional requests and do not infer pricing.
+`span.attributes`, `span.attribute_int(key)`, and `span.attribute_float(key)`
+remain available for other telemetry fields.
+
 ### Built-in scorers
 
 `cc.scorers` deploys common scorers without a function body. Each one takes an
@@ -690,19 +734,20 @@ evaluation = cc.Evaluation.create(
 
 ### LLM judges
 
-`cc.scorers.llm_judge` deploys a scorer from a pydantic model (v1 or v2)
+`cc.scorers.llm_judge` deploys a scorer from a standard-library dataclass or a Pydantic model (v1 or v2)
 instead of a function body. The model's `score` field becomes the score; every other field
 is recorded as row metadata. The reply is requested through the OpenAI client
 with structured outputs and validated against the model, so a malformed grade
 fails the row.
 
 ```python
-from pydantic import BaseModel, Field
+from dataclasses import dataclass, field
 
-class TraceQuality(BaseModel):
-    score: float = Field(ge=0, le=1, description="Overall quality.")
-    directness: int = Field(ge=0, le=2, description="Shortest reasonable path to the goal.")
-    task_correctness: int = Field(ge=0, le=2, description="Was the task actually completed?")
+@dataclass
+class TraceQuality:
+    score: float = field(metadata={"description": "Overall quality, from 0 to 1."})
+    directness: int = field(metadata={"description": "Shortest reasonable path to the goal, from 0 to 2."})
+    task_correctness: int = field(metadata={"description": "Was the task actually completed, from 0 to 2?"})
     reason: str
 
 trace_quality = cc.scorers.llm_judge(
@@ -711,6 +756,13 @@ trace_quality = cc.scorers.llm_judge(
     instructions="You are grading a browser agent's login attempt.",
 )
 ```
+
+Dataclass judges can be declared without Pydantic installed. Their annotations
+validate JSON primitives, nested dataclasses, lists, string-keyed dictionaries,
+unions (including optional fields), literals, and enums. Descriptions come from
+`field(metadata={"description": "..."})`; use `__post_init__` for additional
+validation such as score ranges. Pydantic models retain their own validation
+and field aliases. The deployed judge installs its OpenAI client dependencies.
 
 The scorer deploys as `trace-quality`, the model's name in kebab case; pass
 `name=` to choose another. `inputs` names the dataset columns the judge reads
@@ -724,8 +776,8 @@ it calls [Chalk's AI router](https://docs.chalk.ai/docs/ai-router) as the
 environment itself, and the router holds the provider credentials. To call a
 provider directly instead, pass `api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY")`,
 and `base_url` for any other OpenAI-compatible endpoint. Every function deployed from the
-same module imports that module, so give sibling functions an image with
-`pydantic` as well. A judge is generated
+same module imports that module, so if it imports Pydantic, give sibling functions
+an image with `pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.
 
 `cc.scorers.jev` is a judge that escalates when unsure, the cascade from
@@ -749,6 +801,33 @@ Metadata records `confidence`, `escalated`, `judge_model`, and
 `primary_confidence`, so a run shows its own escalation rate. Self-reported
 confidence is not calibrated on every task, so choose `threshold` on a small
 labeled sample. `jev` reaches models the same way `llm_judge` does.
+
+`cc.scorers.vlm_judge` is `llm_judge` shown pictures. `images` names the
+columns the model sees as images (default `("output",)`, the task's result) and
+`inputs` the columns it reads as text. An image column holds a URL (`https://`
+or `data:`), which is sent as given; a path readable in the scorer's container;
+or the image bytes themselves. PNG, JPEG, GIF, and WebP bytes are inlined as
+data URLs, and a JSON array shows several pictures. `detail` asks the provider
+for `low`, `high`, or `auto` image fidelity.
+
+```python
+@dataclass
+class ChartQuality:
+    score: float = field(metadata={"description": "Does the chart show what was asked, from 0 to 1."})
+    reason: str
+
+chart_quality = cc.scorers.vlm_judge(
+    ChartQuality,
+    model="gpt-4.1",
+    inputs=("input",),
+    images=("output",),
+)
+```
+
+The judge reaches models the way `llm_judge` does, so the model must accept
+images on the route it is called through. Through Chalk's AI router that is any
+OpenAI-compatible connection; an Anthropic connection rejects image parts sent
+as chat completions, and Bedrock accepts only data URLs.
 
 ## Deployment revisions and rollback
 
@@ -1224,3 +1303,46 @@ are omitted. These values are catalog-visible; keep secrets in Chalk-managed
 secret references rather than function defaults. Clients can show descriptions,
 collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
+
+
+## Function retries
+
+Configure a default with `@cc.function(retries=3)`, or scope an override to one
+handle without changing its deployment:
+
+```python
+handle = fetch_status.with_options(retries=2).defer("https://example.com")
+result = handle.get()
+result = fetch_status.with_options(
+    retries=cc.RetryPolicy.exponential(attempts=3, initial=0.5, max_wait=10)
+).remote("https://example.com")
+```
+
+Counts exclude the first execution: `retries=2` allows three attempts. Zero
+disables invocation retries; `with_options(retries=None)` inherits the deployed
+default, which is zero when no policy is configured. Method handles support the
+same API. A handler argument named `retries` remains an ordinary input.
+
+Regular `.remote()` calls retry in the native client, including calls awaited
+from an async Python program. The retry budget, backoff sleeps, and executions
+share the call timeout. Exponential policies multiply the delay up to `max_wait`;
+`linear` policies use a constant delay. Jitter uniformly samples between zero
+and that delay. Generator `.remote()` calls use the queue, like `.defer()`.
+
+Queued calls on Redis Stream queues retry on the server under the same call ID,
+even if the submitting client exits. Legacy Redis List queues ignore the retry
+policy. Queue overrides currently apply only the retry count; delay and jitter
+remain controlled by the queue's fixed reclaim interval.
+
+Terminal call failures are raised by `get()`, `stream()`, and `gather()` without
+submitting another invocation, even if the handler never started. Retryable polling transport errors are handled separately by refreshing
+the client and re-polling the same call ID and cursor.
+
+Retry-enabled generators buffer output to avoid repeating already emitted
+values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not
+supported and raise an error instead of being ignored.
+
+Retries can execute side effects more than once. Make retried handlers
+idempotent. Retryable execution and transport failures share the configured
+invocation retry budget. Connection setup and result polling do not create
+additional invocation budgets.

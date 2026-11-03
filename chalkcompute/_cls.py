@@ -120,6 +120,7 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
+    VolumeMountType,
     cleanup_owned_volumes,
 )
 
@@ -297,6 +298,12 @@ class _BoundRemoteMethod:
     def defer(self, *args: Any, **kwargs: Any) -> Any:
         """Enqueue a wire call and return a handle immediately."""
         return self._remote().defer(*args, **kwargs)
+
+    def with_options(
+        self, *, retries: int | RetryPolicy | None = None
+    ) -> RemoteFunction:
+        """Return a call-scoped method handle with a retry override."""
+        return self._remote().with_options(retries=retries)
 
     def with_knowledge_cutoff(self, knowledge_cutoff: Any) -> RemoteFunction:
         """Return a call-scoped remote handle with an overridden request time."""
@@ -727,8 +734,6 @@ class RemoteClass:
     ...     image=img,
     ...     cpu="2",
     ...     memory="4Gi",
-    ...     min_replicas=1,
-    ...     max_replicas=2,
     ... )
     ... class Embedder:
     ...     @chalkcompute.before
@@ -1503,7 +1508,7 @@ class RemoteClass:
                 method_info.remote_function.delete()
                 method_info.remote_function = None
 
-        if self._volumes:
+        if any(mount.type == VolumeMountType.CHALKFS for mount in self._volumes):
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or VolumeClient.from_connect(self._client)
@@ -1773,6 +1778,13 @@ def cls(
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
+    Prefer ``@cc.cls`` or ``@cc.cls(image=...)`` without ``name=``; the
+    registered name defaults to the Python class's name. Add other options
+    only for a concrete workload requirement. Normally omit ``min_replicas``,
+    ``max_replicas``, and ``concurrency``: defaults are one replica per method
+    and no explicit concurrency policy. Document necessary tuning overrides
+    rather than copying unrelated examples' settings or repeating defaults.
+
     **Locally** (at decoration time):
 
     1. Scans the class for ``@method``, ``@before``, ``@after``
@@ -1809,8 +1821,10 @@ def cls(
         Optional registered-name override. Omit this in normal usage to use
         the class's ``__name__``. Set it only when a different registered name
         is intentional, such as preserving existing deployments after renaming
-        the Python class. Changing or removing an override changes the target
-        functions; it does not rename existing deployments.
+        the Python class. For a new class, choose a descriptive Python name
+        instead of adding a prefix via this option. Changing or removing an
+        override changes the target functions; it does not rename existing
+        deployments.
     env
         Environment variables as strings or single-value Secret references.
         The mapping key sets the injected name, overriding aliases and prefixes.
@@ -1821,9 +1835,11 @@ def cls(
         ``(name_or_volume, mount_path)`` tuples for persistent storage.
         Volume handles preserve their selected ref or pinned version.
     min_replicas
-        Minimum number of replicas per method.
+        Minimum number of replicas per method. Defaults to 1; normally omit.
+        Set to 0 only when deliberately choosing scale-to-zero behavior.
     max_replicas
-        Maximum number of replicas per method.
+        Maximum number of replicas per method. Defaults to 1; normally omit.
+        Increase only when the workload needs additional replica capacity.
     shutdown_delay_seconds
         Graceful termination period in seconds before replicas are forcibly
         killed during scale-down. Defaults to 30s on the server.
@@ -1857,10 +1873,10 @@ def cls(
         Defaults to 10 when batching is enabled.
     retries
         Retry policy for handler invocations. An ``int`` is the number of
-        retries after the initial execution. Redis Stream function queues
-        currently honor ``max_retries`` with a fixed reclaim delay; the
-        backoff, jitter, key, and exception-filter fields are reserved for
-        other invocation paths.
+        retries after the initial execution. Direct calls apply the policy's
+        backoff and jitter client-side; Redis Stream queues apply the count
+        with a fixed reclaim delay. Override per call using ``with_options``.
+        Exception filters and shared retry keys are not supported.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-method key, or a
@@ -1869,7 +1885,9 @@ def cls(
         one bucket — used when a downstream service imposes a throughput
         limit across callers.
     concurrency
-        Concurrency policy: cap on in-flight handler invocations. Pass an
+        Optional cap on in-flight handler invocations. Defaults to ``None``
+        (no explicit policy); normally omit. It does not enable parallel
+        execution. Set only for a known in-flight limit. Pass an
         ``int`` for a simple ``max_concurrent`` cap with a per-method key,
         or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
         (``max_concurrent``, ``key``). Multiple methods sharing the same

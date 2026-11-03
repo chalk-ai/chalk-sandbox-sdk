@@ -1,3 +1,4 @@
+from chalkcompute._usage_pool import UsagePool as UsagePool
 from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
@@ -31,6 +32,7 @@ from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
 )
+from chalkcompute._usage_budget import UsageBudget as UsageBudget
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
 from chalkcompute._container import ContainerInfo as ContainerInfo
@@ -89,6 +91,7 @@ from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
 from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
+from chalkcompute._router_rate_limit import RateLimit as RateLimit
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
 from chalkcompute._function_error import CallCancelledError as CallCancelledError
 from chalkcompute._remote_call_client import (
@@ -115,6 +118,8 @@ from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
+from chalkcompute._sandbox import SandboxSnapshot as SandboxSnapshot
+from chalkcompute._sandbox import SandboxSnapshotError as SandboxSnapshotError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
 from chalkcompute._sandbox_fs import FileDownload as FileDownload
 from chalkcompute._sandbox_fs import FileMatch as FileMatch
@@ -168,6 +173,7 @@ from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeMount as VolumeMount
+from chalkcompute._volume import VolumeMountType as VolumeMountType
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
@@ -194,6 +200,7 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "UsagePool",
     "configure_logging",
     "SandboxGit",
     "GitFileStatus",
@@ -211,6 +218,7 @@ __all__ = [
     "ArtifactClient",
     "ArtifactError",
     "ArtifactNotFoundError",
+    "UsageBudget",
     "Container",
     "ContainerError",
     "ContainerInfo",
@@ -246,6 +254,7 @@ __all__ = [
     "get_call_context",
     "get_row_metadata",
     "RetryPolicy",
+    "RateLimit",
     "RateLimitPolicy",
     "ConcurrencyPolicy",
     "QueuePolicy",
@@ -307,6 +316,8 @@ __all__ = [
     "SandboxError",
     "SandboxInfo",
     "SandboxNotFoundError",
+    "SandboxSnapshot",
+    "SandboxSnapshotError",
     "SandboxTerminatedError",
     "FileDownload",
     "FileMatch",
@@ -338,6 +349,7 @@ __all__ = [
     "VolumeFileNotFoundError",
     "VolumeInfo",
     "VolumeMount",
+    "VolumeMountType",
     "VolumeNotFoundError",
     "VersionInfo",
     "resolve_referenced_volume_type",

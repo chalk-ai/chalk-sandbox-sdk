@@ -464,16 +464,14 @@ def test_run_reports_terminate_failure_as_note() -> None:
 
 
 def test_k8s_sandboxes_reject_session_operations_locally() -> None:
-    # Real exec(): the guard must fire before any client or RPC is needed.
+    # Session operations must reject K8S before any client or RPC is needed.
     sandbox = Sandbox(sandbox_id="test")
     sandbox._compute_class = ComputeClass.K8S
 
     for operation in (
-        lambda: sandbox.exec("true"),
-        lambda: sandbox.fs.list_files("/"),
+        lambda: sandbox.exec_start("true"),
         lambda: sandbox.fs.write_bytes("/x", b"x"),
         lambda: sandbox.fs.read_bytes("/x"),
-        lambda: sandbox.git.init("repo"),
     ):
         with pytest.raises(SandboxError, match="HOST compute class"):
             operation()

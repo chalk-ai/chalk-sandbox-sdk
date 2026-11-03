@@ -1,0 +1,2 @@
+- Add scoped function and method retry overrides with client-side synchronous backoff and server-managed asynchronous retry counts.
+- Preserve deferred call IDs when collecting failures and validate retry policies instead of ignoring unsupported options.

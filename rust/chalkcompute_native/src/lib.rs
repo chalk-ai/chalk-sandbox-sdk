@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use chalk_remote_call::{
-    proto::chalk::auth::v1::Permission, BlockingRemoteCallClient, CallStatus, ChannelSecurity,
-    PollBackoff, PollResult, RemoteCallClientConfig, RemoteCallError,
+    proto::chalk::auth::v1::Permission, BlockingRemoteCallClient, CallOptions, CallStatus,
+    ChannelSecurity, PollBackoff, PollResult, RemoteCallClientConfig, RemoteCallError, RetryPolicy,
 };
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::HashMap;
@@ -38,6 +38,36 @@ pyo3::create_exception!(
     PyRuntimeError
 );
 
+fn call_options(policy: Option<&Bound<'_, PyDict>>, timeout: Option<f64>) -> PyResult<CallOptions> {
+    let retry_policy = if let Some(policy) = policy {
+        let get = |name: &str| -> PyResult<Bound<'_, PyAny>> {
+            policy
+                .get_item(name)?
+                .ok_or_else(|| PyValueError::new_err(format!("Missing retry field {name}")))
+        };
+        RetryPolicy::new(
+            get("max_retries")?.extract()?,
+            get("initial_wait_seconds")?.extract()?,
+            get("backoff_multiplier")?.extract()?,
+            get("max_wait_seconds")?.extract()?,
+            get("jitter")?.extract()?,
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+    } else {
+        RetryPolicy::default()
+    };
+    let timeout = timeout
+        .map(|seconds| {
+            Duration::try_from_secs_f64(seconds)
+                .map_err(|_| PyValueError::new_err("timeout must be finite and nonnegative"))
+        })
+        .transpose()?;
+    Ok(CallOptions {
+        retry_policy,
+        timeout,
+    })
+}
+
 #[pyclass(name = "RemoteCallClient", module = "chalkcompute._native")]
 struct PyRemoteCallClient {
     inner: BlockingRemoteCallClient,
@@ -51,15 +81,20 @@ impl PyRemoteCallClient {
         metadata=None,
         use_tls=None,
         initial_poll_delay_ms=50,
-        max_poll_delay_ms=5000,
+        max_poll_delay_ms=1000,
         poll_backoff_multiplier=1.7,
         max_message_size=None,
         auth_endpoint=None,
         exchange_token=None,
         requested_permissions=None,
         auth_rpc_timeout_ms=None,
-        auth_retry_interval_ms=None
+        auth_retry_interval_ms=None,
+        api_mode=false
     ))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors the Python constructor's keyword arguments"
+    )]
     fn new(
         endpoint: String,
         metadata: Option<Vec<(String, String)>>,
@@ -73,6 +108,7 @@ impl PyRemoteCallClient {
         requested_permissions: Option<Vec<i32>>,
         auth_rpc_timeout_ms: Option<u64>,
         auth_retry_interval_ms: Option<u64>,
+        api_mode: bool,
     ) -> PyResult<Self> {
         let mut config = RemoteCallClientConfig::new(endpoint).with_poll_backoff(PollBackoff::new(
             Duration::from_millis(initial_poll_delay_ms),
@@ -120,40 +156,88 @@ impl PyRemoteCallClient {
             config = config.with_metadata(key, value);
         }
 
-        let inner = BlockingRemoteCallClient::connect(config).map_err(to_py_err)?;
+        let inner = if api_mode {
+            BlockingRemoteCallClient::connect_api(config)
+        } else {
+            BlockingRemoteCallClient::connect(config)
+        }
+        .map_err(to_py_err)?;
         Ok(Self { inner })
     }
 
-    #[pyo3(signature = (name, input_ipc, metadata=None))]
+    #[pyo3(signature = (name, input_ipc, metadata=None, retry_policy=None, timeout=None))]
     fn call_ipc(
         &self,
         py: Python<'_>,
         name: String,
         input_ipc: &[u8],
         metadata: Option<Vec<(String, String)>>,
+        retry_policy: Option<&Bound<'_, PyDict>>,
+        timeout: Option<f64>,
     ) -> PyResult<Py<PyList>> {
         let input_ipc = Bytes::copy_from_slice(input_ipc);
+        let options = call_options(retry_policy, timeout)?;
         let chunks = py
-            .detach(|| match metadata {
-                Some(metadata) => self.inner.call_ipc_with_metadata(name, input_ipc, metadata),
-                None => self.inner.call_ipc(name, input_ipc),
+            .detach(|| {
+                self.inner.call_ipc_with_options(
+                    name,
+                    input_ipc,
+                    metadata.unwrap_or_default(),
+                    options,
+                )
             })
             .map_err(to_py_err)?;
         chunks_to_pylist(py, chunks)
     }
 
-    #[pyo3(signature = (name, input_ipc, metadata=None))]
+    #[pyo3(signature = (name, version, input_ipc, metadata=None, retry_policy=None, timeout=None))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors the Python method's keyword arguments"
+    )]
+    fn call_external_ipc(
+        &self,
+        py: Python<'_>,
+        name: String,
+        version: Option<i32>,
+        input_ipc: &[u8],
+        metadata: Option<Vec<(String, String)>>,
+        retry_policy: Option<&Bound<'_, PyDict>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Py<PyList>> {
+        let input_ipc = Bytes::copy_from_slice(input_ipc);
+        let options = call_options(retry_policy, timeout)?;
+        let chunks = py
+            .detach(|| {
+                self.inner.call_external_ipc_with_options(
+                    name,
+                    version,
+                    input_ipc,
+                    metadata.unwrap_or_default(),
+                    options,
+                )
+            })
+            .map_err(to_py_err)?;
+        chunks_to_pylist(py, chunks)
+    }
+
+    #[pyo3(signature = (name, input_ipc, metadata=None, max_retries=None))]
     fn enqueue(
         &self,
         py: Python<'_>,
         name: String,
         input_ipc: &[u8],
         metadata: Option<Vec<(String, String)>>,
+        max_retries: Option<u32>,
     ) -> PyResult<String> {
         let input_ipc = Bytes::copy_from_slice(input_ipc);
-        py.detach(|| match metadata {
-            Some(metadata) => self.inner.enqueue_with_metadata(name, input_ipc, metadata),
-            None => self.inner.enqueue(name, input_ipc),
+        py.detach(|| {
+            self.inner.enqueue_with_options(
+                name,
+                input_ipc,
+                metadata.unwrap_or_default(),
+                max_retries,
+            )
         })
         .map_err(to_py_err)
     }
@@ -261,7 +345,11 @@ fn to_py_err(error: RemoteCallError) -> PyErr {
         RemoteCallError::Status(status) if status.code() == tonic::Code::NotFound => {
             RemoteCallNotFoundError::new_err(status.message().to_string())
         }
-        RemoteCallError::Transport(_) => RemoteCallTransportError::new_err(message),
+        RemoteCallError::Transport(_) | RemoteCallError::Http(_) => {
+            RemoteCallTransportError::new_err(message)
+        }
+        RemoteCallError::Timeout(_) => PyTimeoutError::new_err(message),
+        RemoteCallError::InvalidRetryPolicy(_) => PyValueError::new_err(message),
         RemoteCallError::Cancelled(_) => RemoteCallCancelledError::new_err(message),
         RemoteCallError::Status(status) => {
             RemoteCallStatusError::new_err((status.code() as i32, status.message().to_string()))

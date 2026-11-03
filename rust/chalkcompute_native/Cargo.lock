@@ -218,10 +218,10 @@ dependencies = [
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444#3aa494646a2fd631b35732b2f635e1ac8b353444"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee#e7aee7b50d0332a576f9cb2f3bdf052ea2555fee"
 dependencies = [
- "chalk_arrow_protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444)",
- "chalk_metrics_protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444)",
+ "chalk_arrow_protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee)",
+ "chalk_metrics_protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee)",
  "prost",
  "prost-build",
  "prost-types",
@@ -242,7 +242,7 @@ dependencies = [
 [[package]]
 name = "chalk_arrow_protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444#3aa494646a2fd631b35732b2f635e1ac8b353444"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee#e7aee7b50d0332a576f9cb2f3bdf052ea2555fee"
 dependencies = [
  "prost",
  "prost-build",
@@ -261,7 +261,7 @@ dependencies = [
 [[package]]
 name = "chalk_metrics_protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444#3aa494646a2fd631b35732b2f635e1ac8b353444"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee#e7aee7b50d0332a576f9cb2f3bdf052ea2555fee"
 dependencies = [
  "prost",
  "prost-build",
@@ -282,10 +282,10 @@ dependencies = [
 [[package]]
 name = "chalk_remote_call_client"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444#3aa494646a2fd631b35732b2f635e1ac8b353444"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee#e7aee7b50d0332a576f9cb2f3bdf052ea2555fee"
 dependencies = [
  "bytes",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee)",
  "chalk_service_auth",
  "fastrand",
  "prost",
@@ -302,10 +302,10 @@ dependencies = [
 [[package]]
 name = "chalk_service_auth"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444#3aa494646a2fd631b35732b2f635e1ac8b353444"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee#e7aee7b50d0332a576f9cb2f3bdf052ea2555fee"
 dependencies = [
  "anyhow",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=3aa494646a2fd631b35732b2f635e1ac8b353444)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=e7aee7b50d0332a576f9cb2f3bdf052ea2555fee)",
  "prost-types",
  "secrecy",
  "tokio",

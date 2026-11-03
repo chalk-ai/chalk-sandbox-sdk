@@ -104,6 +104,14 @@ class RetryInterceptor:
         ctx: RequestContext[_REQ, _RES],
         /,
     ) -> _RES:
+        # Invocation retries belong to the native client. Replaying an RPC
+        # after a lost response could execute the handler beyond its budget.
+        if (
+            ctx.method.service_name
+            == "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
+            and ctx.method.name == "CallExternalFunction"
+        ):
+            return call_next(request, ctx)
         # SQL execution can submit a job or write via COPY. A lost response
         # does not mean it is safe to execute the statement again. SQLJob.wait
         # owns poll retries so their time counts toward its waiting deadline.
@@ -111,6 +119,12 @@ class RetryInterceptor:
             ctx.method.service_name == "chalk.protosql.v1.SqlService"
             and ctx.method.name in {"ExecuteSqlQuery", "PollSqlQuery"}
         ):
+            return call_next(request, ctx)
+        # Router creates have no idempotency key. A lost response must not
+        # replay a successful creation. Reconcile by name/ID before retrying.
+        if ctx.method.service_name.startswith(
+            "chalk.router.v1."
+        ) and ctx.method.name.startswith("Create"):
             return call_next(request, ctx)
         delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         last_error: ConnectError | None = None

@@ -31,9 +31,9 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
-    "protobuf-py==0.3.0",
+    "protobuf-py==0.6.0",
     "connectrpc>=0.12.1,<0.13.0",
-    "pyqwest>=0.9.0",
+    "pyqwest>=0.10.0",
 ]
 
 
