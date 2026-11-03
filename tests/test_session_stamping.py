@@ -768,3 +768,34 @@ def test_flush_without_recording_provider_is_inert(
     monkeypatch.setattr(trace_api, "get_tracer_provider", lambda: provider)
     _tracing.flush_session_tracing()
     assert not caplog.records
+
+
+@pytest.mark.parametrize("processor_installed", [True, False])
+def test_completion_count_requires_a_stamping_processor(
+    exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+    processor_installed: bool,
+) -> None:
+    if not processor_installed:
+        monkeypatch.setattr(_tracing, "_install_session_processor", lambda _: False)
+    # Duplicate callbacks reproduce overlapping processor installation.
+    trace_api.get_tracer_provider().add_span_processor(
+        _tracing._session_processor_class()()
+    )
+    token = set_call_scope({SESSION_ID_HEADER: "counted"}, None)
+    unfinished = trace_api.get_tracer("other-library").start_span("unfinished")
+    _emit()
+    reset_call_scope(token)
+    root = _session_roots(exporter)[0]
+    if not processor_installed:
+        assert _tracing.CALL_ID_ATTRIBUTE not in root.attributes
+        assert _tracing.CALL_SPAN_COUNT_ATTRIBUTE not in root.attributes
+        unfinished.end()
+        return
+    assert root.attributes[_tracing.CALL_SPAN_COUNT_ATTRIBUTE] == 3
+    assert (
+        _emitted(exporter)[0].attributes[_tracing.CALL_ID_ATTRIBUTE]
+        == root.attributes[_tracing.CALL_ID_ATTRIBUTE]
+    )
+    unfinished.end()
+    assert len(exporter.get_finished_spans()) == 3
