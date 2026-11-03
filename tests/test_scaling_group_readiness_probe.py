@@ -162,10 +162,62 @@ def test_startup_probe_requires_port() -> None:
         )
 
 
-def test_readiness_probe_does_not_enable_startup_probe() -> None:
+@pytest.mark.parametrize("authenticated", [False, True])
+@pytest.mark.parametrize("path", ["/ready", None])
+def test_http_readiness_probe_also_gates_routed_startup(
+    authenticated: bool, path: str | None
+) -> None:
     sg = ScalingGroup(
-        image="ubuntu:latest", readiness_probe=ReadinessProbe.http("/ready")
+        image="ubuntu:latest",
+        authenticated=authenticated,
+        readiness_probe=ReadinessProbe.http(path),
     )
+    spec = _deployed_container_spec(sg)
+    assert spec.startup_probe == container_pb.StartupProbe.from_json(
+        json.dumps({"http": {"path": path} if path is not None else {}})
+    )
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_grpc_deploy_gates_routed_startup_without_health_service(
+    authenticated: bool,
+) -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest", protocol="grpc", authenticated=authenticated
+    )
+    spec = _deployed_container_spec(sg)
+    assert spec.startup_probe == container_pb.StartupProbe.from_json('{"grpc":{}}')
+
+
+def test_explicit_startup_probe_overrides_http_readiness_path() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest",
+        readiness_probe=ReadinessProbe.http("/ready"),
+        startup_probe=StartupProbe.http("/external-health"),
+    )
+    spec = _deployed_container_spec(sg)
+    assert spec.startup_probe == container_pb.StartupProbe.from_json(
+        '{"http":{"path":"/external-health"}}'
+    )
+
+
+@pytest.mark.parametrize("protocol", ["http", "grpc"])
+@pytest.mark.parametrize("port,min_replicas", [(None, 1), (8080, 0)])
+def test_automatic_probe_does_not_require_a_route_or_wake_zero_replicas(
+    protocol: str, port: int | None, min_replicas: int
+) -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest",
+        protocol=protocol,
+        port=port,
+        min_replicas=min_replicas,
+        readiness_probe=ReadinessProbe.http("/ready") if protocol == "http" else None,
+    )
+    assert _deployed_container_spec(sg).startup_probe is None
+
+
+def test_http_without_known_health_path_preserves_replica_only_readiness() -> None:
+    sg = ScalingGroup(image="ubuntu:latest")
     assert _deployed_container_spec(sg).startup_probe is None
 
 
