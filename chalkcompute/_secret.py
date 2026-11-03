@@ -94,6 +94,21 @@ class Secret:
     _local_env_var: str | None = field(default=None, repr=False)
     _local_env_file: str | None = field(default=None, repr=False)
     _env_var_name: str | None = field(default=None, repr=False)
+    _literal_value: str | None = field(default=None, repr=False)
+
+    @classmethod
+    def from_value(cls, name: str, value: str) -> Secret:
+        """Store an in-memory value as a consumer-scoped secret at deployment.
+
+        This follows the same lazy resolution and lifecycle as
+        :meth:`from_local_env`, without changing the process environment.
+        The value is excluded from repr and deployment specifications.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("secret name cannot be empty")
+        if not isinstance(value, str):
+            raise TypeError("secret value must be a string")
+        return cls(_secret_name=name, _literal_value=value)
 
     @classmethod
     def from_chalk_env(
@@ -275,9 +290,13 @@ class Secret:
         Returns
         -------
         bool
-            ``True`` if the secret is built from a local env var or env file.
+            ``True`` if the secret is built from a local value, env var, or env file.
         """
-        return self._local_env_var is not None or self._local_env_file is not None
+        return (
+            self._local_env_var is not None
+            or self._local_env_file is not None
+            or self._literal_value is not None
+        )
 
     def _to_proto_dict(self) -> dict[str, Any]:
         """Serialize to the dict shape expected by the ``SecretRef`` protobuf.
@@ -301,6 +320,8 @@ class Secret:
         return d
 
     def __repr__(self) -> str:
+        if self._literal_value is not None:
+            return f"Secret.from_value({self._secret_name!r}, <redacted>)"
         if self._local_env_file:
             return f"Secret.from_local_env_file({self._local_env_file!r})"
         if self._local_env_var:
@@ -349,7 +370,17 @@ def prepare_lazy_secrets(secrets: list[Secret]) -> tuple[list[Secret], dict[str,
     resolved: list[Secret] = []
     values: dict[str, str] = {}
     for secret in secrets:
-        if secret._local_env_var is not None:
+        if secret._literal_value is not None:
+            assert secret._secret_name is not None
+            values[secret._secret_name] = secret._literal_value
+            resolved.append(
+                Secret(
+                    _secret_name=secret._secret_name,
+                    _aliases=dict(secret._aliases),
+                    _prefix=secret._prefix,
+                )
+            )
+        elif secret._local_env_var is not None:
             local_var = secret._local_env_var
             value = os.environ.get(local_var)
             if value is None:

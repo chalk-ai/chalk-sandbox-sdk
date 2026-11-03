@@ -40,7 +40,8 @@
 #   settings if you do not want it kept.
 # - an existing Chalk secret (`--api-key-secret`). Nothing new is stored.
 #
-# Provide the standard `CHALK_*` credentials in the environment.
+# The SDK uses your existing `chalk login`, including its API host and selected
+# environment from `~/.chalk.yml`. Standard `CHALK_*` overrides also work.
 #
 # ## Safety, privacy, and cost
 #
