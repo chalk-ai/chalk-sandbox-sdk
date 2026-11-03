@@ -15,6 +15,7 @@ import importlib
 import inspect
 import logging
 import os
+import threading
 import weakref
 from collections.abc import Callable, Generator
 from typing import Any, NamedTuple, TypeVar, cast, overload
@@ -76,6 +77,10 @@ Read when the blob parses as a UTF-8 JSON object, from
 rows belong to different conversations has to use.
 """
 
+CALL_ID_ATTRIBUTE = "chalk.call.id"
+CALL_SPAN_COUNT_ATTRIBUTE = "chalk.call.expected_span_count"
+_SESSION_COUNTER_KEY = "chalkcompute.session_span_counter"
+
 SESSION_ROOT_SPAN_NAME = "chalkcompute.session"
 """Name of the root span :func:`enter_session` opens for a session's own trace."""
 
@@ -136,12 +141,54 @@ def _has_tracing_intent() -> bool:
     return _provider is not None or _user_tracing_configured or _is_enabled()
 
 
+class _SessionSpanCounter:
+    """Count sampled spans started with this call context before teardown."""
+
+    def __init__(self, call_id: str) -> None:
+        super().__init__()
+        self.call_id = call_id
+        self._span_ids: set[tuple[int, int]] = set()
+        self._closed = False
+        self._late_warning_emitted = False
+        self._lock = threading.Lock()
+
+    def record(self, span: Any) -> None:
+        context = span.get_span_context()
+        if not context.trace_flags.sampled:
+            return
+        span.set_attribute(CALL_ID_ATTRIBUTE, self.call_id)
+        with self._lock:
+            if self._closed:
+                if not self._late_warning_emitted:
+                    self._late_warning_emitted = True
+                    _logger.warning(
+                        "Call %s started spans after teardown; its completion count is no longer final",
+                        self.call_id,
+                    )
+            else:
+                # Concurrent processor installation can register this callback twice.
+                self._span_ids.add((context.trace_id, context.span_id))
+
+    def close(self) -> int:
+        with self._lock:
+            self._closed = True
+            return 1 + len(self._span_ids)
+
+
+def current_call_id() -> str | None:
+    """The local call to exclude when a scorer reads its own session."""
+    context_api = _get_context_api()
+    counter = context_api.get_value(_SESSION_COUNTER_KEY) if context_api else None
+    return counter.call_id if isinstance(counter, _SessionSpanCounter) else None
+
+
 def _session_processor_class() -> Any:
     """Build the session-stamping processor class, lazily.
 
     Defined inside a function because it subclasses an optional dependency.
     """
     import opentelemetry.baggage as baggage_api
+    from opentelemetry import context as context_api
     from opentelemetry.sdk.trace import SpanProcessor
 
     class _SessionIdSpanProcessor(SpanProcessor):
@@ -167,6 +214,11 @@ def _session_processor_class() -> Any:
             )
             if session_id:
                 span.set_attribute(SESSION_ID_ATTRIBUTE, str(session_id))
+            counter = context_api.get_value(
+                _SESSION_COUNTER_KEY, context=parent_context
+            )
+            if isinstance(counter, _SessionSpanCounter):
+                counter.record(span)
 
         def force_flush(self, timeout_millis: int = 30000) -> bool:
             # This processor buffers nothing and must not veto exporter flushes.
@@ -208,6 +260,7 @@ class _SessionScope(NamedTuple):
 
     context: object
     span: Any | None
+    counter: _SessionSpanCounter | None
 
 
 def _open_session_trace(
@@ -230,14 +283,30 @@ def _open_session_trace(
 
     Returns ``(span, context)`` — the opened span, and a context with it current.
     """
+    from opentelemetry import context as context_api
+
     enclosing = trace_api.get_current_span(context).get_span_context()
     links = []
     if enclosing.is_valid:
         links.append(trace_api.Link(enclosing, {"chalk.link.kind": "enclosing_call"}))
         # A span only starts a new trace when its context names no valid parent.
         context = trace_api.set_span_in_context(trace_api.INVALID_SPAN, context)
+    # A nested, different session owns its spans rather than incrementing its parent's count.
+    context = context_api.set_value(_SESSION_COUNTER_KEY, None, context=context)
     span = get_tracer().start_span(SESSION_ROOT_SPAN_NAME, context=context, links=links)
     span.set_attribute(SESSION_ID_ATTRIBUTE, session_id)
+    span_context = span.get_span_context()
+    if (
+        _install_session_processor(trace_api.get_tracer_provider())
+        and span.is_recording()
+        and span_context.trace_flags.sampled
+    ):
+        call_id = f"{span_context.trace_id:032x}/{span_context.span_id:016x}"
+        # Trace IDs also include remote spans; this marker identifies the local counter.
+        span.set_attribute(CALL_ID_ATTRIBUTE, call_id)
+        context = context_api.set_value(
+            _SESSION_COUNTER_KEY, _SessionSpanCounter(call_id), context=context
+        )
     return span, trace_api.set_span_in_context(span, context)
 
 
@@ -279,7 +348,11 @@ def enter_session(session_id: str) -> object | None:
     span = None
     if trace_api is not None and not already_in_session:
         span, context = _open_session_trace(trace_api, context, session_id)
-    return _SessionScope(otel_context.attach(context), span)
+    return _SessionScope(
+        otel_context.attach(context),
+        span,
+        otel_context.get_value(_SESSION_COUNTER_KEY, context=context),
+    )
 
 
 def exit_session(token: object) -> None:
@@ -293,6 +366,9 @@ def exit_session(token: object) -> None:
     if otel_context is not None:
         otel_context.detach(context)
     if span is not None:
+        if isinstance(token, _SessionScope) and token.counter is not None:
+            # Count starts, including unfinished children, so root arrival cannot hide a slow child.
+            span.set_attribute(CALL_SPAN_COUNT_ATTRIBUTE, token.counter.close())
         span.end()
         flush_session_tracing()
 
