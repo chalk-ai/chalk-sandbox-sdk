@@ -161,6 +161,10 @@ class RemoteCallPollResult:
     def is_failed(self) -> bool:
         return self.status_name.lower() == "failed"
 
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status_name.lower() == "cancelled"
+
 
 class RemoteCallClient:
     """Byte-oriented remote-call client backed by the native Rust implementation."""
@@ -172,7 +176,7 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
         use_tls: bool | None = None,
         initial_poll_delay_ms: int = 50,
-        max_poll_delay_ms: int = 5000,
+        max_poll_delay_ms: int = 1000,
         poll_backoff_multiplier: float = 1.7,
         max_message_size: int | None = None,
         auth_endpoint: str | None = None,

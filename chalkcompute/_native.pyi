@@ -10,7 +10,7 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] | None = None,
         use_tls: bool | None = None,
         initial_poll_delay_ms: int = 50,
-        max_poll_delay_ms: int = 5000,
+        max_poll_delay_ms: int = 1000,
         poll_backoff_multiplier: float = 1.7,
         max_message_size: int | None = None,
         auth_endpoint: str | None = None,

@@ -493,6 +493,33 @@ def test_transcript_accepts_an_empty_session_when_asked_to(
 # --- Span decoding --------------------------------------------------------
 
 
+def test_transcript_uses_normalized_model_and_derived_tokens() -> None:
+    client, _ = _client(
+        {
+            "list_span": [
+                _response(
+                    {
+                        "spans": [
+                            _span_dict(
+                                "s",
+                                **{
+                                    "gen_ai.response.model": "actual-model",
+                                    "gen_ai.request.model": "requested-model",
+                                    "gen_ai.usage.input_tokens": "100",
+                                    "gen_ai.usage.output_tokens": "20",
+                                    "input.value": "hello",
+                                },
+                            )
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+    text = Trace("session-1", _client=client).transcript(wait=False)
+    assert "### turn 1 (actual-model, 120 tokens)" in text
+
+
 def test_get_spans_queries_by_session_and_decodes_spans() -> None:
     client, connect = _client(
         {"list_span": [_response({"spans": [_span_dict("span-1")]})]}
@@ -994,12 +1021,13 @@ def test_summary_waits_until_the_session_span_count_stops_growing(
 ) -> None:
     client, _ = _client(
         {
+            "list_span": [_response({"spans": []})],
             "search_sessions": [
                 _response({"sessions": []}),
                 _session_response(3, trace_count=1),
                 _session_response(11, trace_count=2),
                 _session_response(11, trace_count=2),
-            ]
+            ],
         }
     )
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
@@ -1013,17 +1041,18 @@ def test_summary_treats_an_absent_session_as_not_yet_ingested(
     """A session with no spans yet is missing, not an error to give up on."""
     client, connect = _client(
         {
+            "list_span": [_response({"spans": []})],
             "search_sessions": [
                 _response({"sessions": []}),
                 _response({"sessions": []}),
                 _session_response(2),
                 _session_response(2),
-            ]
+            ],
         }
     )
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
     assert Trace("session-1", _client=client).summary(poll_interval=0).span_count == 2
-    assert len(connect.calls) == 4
+    assert len(connect.calls) == 5
 
 
 def test_summary_raises_not_found_when_the_session_never_appears(
@@ -1041,10 +1070,11 @@ def test_summary_accepts_an_empty_session_when_asked_to(
 ) -> None:
     client, _ = _client(
         {
+            "list_span": [_response({"spans": []})],
             "search_sessions": [
                 _session_response(0, trace_count=0),
                 _session_response(0, trace_count=0),
-            ]
+            ],
         }
     )
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
@@ -1058,11 +1088,12 @@ def test_traces_waits_for_a_turn_that_is_still_recording(
     """A growing turn adds spans without adding a trace, so the count is the signal."""
     client, _ = _client(
         {
+            "list_span": [_response({"spans": []})],
             "search_trace_summaries": [
                 _traces_response(2),
                 _traces_response(5),
                 _traces_response(5),
-            ]
+            ],
         }
     )
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
@@ -1075,11 +1106,12 @@ def test_traces_waits_for_a_later_turn_to_appear(
 ) -> None:
     client, _ = _client(
         {
+            "list_span": [_response({"spans": []})],
             "search_trace_summaries": [
                 _traces_response(3),
                 _traces_response(3, 4),
                 _traces_response(3, 4),
-            ]
+            ],
         }
     )
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
@@ -1127,3 +1159,82 @@ def test_every_read_makes_exactly_one_pass_without_waiting(
     client, connect = _client(responses)
     getattr(Trace("session-1", _client=client), method)(wait=False)
     assert len(connect.calls) == 1
+
+
+def _marked_span(
+    span_id: str, call_id: str, expected: int | str | None
+) -> dict[str, Any]:
+    result = _span_dict(span_id, **{"chalk.call.id": call_id})
+    if expected is not None:
+        result["operationName"] = "chalkcompute.session"
+        result["attributes"]["chalk.call.expected_span_count"] = str(expected)
+    return result
+
+
+@pytest.mark.parametrize("expected,extra", [("bad", False), ("1", True)])
+def test_unusable_counts_use_quiet_settling(
+    monkeypatch: pytest.MonkeyPatch, expected: str, extra: bool
+) -> None:
+    root = _marked_span("root", "trace-1/root", expected)
+    spans = [root, _marked_span("late", "trace-1/root", None)] if extra else [root]
+    client, _ = _client({"list_span": [_response({"spans": spans}) for _ in range(2)]})
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    assert len(Trace("session-1", _client=client).get_spans(poll_interval=0)) == len(
+        spans
+    )
+
+
+def test_filtered_read_checks_the_full_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _marked_span("root", "trace-1/root", 3)
+    child = _marked_span("child", "trace-1/root", None)
+    late = _marked_span("late", "trace-1/root", None)
+    scorer = _marked_span("lookup", "trace-1/scorer", None)
+    monkeypatch.setattr("chalkcompute._trace.current_call_id", lambda: "trace-1/scorer")
+    client, connect = _client(
+        {
+            "list_span": [
+                _response({"spans": [root, child, scorer]}),
+                _response({"spans": [root, child, scorer]}),
+                _response({"spans": [root, child, late, scorer]}),
+                _response({"spans": [root, child, late, scorer]}),
+            ]
+        }
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    spans = Trace("session-1", _client=client).get_spans(
+        operation_name="llm.completion", limit=1, poll_interval=0
+    )
+    assert [span.span_id for span in spans] == ["child"]
+    assert all(
+        not request.operation_name and request.limit == 1000
+        for _, request in connect.calls
+    )
+
+
+@pytest.mark.parametrize("method", ["get_spans", "transcript"])
+def test_count_shortfall_raises_at_timeout(clock: list[float], method: str) -> None:
+    root = _marked_span("root", "trace-1/root", 2)
+    client, _ = _client({"list_span": [_response({"spans": [root]}) for _ in range(4)]})
+    with pytest.raises(TimeoutError, match="spans may still be in flight"):
+        getattr(Trace("session-1", _client=client), method)(timeout=2, poll_interval=1)
+    assert clock[0] == 2
+
+
+def test_summary_retries_failed_completion_lookup(clock: list[float]) -> None:
+    client, connect = _client(
+        {
+            "search_sessions": [_session_response(1) for _ in range(3)],
+            "list_span": [
+                ConnectRpcError(Code.UNAVAILABLE, "retry"),
+                _response({"spans": []}),
+            ],
+        }
+    )
+    assert (
+        Trace("session-1", _client=client)
+        .summary(timeout=3, poll_interval=1)
+        .span_count
+        == 1
+    )
+    assert len(connect.calls) == 5
+    assert clock[0] == 2

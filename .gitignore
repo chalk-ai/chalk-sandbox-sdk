@@ -11,3 +11,4 @@ chalkcompute/_remote_call_native*.so
 /tmp/
 benchmark-results/
 .DS_Store
+.idea/

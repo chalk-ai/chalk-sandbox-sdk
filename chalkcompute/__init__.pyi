@@ -1,3 +1,4 @@
+from chalkcompute._usage_pool import UsagePool as UsagePool
 from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._router import Router as Router
 from chalkcompute._router import RouterClient as RouterClient
@@ -36,6 +37,7 @@ from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
 )
+from chalkcompute._usage_budget import UsageBudget as UsageBudget
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
 from chalkcompute._container import ContainerInfo as ContainerInfo
@@ -94,6 +96,7 @@ from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
 from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
+from chalkcompute._router_rate_limit import RateLimit as RateLimit
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
 from chalkcompute._remote_call_client import RemoteCallClient as RemoteCallClient
 from chalkcompute._remote_call_client import (
@@ -203,6 +206,7 @@ __all__ = [
     "RouterError",
     "RouterInfo",
     "RouterNotFoundError",
+    "UsagePool",
     "configure_logging",
     "SandboxGit",
     "GitFileStatus",
@@ -220,6 +224,7 @@ __all__ = [
     "ArtifactClient",
     "ArtifactError",
     "ArtifactNotFoundError",
+    "UsageBudget",
     "Container",
     "ContainerError",
     "ContainerInfo",
@@ -253,6 +258,7 @@ __all__ = [
     "get_call_context",
     "get_row_metadata",
     "RetryPolicy",
+    "RateLimit",
     "RateLimitPolicy",
     "ConcurrencyPolicy",
     "QueuePolicy",

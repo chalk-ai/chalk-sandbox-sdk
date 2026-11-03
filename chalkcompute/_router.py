@@ -489,43 +489,34 @@ class RouterClient:
         """
         stub = self._connect.stub(model_route_connect.ModelRouteServiceClientSync)
         grid = router._spec.routing
-        if grid is not None and (
-            grid.classifier is not None or grid.routes or grid.fallback_defaults
-        ):
-            capabilities = self._call(
-                stub.get_route_judge_defaults, pb.GetRouteJudgeDefaultsRequest()
-            )
-            if capabilities.routing_schema_version < 1:
-                raise RouterError(
-                    "This router server does not support classifier/routes configuration; upgrade it before deploying."
-                )
-            classifier = router._classifier
-            if classifier is not None and classifier._function is not None:
-                # Check server support before deploying a potentially expensive function.
+        if grid is not None and grid.judge is not None:
+            backend = grid.judge.backend
+            if (
+                backend is not None
+                and backend.kind is not None
+                and backend.kind.field == "function"
+            ):
+                # Older routers reject the unknown backend before any route is written.
                 self._call(
                     stub.validate_route_judge_backend,
-                    pb.ValidateRouteJudgeBackendRequest(backend=classifier._backend),
+                    pb.ValidateRouteJudgeBackendRequest(backend=backend),
                 )
-                function = classifier._function
-                self._connect._ensure_auth()
-                function._client._ensure_auth()
-                if self._connect._env_id != function._client._env_id:
-                    raise RouterError(
-                        "router and classifier function must use the same environment"
-                    )
-                function.deploy()
-                function.wait_ready()
-                version = function.version_info
-                if version is None or not version.function_id:
-                    raise RouterError("deployed classifier has no function ID")
-                assert (
-                    grid.classifier is not None and grid.classifier.backend is not None
-                )
-                backend = grid.classifier.backend.kind
-                assert backend is not None and isinstance(
-                    backend.value, pb.FunctionClassifierBackend
-                )
-                backend.value.function_id = version.function_id
+                classifier = router._classifier
+                if classifier is not None and classifier._function is not None:
+                    function = classifier._function
+                    self._connect._ensure_auth()
+                    function._client._ensure_auth()
+                    if self._connect._env_id != function._client._env_id:
+                        raise RouterError(
+                            "router and classifier function must use the same environment"
+                        )
+                    function.deploy()
+                    function.wait_ready()
+                    version = function.version_info
+                    if version is None or not version.function_id:
+                        raise RouterError("deployed classifier has no function ID")
+                    assert isinstance(backend.kind.value, pb.FunctionClassifierBackend)
+                    backend.kind.value.function_id = version.function_id
         existing = next(
             (r for r in self._routes() if r.public_model_id == router.model), None
         )
@@ -641,34 +632,8 @@ class Router:
                 raise ValueError("heuristic requires routes '0' and '1'")
             routing = pb.RouteGrid(
                 default_target=default._to_proto(),
-                classifier=pb.ClassifierConfig(
-                    mode=checked.mode,
-                    classification=checked.classification,
-                    backend=checked.backend,
-                ),
-                routes={
-                    label: pb.RoutingRule(
-                        description=rule.description,
-                        target=_target_from_reference(rule.model)._to_proto(),
-                        fallbacks=None
-                        if rule.fallbacks is None
-                        else pb.TargetFallbacks(
-                            targets=[
-                                _target_from_reference(ref)._to_proto()
-                                for ref in rule.fallbacks.models
-                            ]
-                        ),
-                    )
-                    for label, rule in checked.outcomes.items()
-                },
-                fallback_defaults=[
-                    pb.ModelFallbacks(
-                        target=default._to_proto(),
-                        fallbacks=[target._to_proto() for target in fallbacks],
-                    )
-                ]
-                if fallbacks
-                else [],
+                judge=checked,
+                fallbacks={default._reference: chain} if fallbacks else {},
             )
         self._spec = pb.CreateModelRouteRequest(
             public_model_id=_model_name(name),
@@ -733,10 +698,3 @@ class Router:
             warnings = resolved.delete(self.model)
         self._info = None
         return warnings
-
-
-def _target_from_reference(reference: str) -> Target:
-    connection, separator, model = reference.partition("/")
-    if not separator:
-        raise RouterError("server returned an invalid concrete target")
-    return Target(connection, model)

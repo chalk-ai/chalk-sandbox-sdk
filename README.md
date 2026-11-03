@@ -668,6 +668,30 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### Reading span metrics
+
+Scorers can accept `trace: cc.Trace` and read typed usage values from each span:
+
+```python
+@cc.function
+def task_token_count(trace: cc.Trace) -> int:
+    return sum(span.total_tokens or 0 for span in trace.get_spans())
+```
+
+`Span` exposes `input_tokens`, `output_tokens`, `total_tokens`,
+`cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost` (USD),
+`model`, and `provider`. These read Chalk's normalized attributes, OpenInference
+attributes, and GenAI attributes. Numeric helpers skip invalid values and return
+`None` when unavailable; recorded zeroes stay zero. An explicit total takes
+precedence; otherwise `total_tokens` adds input and output only when both are
+known. Cache and reasoning breakdowns are not added again. Values describe one
+span; when summing a trace, select the spans of interest if your instrumentation
+also emits parent rollups. The example explicitly treats missing usage as zero.
+
+These helpers make no additional requests and do not infer pricing.
+`span.attributes`, `span.attribute_int(key)`, and `span.attribute_float(key)`
+remain available for other telemetry fields.
+
 ### Built-in scorers
 
 `cc.scorers` deploys common scorers without a function body. Each one takes an
@@ -771,6 +795,33 @@ Metadata records `confidence`, `escalated`, `judge_model`, and
 `primary_confidence`, so a run shows its own escalation rate. Self-reported
 confidence is not calibrated on every task, so choose `threshold` on a small
 labeled sample. `jev` reaches models the same way `llm_judge` does.
+
+`cc.scorers.vlm_judge` is `llm_judge` shown pictures. `images` names the
+columns the model sees as images (default `("output",)`, the task's result) and
+`inputs` the columns it reads as text. An image column holds a URL (`https://`
+or `data:`), which is sent as given; a path readable in the scorer's container;
+or the image bytes themselves. PNG, JPEG, GIF, and WebP bytes are inlined as
+data URLs, and a JSON array shows several pictures. `detail` asks the provider
+for `low`, `high`, or `auto` image fidelity.
+
+```python
+@dataclass
+class ChartQuality:
+    score: float = field(metadata={"description": "Does the chart show what was asked, from 0 to 1."})
+    reason: str
+
+chart_quality = cc.scorers.vlm_judge(
+    ChartQuality,
+    model="gpt-4.1",
+    inputs=("input",),
+    images=("output",),
+)
+```
+
+The judge reaches models the way `llm_judge` does, so the model must accept
+images on the route it is called through. Through Chalk's AI router that is any
+OpenAI-compatible connection; an Anthropic connection rejects image parts sent
+as chat completions, and Bedrock accepts only data URLs.
 
 ## Deployment revisions and rollback
 
@@ -1272,15 +1323,20 @@ share the call timeout. Exponential policies multiply the delay up to `max_wait`
 `linear` policies use a constant delay. Jitter uniformly samples between zero
 and that delay. Generator `.remote()` calls use the queue, like `.defer()`.
 
-Queued calls keep one call ID and retry on the server, even if the submitting
-client exits. Queue overrides currently apply only the retry count; delay and
-jitter remain controlled by the queue's fixed reclaim interval. Failed calls
-are never silently resubmitted under another ID while collecting results.
+Queued calls on Redis Stream queues retry on the server under the same call ID,
+even if the submitting client exits. Legacy Redis List queues ignore the retry
+policy. Queue overrides currently apply only the retry count; delay and jitter
+remain controlled by the queue's fixed reclaim interval.
+
+Terminal call failures are raised by `get()`, `stream()`, and `gather()` without
+submitting another invocation, even if the handler never started. Retryable polling transport errors are handled separately by refreshing
+the client and re-polling the same call ID and cursor.
+
 Retry-enabled generators buffer output to avoid repeating already emitted
 values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not
 supported and raise an error instead of being ignored.
 
 Retries can execute side effects more than once. Make retried handlers
-idempotent. Transient execution and transport failures share the configured invocation
-retry budget. Connection setup and result polling do not create additional
-invocation budgets.
+idempotent. Retryable execution and transport failures share the configured
+invocation retry budget. Connection setup and result polling do not create
+additional invocation budgets.

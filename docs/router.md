@@ -5,8 +5,9 @@ resolved automatically, as with `Sandbox.run()`. Supporting types live in
 `chalkcompute.router`: `Connection`, `Target`, `Route`, `Classifier`, and
 `RoutingRequest`.
 
-This API requires the SDK built from this branch and a router server with the
-additive classifier fields. Deployment checks server support before writing.
+Simple routers and heuristic, completion, and Decisions classifiers use the existing
+router protocol. Function classifiers require the matching metadata API and router
+deployment to be live; deployment checks function support before writing the route.
 
 ## Full example: route using a Chalk function
 
@@ -166,8 +167,10 @@ last-writer-wins; there is no compare-and-swap operation.
 
 ## Server rollout
 
-Deploy the matching metadata API, then the router, before using the additive SDK
-API. Hosted routers receive the metadata API address automatically through the
+Deploy the matching metadata API, then the router, before configuring a function
+classifier. Existing non-function routes and clients keep their current protocol
+and behavior. The SDK waits for an active function deployment before publishing
+its route. Hosted routers receive the metadata API address automatically through the
 existing `CHALK_API_HOST`; no new environment variables or secrets are needed
 from the SDK user.
 

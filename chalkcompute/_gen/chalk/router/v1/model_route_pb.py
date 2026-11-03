@@ -242,150 +242,6 @@ class FunctionClassifierBackend(Message[_FunctionClassifierBackendFields]):
         input_name: str
         timeout_ms: int
 
-_ClassifierConfigFields: TypeAlias = Literal["mode", "classification", "backend"]
-
-class ClassifierConfig(Message[_ClassifierConfigFields]):
-    """
-    ```proto
-    message chalk.router.v1.ClassifierConfig
-    ```
-
-    Attributes:
-        mode:
-            ```proto
-            chalk.router.v1.JudgeMode mode = 1;
-            ```
-        classification:
-            ```proto
-            chalk.router.v1.Classification classification = 2;
-            ```
-        backend:
-            ```proto
-            optional chalk.router.v1.RouteJudgeBackend backend = 3;
-            ```
-    """
-
-    __slots__ = ("mode", "classification", "backend")
-
-    if TYPE_CHECKING:
-
-        def __init__(
-            self,
-            *,
-            mode: JudgeMode | None = None,
-            classification: Classification | None = None,
-            backend: RouteJudgeBackend | None = None,
-        ) -> None:
-            pass
-
-        mode: JudgeMode
-        classification: Classification
-        backend: RouteJudgeBackend | None
-
-_TargetFallbacksFields: TypeAlias = Literal["targets"]
-
-class TargetFallbacks(Message[_TargetFallbacksFields]):
-    """
-    ```proto
-    message chalk.router.v1.TargetFallbacks
-    ```
-
-    Attributes:
-        targets:
-            ```proto
-            repeated chalk.router.v1.RouteTarget targets = 1;
-            ```
-    """
-
-    __slots__ = ("targets",)
-
-    if TYPE_CHECKING:
-
-        def __init__(
-            self,
-            *,
-            targets: list[RouteTarget] | None = None,
-        ) -> None:
-            pass
-
-        targets: list[RouteTarget]
-
-_RoutingRuleFields: TypeAlias = Literal["description", "target", "fallbacks"]
-
-class RoutingRule(Message[_RoutingRuleFields]):
-    """
-    ```proto
-    message chalk.router.v1.RoutingRule
-    ```
-
-    Attributes:
-        description:
-            ```proto
-            string description = 1;
-            ```
-        target:
-            ```proto
-            optional chalk.router.v1.RouteTarget target = 2;
-            ```
-        fallbacks:
-            Absent inherits fallback_defaults; present and empty disables fallback.
-
-            ```proto
-            optional chalk.router.v1.TargetFallbacks fallbacks = 3;
-            ```
-    """
-
-    __slots__ = ("description", "target", "fallbacks")
-
-    if TYPE_CHECKING:
-
-        def __init__(
-            self,
-            *,
-            description: str = "",
-            target: RouteTarget | None = None,
-            fallbacks: TargetFallbacks | None = None,
-        ) -> None:
-            pass
-
-        description: str
-        target: RouteTarget | None
-        fallbacks: TargetFallbacks | None
-
-_ModelFallbacksFields: TypeAlias = Literal["target", "fallbacks"]
-
-class ModelFallbacks(Message[_ModelFallbacksFields]):
-    """
-    ```proto
-    message chalk.router.v1.ModelFallbacks
-    ```
-
-    Attributes:
-        target:
-            ```proto
-            optional chalk.router.v1.RouteTarget target = 1;
-            ```
-        fallbacks:
-            ```proto
-            repeated chalk.router.v1.RouteTarget fallbacks = 2;
-            ```
-    """
-
-    __slots__ = ("target", "fallbacks")
-
-    if TYPE_CHECKING:
-
-        def __init__(
-            self,
-            *,
-            target: RouteTarget | None = None,
-            fallbacks: list[RouteTarget] | None = None,
-        ) -> None:
-            pass
-
-        target: RouteTarget | None
-        fallbacks: list[RouteTarget]
-
 _RouteJudgeBackendFields: TypeAlias = Literal["heuristic", "completion", "decisions", "function"]
 
 class RouteJudgeBackend(Message[_RouteJudgeBackendFields]):
@@ -545,7 +401,7 @@ class RouteTarget(Message[_RouteTargetFields]):
         connection_id: str
         upstream_model_id: str
 
-_RouteGridFields: TypeAlias = Literal["fallbacks", "judge", "default_target", "classifier", "routes", "fallback_defaults"]
+_RouteGridFields: TypeAlias = Literal["fallbacks", "judge", "default_target"]
 
 class RouteGrid(Message[_RouteGridFields]):
     """
@@ -570,24 +426,9 @@ class RouteGrid(Message[_RouteGridFields]):
             ```proto
             optional chalk.router.v1.RouteTarget default_target = 3;
             ```
-        classifier:
-            New input representation. Do not mix with judge/fallbacks above.
-            Reads return the normalized legacy representation for existing clients.
-
-            ```proto
-            optional chalk.router.v1.ClassifierConfig classifier = 4;
-            ```
-        routes:
-            ```proto
-            map<string, chalk.router.v1.RoutingRule> routes = 5;
-            ```
-        fallback_defaults:
-            ```proto
-            repeated chalk.router.v1.ModelFallbacks fallback_defaults = 6;
-            ```
     """
 
-    __slots__ = ("fallbacks", "judge", "default_target", "classifier", "routes", "fallback_defaults")
+    __slots__ = ("fallbacks", "judge", "default_target")
 
     if TYPE_CHECKING:
 
@@ -597,18 +438,12 @@ class RouteGrid(Message[_RouteGridFields]):
             fallbacks: dict[str, RouteFallbacks] | None = None,
             judge: RouteJudge | None = None,
             default_target: RouteTarget | None = None,
-            classifier: ClassifierConfig | None = None,
-            routes: dict[str, RoutingRule] | None = None,
-            fallback_defaults: list[ModelFallbacks] | None = None,
         ) -> None:
             pass
 
         fallbacks: dict[str, RouteFallbacks]
         judge: RouteJudge | None
         default_target: RouteTarget | None
-        classifier: ClassifierConfig | None
-        routes: dict[str, RoutingRule]
-        fallback_defaults: list[ModelFallbacks]
 
 _ModelRouteFields: TypeAlias = Literal["id", "public_model_id", "connection_id", "upstream_model_id", "published", "diagnostic", "created_at", "updated_at", "routing", "archived_at"]
 
@@ -1126,7 +961,7 @@ class GetRouteJudgeDefaultsRequest(Message[_GetRouteJudgeDefaultsRequestFields])
         ) -> None:
             pass
 
-_GetRouteJudgeDefaultsResponseFields: TypeAlias = Literal["difficulty", "task", "routing_schema_version"]
+_GetRouteJudgeDefaultsResponseFields: TypeAlias = Literal["difficulty", "task"]
 
 class GetRouteJudgeDefaultsResponse(Message[_GetRouteJudgeDefaultsResponseFields]):
     """
@@ -1143,15 +978,9 @@ class GetRouteJudgeDefaultsResponse(Message[_GetRouteJudgeDefaultsResponseFields
             ```proto
             repeated chalk.router.v1.JudgeOutcomeDefault task = 2;
             ```
-        routing_schema_version:
-            At least 1 supports classifier/routes/fallback_defaults.
-
-            ```proto
-            uint32 routing_schema_version = 3;
-            ```
     """
 
-    __slots__ = ("difficulty", "task", "routing_schema_version")
+    __slots__ = ("difficulty", "task")
 
     if TYPE_CHECKING:
 
@@ -1160,13 +989,11 @@ class GetRouteJudgeDefaultsResponse(Message[_GetRouteJudgeDefaultsResponseFields
             *,
             difficulty: list[JudgeOutcomeDefault] | None = None,
             task: list[JudgeOutcomeDefault] | None = None,
-            routing_schema_version: int = 0,
         ) -> None:
             pass
 
         difficulty: list[JudgeOutcomeDefault]
         task: list[JudgeOutcomeDefault]
-        routing_schema_version: int
 
 _ValidateRouteJudgeBackendRequestFields: TypeAlias = Literal["backend"]
 
@@ -1317,7 +1144,7 @@ class Classification(Enum):
 
 
 _DESC = file_desc(
-    b'\n!chalk/router/v1/model_route.proto\x12\x0fchalk.router.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto"(\n\x0eRouteFallbacks\x12\x16\n\x06models\x18\x01 \x03(\tR\x06models"\xe9\x02\n\x15HeuristicJudgeBackend\x125\n\x14use_default_keywords\x18\x01 \x01(\x08H\x00R\x12useDefaultKeywords\x88\x01\x01\x12.\n\x13added_hard_keywords\x18\x02 \x03(\tR\x11addedHardKeywords\x122\n\x15removed_hard_keywords\x18\x03 \x03(\tR\x13removedHardKeywords\x124\n\x14code_blocks_are_hard\x18\x04 \x01(\x08H\x01R\x11codeBlocksAreHard\x88\x01\x01\x124\n\x14max_easy_input_bytes\x18\x05 \x01(\rH\x02R\x11maxEasyInputBytes\x88\x01\x01B\x17\n\x15_use_default_keywordsB\x17\n\x15_code_blocks_are_hardB\x17\n\x15_max_easy_input_bytes"m\n\x16CompletionJudgeBackend\x124\n\x06target\x18\x01 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\x06target\x12\x1d\n\ntimeout_ms\x18\x02 \x01(\rR\ttimeoutMs"l\n\x15DecisionsJudgeBackend\x124\n\x06target\x18\x01 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\x06target\x12\x1d\n\ntimeout_ms\x18\x02 \x01(\rR\ttimeoutMs"z\n\x19FunctionClassifierBackend\x12\x1f\n\x0bfunction_id\x18\x01 \x01(\tR\nfunctionId\x12\x1d\n\ninput_name\x18\x02 \x01(\tR\tinputName\x12\x1d\n\ntimeout_ms\x18\x03 \x01(\rR\ttimeoutMs"\xc9\x01\n\x10ClassifierConfig\x12.\n\x04mode\x18\x01 \x01(\x0e2\x1a.chalk.router.v1.JudgeModeR\x04mode\x12G\n\x0eclassification\x18\x02 \x01(\x0e2\x1f.chalk.router.v1.ClassificationR\x0eclassification\x12<\n\x07backend\x18\x03 \x01(\x0b2".chalk.router.v1.RouteJudgeBackendR\x07backend"I\n\x0fTargetFallbacks\x126\n\x07targets\x18\x01 \x03(\x0b2\x1c.chalk.router.v1.RouteTargetR\x07targets"\xa5\x01\n\x0bRoutingRule\x12 \n\x0bdescription\x18\x01 \x01(\tR\x0bdescription\x124\n\x06target\x18\x02 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\x06target\x12>\n\tfallbacks\x18\x03 \x01(\x0b2 .chalk.router.v1.TargetFallbacksR\tfallbacks"\x82\x01\n\x0eModelFallbacks\x124\n\x06target\x18\x01 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\x06target\x12:\n\tfallbacks\x18\x02 \x03(\x0b2\x1c.chalk.router.v1.RouteTargetR\tfallbacks"\xc0\x02\n\x11RouteJudgeBackend\x12F\n\theuristic\x18\x01 \x01(\x0b2&.chalk.router.v1.HeuristicJudgeBackendH\x00R\theuristic\x12I\n\ncompletion\x18\x02 \x01(\x0b2\'.chalk.router.v1.CompletionJudgeBackendH\x00R\ncompletion\x12F\n\tdecisions\x18\x03 \x01(\x0b2&.chalk.router.v1.DecisionsJudgeBackendH\x00R\tdecisions\x12H\n\x08function\x18\x04 \x01(\x0b2*.chalk.router.v1.FunctionClassifierBackendH\x00R\x08functionB\x06\n\x04kind"\x8b\x01\n\x12JudgeOutcomeConfig\x12\x14\n\x05model\x18\x01 \x01(\tR\x05model\x12 \n\x0bdescription\x18\x02 \x01(\tR\x0bdescription\x12=\n\tfallbacks\x18\x03 \x01(\x0b2\x1f.chalk.router.v1.RouteFallbacksR\tfallbacks"\xec\x02\n\nRouteJudge\x12.\n\x04mode\x18\x01 \x01(\x0e2\x1a.chalk.router.v1.JudgeModeR\x04mode\x12G\n\x0eclassification\x18\x02 \x01(\x0e2\x1f.chalk.router.v1.ClassificationR\x0eclassification\x12<\n\x07backend\x18\x03 \x01(\x0b2".chalk.router.v1.RouteJudgeBackendR\x07backend\x12E\n\x08outcomes\x18\x05 \x03(\x0b2).chalk.router.v1.RouteJudge.OutcomesEntryR\x08outcomes\x1a`\n\rOutcomesEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x129\n\x05value\x18\x02 \x01(\x0b2#.chalk.router.v1.JudgeOutcomeConfigR\x05value:\x028\x01"^\n\x0bRouteTarget\x12#\n\rconnection_id\x18\x01 \x01(\tR\x0cconnectionId\x12*\n\x11upstream_model_id\x18\x02 \x01(\tR\x0fupstreamModelId"\xd5\x04\n\tRouteGrid\x12G\n\tfallbacks\x18\x01 \x03(\x0b2).chalk.router.v1.RouteGrid.FallbacksEntryR\tfallbacks\x121\n\x05judge\x18\x02 \x01(\x0b2\x1b.chalk.router.v1.RouteJudgeR\x05judge\x12C\n\x0edefault_target\x18\x03 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\rdefaultTarget\x12A\n\nclassifier\x18\x04 \x01(\x0b2!.chalk.router.v1.ClassifierConfigR\nclassifier\x12>\n\x06routes\x18\x05 \x03(\x0b2&.chalk.router.v1.RouteGrid.RoutesEntryR\x06routes\x12L\n\x11fallback_defaults\x18\x06 \x03(\x0b2\x1f.chalk.router.v1.ModelFallbacksR\x10fallbackDefaults\x1a]\n\x0eFallbacksEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x125\n\x05value\x18\x02 \x01(\x0b2\x1f.chalk.router.v1.RouteFallbacksR\x05value:\x028\x01\x1aW\n\x0bRoutesEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x122\n\x05value\x18\x02 \x01(\x0b2\x1c.chalk.router.v1.RoutingRuleR\x05value:\x028\x01"\xef\x03\n\nModelRoute\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12&\n\x0fpublic_model_id\x18\x02 \x01(\tR\rpublicModelId\x12#\n\rconnection_id\x18\x03 \x01(\tR\x0cconnectionId\x12*\n\x11upstream_model_id\x18\x04 \x01(\tR\x0fupstreamModelId\x12\x1c\n\tpublished\x18\x05 \x01(\x08R\tpublished\x12@\n\ndiagnostic\x18\x06 \x01(\x0e2 .chalk.router.v1.RouteDiagnosticR\ndiagnostic\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x129\n\x07routing\x18\t \x01(\x0b2\x1a.chalk.router.v1.RouteGridH\x00R\x07routing\x88\x01\x01\x12;\n\x0barchived_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\narchivedAtB\n\n\x08_routing"\xb5\x01\n\x16ListModelRoutesFilters\x12%\n\x0econnection_ids\x18\x01 \x03(\tR\rconnectionIds\x12!\n\tpublished\x18\x02 \x01(\x08H\x00R\tpublished\x88\x01\x01\x12.\n\x10include_archived\x18\x03 \x01(\x08H\x01R\x0fincludeArchived\x88\x01\x01B\x0c\n\n_publishedB\x13\n\x11_include_archived"\xa8\x01\n\x16ListModelRoutesRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12A\n\x07filters\x18\x03 \x01(\x0b2\'.chalk.router.v1.ListModelRoutesFiltersR\x07filtersB\x08\n\x06_limitB\t\n\x07_cursor"\x84\x01\n\x17ListModelRoutesResponse\x123\n\x06routes\x18\x01 \x03(\x0b2\x1b.chalk.router.v1.ModelRouteR\x06routes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xf7\x01\n\x17CreateModelRouteRequest\x12&\n\x0fpublic_model_id\x18\x01 \x01(\tR\rpublicModelId\x12#\n\rconnection_id\x18\x02 \x01(\tR\x0cconnectionId\x12*\n\x11upstream_model_id\x18\x03 \x01(\tR\x0fupstreamModelId\x12\x1c\n\tpublished\x18\x04 \x01(\x08R\tpublished\x129\n\x07routing\x18\x05 \x01(\x0b2\x1a.chalk.router.v1.RouteGridH\x00R\x07routing\x88\x01\x01B\n\n\x08_routing"M\n\x18CreateModelRouteResponse\x121\n\x05route\x18\x01 \x01(\x0b2\x1b.chalk.router.v1.ModelRouteR\x05route"\x96\x02\n\x19UpdateModelRouteOperation\x12(\n\rconnection_id\x18\x01 \x01(\tH\x00R\x0cconnectionId\x88\x01\x01\x12/\n\x11upstream_model_id\x18\x02 \x01(\tH\x01R\x0fupstreamModelId\x88\x01\x01\x12!\n\tpublished\x18\x03 \x01(\x08H\x02R\tpublished\x88\x01\x01\x129\n\x07routing\x18\x04 \x01(\x0b2\x1a.chalk.router.v1.RouteGridH\x03R\x07routing\x88\x01\x01B\x10\n\x0e_connection_idB\x14\n\x12_upstream_model_idB\x0c\n\n_publishedB\n\n\x08_routing"\xaa\x01\n\x17UpdateModelRouteRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12B\n\x06update\x18\x02 \x01(\x0b2*.chalk.router.v1.UpdateModelRouteOperationR\x06update\x12;\n\x0bupdate_mask\x18\x03 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"M\n\x18UpdateModelRouteResponse\x121\n\x05route\x18\x01 \x01(\x0b2\x1b.chalk.router.v1.ModelRouteR\x05route")\n\x17DeleteModelRouteRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"F\n\x18DeleteModelRouteResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n\x08warnings\x18\x02 \x03(\tR\x08warnings"M\n\x13JudgeOutcomeDefault\x12\x14\n\x05label\x18\x01 \x01(\tR\x05label\x12 \n\x0bdescription\x18\x02 \x01(\tR\x0bdescription"\x1e\n\x1cGetRouteJudgeDefaultsRequest"\xd5\x01\n\x1dGetRouteJudgeDefaultsResponse\x12D\n\ndifficulty\x18\x01 \x03(\x0b2$.chalk.router.v1.JudgeOutcomeDefaultR\ndifficulty\x128\n\x04task\x18\x02 \x03(\x0b2$.chalk.router.v1.JudgeOutcomeDefaultR\x04task\x124\n\x16routing_schema_version\x18\x03 \x01(\rR\x14routingSchemaVersion"`\n ValidateRouteJudgeBackendRequest\x12<\n\x07backend\x18\x01 \x01(\x0b2".chalk.router.v1.RouteJudgeBackendR\x07backend"#\n!ValidateRouteJudgeBackendResponse*\xdb\x01\n\x0fRouteDiagnostic\x12 \n\x1cROUTE_DIAGNOSTIC_UNSPECIFIED\x10\x00\x12\x1a\n\x16ROUTE_DIAGNOSTIC_READY\x10\x01\x12!\n\x1dROUTE_DIAGNOSTIC_UNCONFIGURED\x10\x02\x12\x1d\n\x19ROUTE_DIAGNOSTIC_DISABLED\x10\x03\x12\x1f\n\x1bROUTE_DIAGNOSTIC_UNREADABLE\x10\x04\x12\'\n#ROUTE_DIAGNOSTIC_MISSING_CONNECTION\x10\x05*g\n\tJudgeMode\x12\x1a\n\x16JUDGE_MODE_UNSPECIFIED\x10\x00\x12\x12\n\x0eJUDGE_MODE_OFF\x10\x01\x12\x15\n\x11JUDGE_MODE_SHADOW\x10\x02\x12\x13\n\x0fJUDGE_MODE_LIVE\x10\x03*h\n\x0eClassification\x12\x1e\n\x1aCLASSIFICATION_UNSPECIFIED\x10\x00\x12\x17\n\x13CLASSIFICATION_TASK\x10\x01\x12\x1d\n\x19CLASSIFICATION_DIFFICULTY\x10\x022\x96\x06\n\x11ModelRouteService\x12~\n\x15GetRouteJudgeDefaults\x12-.chalk.router.v1.GetRouteJudgeDefaultsRequest\x1a..chalk.router.v1.GetRouteJudgeDefaultsResponse"\x06\x90\x02\x01\x80}\x02\x12\x8a\x01\n\x19ValidateRouteJudgeBackend\x121.chalk.router.v1.ValidateRouteJudgeBackendRequest\x1a2.chalk.router.v1.ValidateRouteJudgeBackendResponse"\x06\x90\x02\x01\x80}\x02\x12l\n\x0fListModelRoutes\x12\'.chalk.router.v1.ListModelRoutesRequest\x1a(.chalk.router.v1.ListModelRoutesResponse"\x06\x90\x02\x01\x80}\x02\x12\xa9\x01\n\x10CreateModelRoute\x12(.chalk.router.v1.CreateModelRouteRequest\x1a).chalk.router.v1.CreateModelRouteResponse"@\x80}\x02\x92\xd3\x0e9\n\x0erouter_enabled\x12\'Enables LLM Gateway routing management.\x12l\n\x10UpdateModelRoute\x12(.chalk.router.v1.UpdateModelRouteRequest\x1a).chalk.router.v1.UpdateModelRouteResponse"\x03\x80}\x02\x12l\n\x10DeleteModelRoute\x12(.chalk.router.v1.DeleteModelRouteRequest\x1a).chalk.router.v1.DeleteModelRouteResponse"\x03\x80}\x02B\x98\x01\n\x13com.chalk.router.v1B\x0fModelRouteProtoP\x01Z\x12router/v1;routerv1\xa2\x02\x03CRX\xaa\x02\x0fChalk.Router.V1\xca\x02\x0fChalk\\Router\\V1\xe2\x02\x1bChalk\\Router\\V1\\GPBMetadata\xea\x02\x11Chalk::Router::V1b\x06proto3',
+    b'\n!chalk/router/v1/model_route.proto\x12\x0fchalk.router.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto"(\n\x0eRouteFallbacks\x12\x16\n\x06models\x18\x01 \x03(\tR\x06models"\xe9\x02\n\x15HeuristicJudgeBackend\x125\n\x14use_default_keywords\x18\x01 \x01(\x08H\x00R\x12useDefaultKeywords\x88\x01\x01\x12.\n\x13added_hard_keywords\x18\x02 \x03(\tR\x11addedHardKeywords\x122\n\x15removed_hard_keywords\x18\x03 \x03(\tR\x13removedHardKeywords\x124\n\x14code_blocks_are_hard\x18\x04 \x01(\x08H\x01R\x11codeBlocksAreHard\x88\x01\x01\x124\n\x14max_easy_input_bytes\x18\x05 \x01(\rH\x02R\x11maxEasyInputBytes\x88\x01\x01B\x17\n\x15_use_default_keywordsB\x17\n\x15_code_blocks_are_hardB\x17\n\x15_max_easy_input_bytes"m\n\x16CompletionJudgeBackend\x124\n\x06target\x18\x01 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\x06target\x12\x1d\n\ntimeout_ms\x18\x02 \x01(\rR\ttimeoutMs"l\n\x15DecisionsJudgeBackend\x124\n\x06target\x18\x01 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\x06target\x12\x1d\n\ntimeout_ms\x18\x02 \x01(\rR\ttimeoutMs"z\n\x19FunctionClassifierBackend\x12\x1f\n\x0bfunction_id\x18\x01 \x01(\tR\nfunctionId\x12\x1d\n\ninput_name\x18\x02 \x01(\tR\tinputName\x12\x1d\n\ntimeout_ms\x18\x03 \x01(\rR\ttimeoutMs"\xc0\x02\n\x11RouteJudgeBackend\x12F\n\theuristic\x18\x01 \x01(\x0b2&.chalk.router.v1.HeuristicJudgeBackendH\x00R\theuristic\x12I\n\ncompletion\x18\x02 \x01(\x0b2\'.chalk.router.v1.CompletionJudgeBackendH\x00R\ncompletion\x12F\n\tdecisions\x18\x03 \x01(\x0b2&.chalk.router.v1.DecisionsJudgeBackendH\x00R\tdecisions\x12H\n\x08function\x18\x04 \x01(\x0b2*.chalk.router.v1.FunctionClassifierBackendH\x00R\x08functionB\x06\n\x04kind"\x8b\x01\n\x12JudgeOutcomeConfig\x12\x14\n\x05model\x18\x01 \x01(\tR\x05model\x12 \n\x0bdescription\x18\x02 \x01(\tR\x0bdescription\x12=\n\tfallbacks\x18\x03 \x01(\x0b2\x1f.chalk.router.v1.RouteFallbacksR\tfallbacks"\xec\x02\n\nRouteJudge\x12.\n\x04mode\x18\x01 \x01(\x0e2\x1a.chalk.router.v1.JudgeModeR\x04mode\x12G\n\x0eclassification\x18\x02 \x01(\x0e2\x1f.chalk.router.v1.ClassificationR\x0eclassification\x12<\n\x07backend\x18\x03 \x01(\x0b2".chalk.router.v1.RouteJudgeBackendR\x07backend\x12E\n\x08outcomes\x18\x05 \x03(\x0b2).chalk.router.v1.RouteJudge.OutcomesEntryR\x08outcomes\x1a`\n\rOutcomesEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x129\n\x05value\x18\x02 \x01(\x0b2#.chalk.router.v1.JudgeOutcomeConfigR\x05value:\x028\x01"^\n\x0bRouteTarget\x12#\n\rconnection_id\x18\x01 \x01(\tR\x0cconnectionId\x12*\n\x11upstream_model_id\x18\x02 \x01(\tR\x0fupstreamModelId"\xab\x02\n\tRouteGrid\x12G\n\tfallbacks\x18\x01 \x03(\x0b2).chalk.router.v1.RouteGrid.FallbacksEntryR\tfallbacks\x121\n\x05judge\x18\x02 \x01(\x0b2\x1b.chalk.router.v1.RouteJudgeR\x05judge\x12C\n\x0edefault_target\x18\x03 \x01(\x0b2\x1c.chalk.router.v1.RouteTargetR\rdefaultTarget\x1a]\n\x0eFallbacksEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x125\n\x05value\x18\x02 \x01(\x0b2\x1f.chalk.router.v1.RouteFallbacksR\x05value:\x028\x01"\xef\x03\n\nModelRoute\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12&\n\x0fpublic_model_id\x18\x02 \x01(\tR\rpublicModelId\x12#\n\rconnection_id\x18\x03 \x01(\tR\x0cconnectionId\x12*\n\x11upstream_model_id\x18\x04 \x01(\tR\x0fupstreamModelId\x12\x1c\n\tpublished\x18\x05 \x01(\x08R\tpublished\x12@\n\ndiagnostic\x18\x06 \x01(\x0e2 .chalk.router.v1.RouteDiagnosticR\ndiagnostic\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x129\n\x07routing\x18\t \x01(\x0b2\x1a.chalk.router.v1.RouteGridH\x00R\x07routing\x88\x01\x01\x12;\n\x0barchived_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\narchivedAtB\n\n\x08_routing"\xb5\x01\n\x16ListModelRoutesFilters\x12%\n\x0econnection_ids\x18\x01 \x03(\tR\rconnectionIds\x12!\n\tpublished\x18\x02 \x01(\x08H\x00R\tpublished\x88\x01\x01\x12.\n\x10include_archived\x18\x03 \x01(\x08H\x01R\x0fincludeArchived\x88\x01\x01B\x0c\n\n_publishedB\x13\n\x11_include_archived"\xa8\x01\n\x16ListModelRoutesRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12A\n\x07filters\x18\x03 \x01(\x0b2\'.chalk.router.v1.ListModelRoutesFiltersR\x07filtersB\x08\n\x06_limitB\t\n\x07_cursor"\x84\x01\n\x17ListModelRoutesResponse\x123\n\x06routes\x18\x01 \x03(\x0b2\x1b.chalk.router.v1.ModelRouteR\x06routes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xf7\x01\n\x17CreateModelRouteRequest\x12&\n\x0fpublic_model_id\x18\x01 \x01(\tR\rpublicModelId\x12#\n\rconnection_id\x18\x02 \x01(\tR\x0cconnectionId\x12*\n\x11upstream_model_id\x18\x03 \x01(\tR\x0fupstreamModelId\x12\x1c\n\tpublished\x18\x04 \x01(\x08R\tpublished\x129\n\x07routing\x18\x05 \x01(\x0b2\x1a.chalk.router.v1.RouteGridH\x00R\x07routing\x88\x01\x01B\n\n\x08_routing"M\n\x18CreateModelRouteResponse\x121\n\x05route\x18\x01 \x01(\x0b2\x1b.chalk.router.v1.ModelRouteR\x05route"\x96\x02\n\x19UpdateModelRouteOperation\x12(\n\rconnection_id\x18\x01 \x01(\tH\x00R\x0cconnectionId\x88\x01\x01\x12/\n\x11upstream_model_id\x18\x02 \x01(\tH\x01R\x0fupstreamModelId\x88\x01\x01\x12!\n\tpublished\x18\x03 \x01(\x08H\x02R\tpublished\x88\x01\x01\x129\n\x07routing\x18\x04 \x01(\x0b2\x1a.chalk.router.v1.RouteGridH\x03R\x07routing\x88\x01\x01B\x10\n\x0e_connection_idB\x14\n\x12_upstream_model_idB\x0c\n\n_publishedB\n\n\x08_routing"\xaa\x01\n\x17UpdateModelRouteRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12B\n\x06update\x18\x02 \x01(\x0b2*.chalk.router.v1.UpdateModelRouteOperationR\x06update\x12;\n\x0bupdate_mask\x18\x03 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"M\n\x18UpdateModelRouteResponse\x121\n\x05route\x18\x01 \x01(\x0b2\x1b.chalk.router.v1.ModelRouteR\x05route")\n\x17DeleteModelRouteRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"F\n\x18DeleteModelRouteResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n\x08warnings\x18\x02 \x03(\tR\x08warnings"M\n\x13JudgeOutcomeDefault\x12\x14\n\x05label\x18\x01 \x01(\tR\x05label\x12 \n\x0bdescription\x18\x02 \x01(\tR\x0bdescription"\x1e\n\x1cGetRouteJudgeDefaultsRequest"\x9f\x01\n\x1dGetRouteJudgeDefaultsResponse\x12D\n\ndifficulty\x18\x01 \x03(\x0b2$.chalk.router.v1.JudgeOutcomeDefaultR\ndifficulty\x128\n\x04task\x18\x02 \x03(\x0b2$.chalk.router.v1.JudgeOutcomeDefaultR\x04task"`\n ValidateRouteJudgeBackendRequest\x12<\n\x07backend\x18\x01 \x01(\x0b2".chalk.router.v1.RouteJudgeBackendR\x07backend"#\n!ValidateRouteJudgeBackendResponse*\xdb\x01\n\x0fRouteDiagnostic\x12 \n\x1cROUTE_DIAGNOSTIC_UNSPECIFIED\x10\x00\x12\x1a\n\x16ROUTE_DIAGNOSTIC_READY\x10\x01\x12!\n\x1dROUTE_DIAGNOSTIC_UNCONFIGURED\x10\x02\x12\x1d\n\x19ROUTE_DIAGNOSTIC_DISABLED\x10\x03\x12\x1f\n\x1bROUTE_DIAGNOSTIC_UNREADABLE\x10\x04\x12\'\n#ROUTE_DIAGNOSTIC_MISSING_CONNECTION\x10\x05*g\n\tJudgeMode\x12\x1a\n\x16JUDGE_MODE_UNSPECIFIED\x10\x00\x12\x12\n\x0eJUDGE_MODE_OFF\x10\x01\x12\x15\n\x11JUDGE_MODE_SHADOW\x10\x02\x12\x13\n\x0fJUDGE_MODE_LIVE\x10\x03*h\n\x0eClassification\x12\x1e\n\x1aCLASSIFICATION_UNSPECIFIED\x10\x00\x12\x17\n\x13CLASSIFICATION_TASK\x10\x01\x12\x1d\n\x19CLASSIFICATION_DIFFICULTY\x10\x022\x96\x06\n\x11ModelRouteService\x12~\n\x15GetRouteJudgeDefaults\x12-.chalk.router.v1.GetRouteJudgeDefaultsRequest\x1a..chalk.router.v1.GetRouteJudgeDefaultsResponse"\x06\x90\x02\x01\x80}\x02\x12\x8a\x01\n\x19ValidateRouteJudgeBackend\x121.chalk.router.v1.ValidateRouteJudgeBackendRequest\x1a2.chalk.router.v1.ValidateRouteJudgeBackendResponse"\x06\x90\x02\x01\x80}\x02\x12l\n\x0fListModelRoutes\x12\'.chalk.router.v1.ListModelRoutesRequest\x1a(.chalk.router.v1.ListModelRoutesResponse"\x06\x90\x02\x01\x80}\x02\x12\xa9\x01\n\x10CreateModelRoute\x12(.chalk.router.v1.CreateModelRouteRequest\x1a).chalk.router.v1.CreateModelRouteResponse"@\x80}\x02\x92\xd3\x0e9\n\x0erouter_enabled\x12\'Enables LLM Gateway routing management.\x12l\n\x10UpdateModelRoute\x12(.chalk.router.v1.UpdateModelRouteRequest\x1a).chalk.router.v1.UpdateModelRouteResponse"\x03\x80}\x02\x12l\n\x10DeleteModelRoute\x12(.chalk.router.v1.DeleteModelRouteRequest\x1a).chalk.router.v1.DeleteModelRouteResponse"\x03\x80}\x02B\x98\x01\n\x13com.chalk.router.v1B\x0fModelRouteProtoP\x01Z\x12router/v1;routerv1\xa2\x02\x03CRX\xaa\x02\x0fChalk.Router.V1\xca\x02\x0fChalk\\Router\\V1\xe2\x02\x1bChalk\\Router\\V1\\GPBMetadata\xea\x02\x11Chalk::Router::V1b\x06proto3',
     [
         permissions_pb.desc(),
         flags_pb.desc(),
@@ -1330,10 +1157,6 @@ _DESC = file_desc(
         "CompletionJudgeBackend": CompletionJudgeBackend,
         "DecisionsJudgeBackend": DecisionsJudgeBackend,
         "FunctionClassifierBackend": FunctionClassifierBackend,
-        "ClassifierConfig": ClassifierConfig,
-        "TargetFallbacks": TargetFallbacks,
-        "RoutingRule": RoutingRule,
-        "ModelFallbacks": ModelFallbacks,
         "RouteJudgeBackend": RouteJudgeBackend,
         "JudgeOutcomeConfig": JudgeOutcomeConfig,
         "RouteJudge": RouteJudge,

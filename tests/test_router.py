@@ -7,7 +7,7 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 
 import chalkcompute as cc
-from chalkcompute.router import Connection, Target, Route
+from chalkcompute.router import Classifier, Connection, Target, Route
 from chalkcompute._router import RouterJudge as LegacyJudge
 from chalkcompute.router import RoutingRequest
 from chalkcompute._connect import ConnectClient
@@ -390,52 +390,45 @@ def test_invalid_definitions_fail_before_network(make):
         make()
 
 
-def test_modern_routing_separates_classifier_targets_and_fallback_presence(backend):
-    from chalkcompute.router import Classifier, Route
-
+@pytest.mark.parametrize(
+    "classifier_factory",
+    [
+        lambda: Classifier.heuristic(),
+        lambda: Classifier.completion(LARGE),
+        lambda: Classifier.decisions(LARGE),
+    ],
+)
+def test_classifiers_use_existing_wire_format_and_preserve_fallbacks(
+    backend, classifier_factory
+):
     client, stub, _ = backend
-    stub.get_route_judge_defaults.return_value = pb.GetRouteJudgeDefaultsResponse(
-        routing_schema_version=1
-    )
     router = cc.Router(
         "assistant",
         default=SMALL,
         fallbacks=[BACKUP],
-        classifier=Classifier.completion(LARGE),
+        classifier=classifier_factory(),
         routes={
-            "simple": SMALL,
-            "coding": Route(LARGE, description="Writing code", fallbacks=[]),
+            "0": SMALL,
+            "1": Route(LARGE, description="Writing code", fallbacks=[]),
         },
-    )
-    router.deploy(client=client)
+    ).deploy(client=client)
     routing = stub.create_model_route.call_args.args[0].routing
-    assert routing.judge is None and not routing.fallbacks
-    assert routing.classifier.backend.kind.field == "completion"
-    assert routing.routes["simple"].fallbacks is None
-    assert routing.routes["coding"].fallbacks.targets == []
-    assert (
-        routing.fallback_defaults[0].fallbacks[0].connection_id == BACKUP.connection_id
-    )
+    assert routing.judge.outcomes["0"].model == SMALL._reference
+    assert routing.judge.outcomes["0"].fallbacks is None
+    assert routing.judge.outcomes["1"].model == LARGE._reference
+    assert routing.judge.outcomes["1"].fallbacks.models == []
+    assert routing.fallbacks[SMALL._reference].models == [BACKUP._reference]
+    stub.get_route_judge_defaults.assert_not_called()
+    stub.validate_route_judge_backend.assert_not_called()
+    assert router.id == "route-1"
 
 
-def test_old_server_rejected_before_mutation(backend):
-    from chalkcompute.router import Classifier
-
-    client, stub, _ = backend
-    stub.get_route_judge_defaults.return_value = pb.GetRouteJudgeDefaultsResponse()
-    router = cc.Router(
-        "assistant",
-        default=SMALL,
-        classifier=Classifier.completion(LARGE),
-        routes={"simple": SMALL},
-    )
-    with pytest.raises(cc.RouterError, match="upgrade"):
-        router.deploy(client=client)
-    stub.create_model_route.assert_not_called()
-    stub.update_model_route.assert_not_called()
-
-
-def test_function_deploys_and_waits_before_router_publication(backend, monkeypatch):
+@pytest.mark.parametrize(
+    "failure", [None, "unsupported", "environment", "deploy", "ready"]
+)
+def test_function_deploys_and_waits_before_router_publication(
+    backend, monkeypatch, failure
+):
     from chalkcompute._function import RemoteFunction
 
     monkeypatch.setattr(RemoteFunction, "_start_background_deploy", lambda self: None)
@@ -459,9 +452,6 @@ def test_function_deploys_and_waits_before_router_publication(backend, monkeypat
     )
     monkeypatch.setattr(classifier, "deploy", lambda: events.append("deploy"))
     monkeypatch.setattr(classifier, "wait_ready", lambda: events.append("ready"))
-    stub.get_route_judge_defaults.return_value = pb.GetRouteJudgeDefaultsResponse(
-        routing_schema_version=1
-    )
     stub.validate_route_judge_backend.return_value = (
         pb.ValidateRouteJudgeBackendResponse()
     )
@@ -474,11 +464,32 @@ def test_function_deploys_and_waits_before_router_publication(backend, monkeypat
         "assistant", default=SMALL, classifier=classifier, routes={"simple": SMALL}
     )
     assert events == []
+    if failure == "unsupported":
+        # Old servers decode the unknown oneof as an absent backend and reject it.
+        stub.validate_route_judge_backend.side_effect = ConnectError(
+            Code.INVALID_ARGUMENT, "judge backend must be configured"
+        )
+    elif failure == "environment":
+        other_client = MagicMock(spec=ConnectClient)
+        other_client._env_id = "other-environment"
+        classifier._client = other_client
+    elif failure in ("deploy", "ready"):
+        method = "deploy" if failure == "deploy" else "wait_ready"
+        monkeypatch.setattr(
+            classifier, method, MagicMock(side_effect=RuntimeError("not active"))
+        )
+    if failure is not None:
+        with pytest.raises((cc.RouterError, RuntimeError)):
+            router.deploy(client=client)
+        stub.create_model_route.assert_not_called()
+        stub.update_model_route.assert_not_called()
+        assert events == (["deploy"] if failure == "ready" else [])
+        return
     router.deploy(client=client)
     assert events == ["deploy", "ready", "publish"]
     backend_config = stub.create_model_route.call_args.args[
         0
-    ].routing.classifier.backend.kind.value
+    ].routing.judge.backend.kind.value
     assert backend_config.function_id == classifier._version_info.function_id
     assert backend_config.input_name == "request"
 
