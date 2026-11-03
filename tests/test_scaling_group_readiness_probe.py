@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 from chalkcompute import ReadinessProbe, ScalingGroup, StartupProbe
+from chalkcompute._function import _remote_function_startup_probe
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -179,14 +180,16 @@ def test_http_readiness_probe_also_gates_routed_startup(
 
 
 @pytest.mark.parametrize("authenticated", [False, True])
-def test_grpc_deploy_does_not_infer_ambiguous_generic_startup_probe(
+def test_grpc_deploy_matches_function_startup_probe(
     authenticated: bool,
 ) -> None:
     sg = ScalingGroup(
         image="ubuntu:latest", protocol="grpc", authenticated=authenticated
     )
     spec = _deployed_container_spec(sg)
-    assert spec.startup_probe is None
+    assert spec.startup_probe == container_pb.StartupProbe.from_json(
+        json.dumps(_remote_function_startup_probe())
+    )
 
 
 def test_explicit_startup_probe_overrides_http_readiness_path() -> None:

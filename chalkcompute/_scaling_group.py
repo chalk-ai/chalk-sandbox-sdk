@@ -320,18 +320,19 @@ class ScalingGroup:
     Orchestrates image building, local file upload via volumes, and
     scaling-group lifecycle in a single high-level API.
 
-    ``readiness_probe`` checks each replica directly. HTTP groups with a positive
-    replica minimum also reuse their configured HTTP readiness path for an
-    externally routed startup probe. Explicit ``startup_probe`` settings take
-    precedence. These probes support authenticated groups.
+    ``readiness_probe`` checks each replica directly. Groups with a positive
+    replica minimum also get an externally routed startup probe: HTTP groups
+    reuse their configured HTTP readiness path, and gRPC groups use the generic
+    gRPC probe configured by function deployments. Explicit ``startup_probe``
+    settings take precedence. These probes support authenticated groups.
 
     HTTP groups without a configured readiness probe must set e.g.
     ``startup_probe=StartupProbe.http("/health")`` to wait for routed readiness.
-    gRPC groups can configure an explicit startup probe for a known health RPC;
-    no generic gRPC probe is inferred, since a gateway can itself return
-    UNIMPLEMENTED. Portless and scale-to-zero groups do not receive an automatic
-    startup probe. A successful startup probe does not guarantee a redeploy is
-    serving the new revision.
+    The generic gRPC probe accepts UNIMPLEMENTED, which gateways can also return;
+    use an explicit known health RPC when backend readiness must be verified.
+    Portless and scale-to-zero groups do not receive an automatic startup probe.
+    A successful startup probe does not guarantee a redeploy is serving the new
+    revision.
 
     ``network_policy`` configures host egress. Omit it for the server default;
     ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
@@ -423,18 +424,14 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
-        if (
-            startup_probe is None
-            and port is not None
-            and min_replicas > 0
-            and protocol != "grpc"
-            and readiness_probe is not None
-            and readiness_probe._kind == "http"
-        ):
+        if startup_probe is None and port is not None and min_replicas > 0:
             # Replica readiness can precede gateway propagation. Reuse the
             # controller's routed probe rather than retrying callers' traffic.
             # Do not guess an HTTP path: healthy API-only services may 404 at /.
-            startup_probe = StartupProbe.http(readiness_probe._value)
+            if protocol == "grpc":
+                startup_probe = StartupProbe.grpc()
+            elif readiness_probe is not None and readiness_probe._kind == "http":
+                startup_probe = StartupProbe.http(readiness_probe._value)
         if startup_probe is not None:
             if port is None:
                 raise ValueError("startup_probe requires port")

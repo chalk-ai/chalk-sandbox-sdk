@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from connectrpc.client import ConnectClientSync
+from connectrpc.method import IdempotencyLevel, MethodInfo
+from connectrpc.protocol import ProtocolType
+from protobuf.wkt import Empty
 
 from chalkcompute import ComputeClass, Image, ReadinessProbe, ScalingGroup, StartupProbe
 from e2etests._ci_resources import build_scoped_name
@@ -101,22 +105,51 @@ def test_grpc_startup_probe_reaches_routed_service(
 
 @needs_staging
 @pytest.mark.parametrize("compute_class", [ComputeClass.K8S, ComputeClass.HOST])
-def test_automatic_http_startup_probe_serves_first_call_after_deploy(
-    compute_class: ComputeClass,
+@pytest.mark.parametrize("protocol", ["http", "grpc"])
+def test_automatic_startup_probe_serves_first_call_after_deploy(
+    compute_class: ComputeClass, protocol: str
 ) -> None:
     """Do not let SDK call retries hide a post-deploy gateway failure."""
+    image = (
+        Image.debian_slim("3.12")
+        .pip_install(["grpcio>=1.60,<2"])
+        .entrypoint(["python", "-u", "-c", GRPC_SERVER])
+        if protocol == "grpc"
+        else "python:3.12-slim"
+    )
     group = ScalingGroup(
-        name=build_scoped_name(f"ex-auto-startup-{compute_class.name.lower()}-http"),
-        image="python:3.12-slim",
-        entrypoint=["python", "-u", "-c", HTTP_SERVER],
+        name=build_scoped_name(
+            f"ex-auto-startup-{compute_class.name.lower()}-{protocol}"
+        ),
+        image=image,
+        entrypoint=["python", "-u", "-c", HTTP_SERVER] if protocol == "http" else None,
         compute_class=compute_class,
+        protocol=protocol,
         authenticated=True,
-        readiness_probe=ReadinessProbe.http("/health"),
+        readiness_probe=ReadinessProbe.http("/health") if protocol == "http" else None,
     )
     try:
         group.deploy(ready_timeout=180)
-        response = group.call("/checks", method="GET", cold_start_timeout=0)
-        assert response.status == 200, response.content
+        if protocol == "http":
+            response = group.call("/checks", method="GET", cold_start_timeout=0)
+            assert response.status == 200, response.content
+        else:
+            assert group.web_url is not None
+            client = ConnectClientSync(
+                group.web_url, protocol=ProtocolType.GRPC, send_compression=None
+            )
+            client.execute_unary(
+                request=Empty(),
+                method=MethodInfo(
+                    name="Check",
+                    service_name="startup.test.Probe",
+                    input=Empty,
+                    output=Empty,
+                    idempotency_level=IdempotencyLevel.UNKNOWN,
+                ),
+                headers={"Authorization": f"Bearer {group._client._access_token}"},
+                timeout_ms=5_000,
+            )
     finally:
         if group.id is not None:
             group.delete()
