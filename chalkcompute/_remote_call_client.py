@@ -392,17 +392,12 @@ class RemoteCallClient:
         )
         return call_id
 
-    def cancel(
-        self, call_id: str, *, terminate_containers: bool = False
-    ) -> RemoteCallCancelResult:
+    def cancel(self, call_id: str) -> RemoteCallCancelResult:
         """Cancel a Stream-backed call before acquisition; successful repeats are idempotent.
 
         Acquired calls fail with gRPC FAILED_PRECONDITION and keep running unchanged.
-        Container termination is unsupported and is rejected before making an RPC.
         """
-        if terminate_containers:
-            raise NotImplementedError("terminate_containers=True is not supported")
-        raw = self._inner_or_raise().cancel(call_id, terminate_containers)
+        raw = self._inner_or_raise().cancel(call_id, False)
         return RemoteCallCancelResult(
             status=int(raw["status"]),
             status_name=str(raw["status_name"]),

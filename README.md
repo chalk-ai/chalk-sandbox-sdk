@@ -37,8 +37,7 @@ Acquisition is the execution boundary: buffered/coalesced inputs and deliveries
 whose acquisition response was lost already count as acquired. Cancellation after
 that boundary fails with gRPC `FAILED_PRECONDITION` (the call has already been acquired),
 and execution, output, and normal retries continue unchanged. There is no
-cancellation-induced generator restart or output replay. `terminate_containers=True`
-raises `NotImplementedError` locally before any RPC.
+cancellation-induced generator restart or output replay.
 
 Cancellation requires a Stream-backed queue whose consumer uses the DP API
 `AcquireWork` path; legacy Redis List queues do not support it. The SDK's pinned

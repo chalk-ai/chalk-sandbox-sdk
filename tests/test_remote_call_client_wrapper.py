@@ -294,14 +294,14 @@ def test_cancel_acquired_error_is_not_retried(monkeypatch):
     assert attempts == [("call-1", False)]
 
 
-def test_cancel_termination_rejected_before_native_client_access(monkeypatch):
+def test_cancel_rejects_unknown_argument(monkeypatch):
     client = RemoteCallClient("remote.chalk.test:443")
 
     def unexpected_access():
         pytest.fail("unsupported termination must not access the native client")
 
     monkeypatch.setattr(client, "_inner_or_raise", unexpected_access)
-    with pytest.raises(NotImplementedError, match="terminate_containers=True"):
+    with pytest.raises(TypeError, match="terminate_containers"):
         client.cancel("call-1", terminate_containers=True)
 
 

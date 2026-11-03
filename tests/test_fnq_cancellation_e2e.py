@@ -56,7 +56,7 @@ def test_native_function_handle_cancellation(function):
     result = handle.cancel()
     assert result.is_cancelled
     assert handle.cancel() == result
-    with pytest.raises(NotImplementedError, match="terminate_containers=True"):
+    with pytest.raises(TypeError, match="terminate_containers"):
         handle.cancel(terminate_containers=True)
     with pytest.raises(CallCancelledError):
         handle.get(timeout=5)

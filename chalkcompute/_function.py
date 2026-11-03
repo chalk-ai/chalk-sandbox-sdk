@@ -1081,22 +1081,20 @@ class FunctionCallHandle:
     def call_id(self) -> str:
         return self._call_id
 
-    def cancel(self, *, terminate_containers: bool = False) -> Any:
+    def cancel(self) -> Any:
         """Cancel this Stream-backed call before a consumer acquires it.
 
         Successful repeats are idempotent. Once acquired, cancellation fails with
-        gRPC FAILED_PRECONDITION and execution continues unchanged. Container termination
-        is unsupported. Inside an event loop, await the returned coroutine.
+        gRPC FAILED_PRECONDITION and execution continues unchanged.
+        Inside an event loop, await the returned coroutine.
         """
-        if terminate_containers:
-            raise NotImplementedError("terminate_containers=True is not supported")
         if _has_running_event_loop():
-            return _run_in_worker_thread(self._sync_cancel, terminate_containers)
-        return self._sync_cancel(terminate_containers)
+            return _run_in_worker_thread(self._sync_cancel)
+        return self._sync_cancel()
 
-    def _sync_cancel(self, terminate_containers: bool) -> Any:
+    def _sync_cancel(self) -> Any:
         with self._lifecycle_lock:
-            result = self._function._cancel(self._call_id, terminate_containers)
+            result = self._function._cancel(self._call_id)
             if result.is_cancelled:
                 self._cancelled = True
             return result
@@ -3888,9 +3886,7 @@ class RemoteFunction:
             ),
         )
 
-    def _cancel(self, call_id: str, terminate_containers: bool) -> Any:
-        if terminate_containers:
-            raise NotImplementedError("terminate_containers=True is not supported")
+    def _cancel(self, call_id: str) -> Any:
         self._wait_for_background_deploy()
         return self._with_remote_call_transport(
             queue=True,
@@ -3899,9 +3895,7 @@ class RemoteFunction:
             timeout=self._call_timeout,
             call=lambda: self._using_remote_call_client(
                 queue=True,
-                call=lambda client: client.cancel(
-                    call_id, terminate_containers=terminate_containers
-                ),
+                call=lambda client: client.cancel(call_id),
             ),
         )
 
