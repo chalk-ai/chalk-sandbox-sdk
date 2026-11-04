@@ -1,6 +1,6 @@
 # Chalk Workflows SDK: before / after (CHA-12147, draft)
 
-Example: a workflow with light tasks (`fetch`, `clean`) and heavy tasks that need a GPU image (`train`, `evaluate`).
+Example: a workflow with a light task (`fetch`) and heavy tasks that need a GPU image (`train`, `evaluate`).
 
 ## Before (today)
 
