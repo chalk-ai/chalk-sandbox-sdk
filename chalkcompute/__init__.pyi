@@ -1,5 +1,10 @@
 from chalkcompute._usage_pool import UsagePool as UsagePool
 from chalkcompute._logging import configure_logging as configure_logging
+from chalkcompute._router import Router as Router
+from chalkcompute._router import RouterClient as RouterClient
+from chalkcompute._router import RouterError as RouterError
+from chalkcompute._router import RouterInfo as RouterInfo
+from chalkcompute._router import RouterNotFoundError as RouterNotFoundError
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
 from chalkcompute._sql import SQLJob as SQLJob
@@ -196,6 +201,11 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "Router",
+    "RouterClient",
+    "RouterError",
+    "RouterInfo",
+    "RouterNotFoundError",
     "UsagePool",
     "configure_logging",
     "SandboxGit",

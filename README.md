@@ -36,6 +36,35 @@ finally:
 and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
 sandbox with Claude Code, `gh` and Git identity configured.
 
+## Model routers
+
+Define a stable model alias in Python and deploy it to your Chalk environment:
+
+```python
+import chalkcompute as cc
+
+from chalkcompute.router import Classifier, Connection
+
+provider = Connection.from_name("my-openai")
+small = provider.model("gpt-4.1-mini")
+large = provider.model("gpt-4.1")
+
+router = cc.Router(
+    "assistant",
+    default=small,
+    fallbacks=[large],
+    classifier=Classifier.heuristic(),
+    routes={"0": small, "1": large},
+).deploy()
+
+print(router.model)  # chalk/assistant
+```
+
+Construction is local; deployment creates or updates persistent route configuration.
+It uses normal Chalk credentials, reuses saved provider connections, and returns
+the same handle. See the [full router example](docs/router.md) for connection
+creation, function and model classifiers, inference, and resource lifecycle.
+
 ## Logging and progress
 
 The SDK leaves Python logging configuration to your application. Importing
