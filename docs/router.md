@@ -54,7 +54,6 @@ def main() -> None:
     inference = OpenAI(
         base_url=os.environ["CHALK_ROUTER_BASE_URL"],
         api_key=os.environ["CHALK_ROUTER_API_KEY"],
-        default_headers={"X-Chalk-Env-Id": os.environ["CHALK_ENVIRONMENT"]},
     )
     response = inference.chat.completions.create(
         model=router.model,  # chalk/assistant
@@ -70,15 +69,6 @@ if __name__ == "__main__":
 Install `openai` alongside `chalkcompute` for the inference call. With a local SDK
 checkout, use the documented [local SDK function setup](../local-sdk-remote-call-testing.md)
 so the deployed function can import `RoutingRequest`.
-
-Set `CHALK_ENVIRONMENT` to the same environment used for deployment. For example,
-with the environment-scoped staging router, set it to `tmnm-aws-qa` and set
-`CHALK_ROUTER_BASE_URL` to `https://api.staging.chalk.dev/v1/router`. The
-`X-Chalk-Env-Id` header selects that environment's router.
-
-The request fields are forwarded to the selected provider, including `metadata`.
-OpenAI can reject chat `metadata` unless `store=True` is enabled. This example
-classifies the prompt text without enabling storage.
 
 The function decorator follows the normal function deployment lifecycle.
 `Router.deploy()` waits for the classifier's deployment and readiness before
