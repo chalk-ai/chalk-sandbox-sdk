@@ -13,15 +13,20 @@ The relevance grades are illustrative labels, never included in the LLM prompt.
 
 The suite, dataset, evaluation, and results remain available for inspection.
 The task and scorer remain deployed for reruns and may consume billable capacity;
-each run also incurs three model calls. Function names are intentionally reused.
+each run also incurs three model calls. Every execution uses unique resource names.
 """
 
 import json
+import math
+from importlib.metadata import version
 import os
 from uuid import uuid4
 
 import chalkcompute as cc
 
+
+# Propagate the name so importing this module in either function uses the same IDs.
+NAME = os.environ.get("SUPPLIER_EVAL_NAME") or f"supplier-ranking-{uuid4().hex[:12]}"
 
 CATALOG = {
     "boltworks": "Stainless-steel bolts and nuts; bulk industrial orders.",
@@ -40,9 +45,11 @@ CATALOG = {
 
 
 @cc.function(
+    name=f"{NAME}-task",
     image=cc.Image.debian_slim().pip_install(["openai"]),
     secrets=[cc.Secret.from_chalk_env("CHALK_ROUTER_API_KEY")],
     env={
+        "SUPPLIER_EVAL_NAME": NAME,
         "OPENAI_BASE_URL": os.environ.get(
             "CHALK_API_SERVER", "https://api.chalk.ai"
         ).rstrip("/")
@@ -78,7 +85,9 @@ def supplier_ranking(item_description: str) -> str:
     return json.dumps(suppliers)
 
 
-supplier_ndcg = cc.scorers.ndcg(k=10, name="supplier-ndcg-at-10")
+supplier_ndcg = cc.scorers.ndcg(
+    k=10, name=f"{NAME}-ndcg", env={"SUPPLIER_EVAL_NAME": NAME}
+)
 
 
 if __name__ == "__main__":
@@ -97,7 +106,9 @@ if __name__ == "__main__":
         ),
     ]
     # Unique dataset/suite names keep separate executions available for comparison.
-    name = f"supplier-ranking-{uuid4().hex[:8]}"
+    name = NAME
+    sdk_version = version("chalkcompute")
+    print(f"SDK: {sdk_version}\nTask: {NAME}-task\nScorer: {NAME}-ndcg", flush=True)
     datasets = cc.DatasetClient()
     dataset = datasets.upload(
         name,
@@ -113,8 +124,33 @@ if __name__ == "__main__":
         dataset=dataset,
         task=supplier_ranking,
         scorers=[supplier_ndcg],
+        metadata={"chalkcompute_version": sdk_version},
     )
     run = evaluation.run()
     print(f"Suite: {suite.id}\nEvaluation: {evaluation.id}\nRun: {run.id}", flush=True)
     run = run.wait()
-    print(datasets.read(run.result_dataset).to_pylist())
+    rows = datasets.read(run.result_dataset).to_pylist()
+    if len(rows) != len(purchases):
+        raise AssertionError(f"Expected {len(purchases)} results, got {len(rows)}")
+    for row in rows:
+        scorer = f"{NAME}-ndcg"
+        if row.get("output_error") or row.get(f"{scorer}_error"):
+            raise AssertionError(f"Evaluation row failed: {row}")
+        ranked = json.loads(row["output"])
+        grades = json.loads(row["relevance"])
+        # Independent calculation checks the stored score, not just run completion.
+        actual = sum(
+            (2 ** grades.get(item, 0) - 1) / math.log2(i + 2)
+            for i, item in enumerate(ranked[:10])
+        )
+        ideal = sum(
+            (2**grade - 1) / math.log2(i + 2)
+            for i, grade in enumerate(sorted(grades.values(), reverse=True)[:10])
+        )
+        score = row[f"{scorer}_value"]
+        if not math.isclose(score, actual / ideal, rel_tol=1e-12, abs_tol=1e-12):
+            raise AssertionError(
+                f"NDCG mismatch: stored={score}, expected={actual / ideal}"
+            )
+        print(f"{row['item_description']}: NDCG@10={score:.6f}")
+    print(f"Verified {len(rows)} rows against an independent NDCG calculation.")
