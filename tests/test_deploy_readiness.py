@@ -92,6 +92,7 @@ class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
 class _ScalingGroupReadinessClient(StubbedConnectClient):
     create_status = "Running"
     poll_name = "sg-ready"
+    web_url: str | None = None
 
     def __init__(self) -> None:
         self.methods: list[str] = []
@@ -112,7 +113,7 @@ class _ScalingGroupReadinessClient(StubbedConnectClient):
                     id="sg-1",
                     name=request.spec.container_spec.name,
                     status=self.create_status,
-                    web_url="http://127.0.0.1",
+                    web_url=self.web_url or "",
                 )
             )
         if method.name == "get_scaling_group":
@@ -120,7 +121,7 @@ class _ScalingGroupReadinessClient(StubbedConnectClient):
             sg = self.polls.pop(0)
             sg.id = request.id
             sg.name = self.poll_name
-            sg.web_url = "http://127.0.0.1"
+            sg.web_url = self.web_url or ""
             return sg_pb.GetScalingGroupResponse(scaling_group=sg)
         raise AssertionError(f"unexpected method: {method.name}")
 

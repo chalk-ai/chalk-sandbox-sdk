@@ -45,6 +45,8 @@ def test_authenticated_scaling_group_call_adds_chalk_token(
     )
     sg._client = cast(Any, client)
     sg.deploy()
+    assert sg._scaling_group_info is not None
+    sg._scaling_group_info.web_url = "https://example.com"
     original_headers = {"X-Test": "value"}
     http_client = MagicMock()
     monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
@@ -70,6 +72,8 @@ def test_scaling_group_call_preserves_explicit_authorization(
     )
     sg._client = cast(Any, client)
     sg.deploy()
+    assert sg._scaling_group_info is not None
+    sg._scaling_group_info.web_url = "https://example.com"
     http_client = MagicMock()
     monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
 

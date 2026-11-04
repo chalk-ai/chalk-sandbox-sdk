@@ -90,6 +90,10 @@ _GATEWAY_UNAVAILABLE_MARKERS = (
 _COLD_START_INITIAL_BACKOFF_SECONDS = 0.25
 _COLD_START_MAX_BACKOFF_SECONDS = 5.0
 _COLD_START_STATUS_CHECK_SECONDS = 10.0
+_ROUTE_READY_TIMEOUT_SECONDS = 60.0
+_ROUTE_READY_REQUEST_TIMEOUT_SECONDS = 5.0
+_ROUTE_READY_INITIAL_BACKOFF_SECONDS = 0.25
+_ROUTE_READY_MAX_BACKOFF_SECONDS = 2.0
 _FAILED_STATUSES = ("Failed", "Error", "Unhealthy")
 
 
@@ -603,6 +607,7 @@ class ScalingGroup:
         ready_timeout
             Maximum seconds to wait for the scaling group to have at least one
             ready and available replica and pass any configured startup probe.
+            Deployment also waits up to 60 seconds for the external route.
 
         Returns
         -------
@@ -804,7 +809,52 @@ class ScalingGroup:
                 require_ready_replicas=self._min_replicas > 0,
             )
 
+        if (
+            self._min_replicas > 0
+            and self._protocol != "grpc"
+            and self._scaling_group_info.web_url is not None
+        ):
+            progress_update(key, detail="Waiting for route")
+            self._wait_for_route()
+
         return self
+
+    def _wait_for_route(self) -> None:
+        assert self._scaling_group_info is not None
+        deadline = time.monotonic() + _ROUTE_READY_TIMEOUT_SECONDS
+        delay = _ROUTE_READY_INITIAL_BACKOFF_SECONDS
+        last_status = "unknown"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = self.call(
+                    "/",
+                    method="GET",
+                    timeout=min(_ROUTE_READY_REQUEST_TIMEOUT_SECONDS, remaining),
+                    cold_start_timeout=remaining,
+                )
+                last_status = str(response.status)
+                if not _is_route_not_ready(response) and not _is_gateway_unavailable(
+                    response
+                ):
+                    return
+            except Exception as exc:
+                last_status = type(exc).__name__
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, _ROUTE_READY_MAX_BACKOFF_SECONDS)
+
+        logger.warning(
+            "Scaling group %s route was not ready after %.1fs (last status=%s)",
+            self._scaling_group_info.name,
+            _ROUTE_READY_TIMEOUT_SECONDS,
+            last_status,
+        )
 
     def revisions(
         self,
@@ -1300,6 +1350,10 @@ def _is_gateway_unavailable(response: HTTPResponse[bytes]) -> bool:
         return False
     body = bytes(response.content[:512]).lower()
     return any(marker in body for marker in _GATEWAY_UNAVAILABLE_MARKERS)
+
+
+def _is_route_not_ready(response: HTTPResponse[bytes]) -> bool:
+    return response.status == 404 and not response.content
 
 
 def _scaling_group_info_is_ready(

@@ -1,0 +1,1 @@
+- Wait for a scaling group's external route to serve requests before `ScalingGroup.deploy()` returns.
