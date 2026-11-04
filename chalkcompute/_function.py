@@ -39,6 +39,7 @@ import json
 import linecache
 import logging
 import os
+import random
 import shutil
 import sys
 import tempfile
@@ -129,7 +130,6 @@ from chalkcompute._rpc import (
     RPC_READ_MAX_BYTES,
     RPC_RETRY_BACKOFF_MULTIPLIER,
     RPC_RETRY_INITIAL_BACKOFF_SECONDS,
-    RPC_RETRY_MAX_BACKOFF_SECONDS,
     rpc_interceptors,
 )
 from chalkcompute._secret import prepare_lazy_secrets
@@ -171,6 +171,10 @@ _MIN_RESULT_POLL_TIMEOUT = 1.0
 # Without a result deadline, stop re-polling once the polling connection has
 # been unavailable for this long.
 _POLL_UNAVAILABLE_TIMEOUT = 60.0
+# Cap on the jittered re-poll backoff while the polling connection is down.
+# It matches the native client's poll backoff cap, so an outage never polls
+# faster than a healthy running call.
+_POLL_UNAVAILABLE_MAX_BACKOFF = 5.0
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
 # mapping by the handler shim and published through a context variable instead, so a
@@ -1091,9 +1095,9 @@ class FunctionCallHandle:
         return self._call_id
 
     def poll(self) -> Any:
-        return self._poll_once(None)
+        return self._poll_once(None, retry_stale=True)
 
-    def _poll_once(self, deadline: float | None) -> Any:
+    def _poll_once(self, deadline: float | None, *, retry_stale: bool) -> Any:
         from chalkcompute._remote_call_client import RemoteCallNotFoundError
 
         try:
@@ -1102,6 +1106,7 @@ class FunctionCallHandle:
                 cursor=self._cursor,
                 poll_count=self._poll_count,
                 deadline=deadline,
+                retry_stale=retry_stale,
             )
         except RemoteCallNotFoundError:
             raise FunctionError(
@@ -1117,13 +1122,17 @@ class FunctionCallHandle:
 
         Polling only reads results after the cursor, so a retry cannot
         execute the call again. Retries stop at ``deadline``, or after
-        ``_POLL_UNAVAILABLE_TIMEOUT`` of unavailability without one.
+        ``_POLL_UNAVAILABLE_TIMEOUT`` of unavailability without one. Each
+        retry is a single attempt after a fully jittered backoff, so handles
+        collected together do not retry in lockstep.
         """
         unavailable_since: float | None = None
         delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         while True:
             try:
-                return self._poll_once(deadline)
+                # This loop owns retries; an extra immediate attempt per
+                # iteration would only add traffic during an outage.
+                return self._poll_once(deadline, retry_stale=False)
             except TimeoutError as exc:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise self._timeout_error(self._last_status) from exc
@@ -1134,14 +1143,13 @@ class FunctionCallHandle:
                 now = time.monotonic()
                 if unavailable_since is None:
                     unavailable_since = now
+                wait = random.uniform(0.0, delay)
                 if deadline is not None:
                     if now >= deadline:
                         raise self._timeout_error(self._last_status) from exc
-                    wait = min(delay, deadline - now)
+                    wait = min(wait, deadline - now)
                 elif now - unavailable_since >= _POLL_UNAVAILABLE_TIMEOUT:
                     raise
-                else:
-                    wait = delay
                 logger.debug(
                     "Polling call %s for %r failed; re-polling in %.1fs: %s",
                     self._call_id,
@@ -1151,7 +1159,7 @@ class FunctionCallHandle:
                 )
                 time.sleep(wait)
                 delay = min(
-                    delay * RPC_RETRY_BACKOFF_MULTIPLIER, RPC_RETRY_MAX_BACKOFF_SECONDS
+                    delay * RPC_RETRY_BACKOFF_MULTIPLIER, _POLL_UNAVAILABLE_MAX_BACKOFF
                 )
 
     def _timeout_error(self, last_status: str) -> TimeoutError:
@@ -3875,12 +3883,15 @@ class RemoteFunction:
         cursor: str = "",
         poll_count: int = 0,
         deadline: float | None = None,
+        retry_stale: bool = True,
     ) -> Any:
         """Poll a deferred call once.
 
         ``deadline`` is the caller's :func:`time.monotonic` result deadline.
         It shortens ``call_timeout`` so a hung poll cannot outlast it, but a
-        poll always gets at least one second.
+        poll always gets at least one second. ``retry_stale`` re-polls once
+        on a fresh client when the connection is stale; callers that retry
+        themselves turn it off.
         """
         self._wait_for_background_deploy()
         timeout = self._call_timeout
@@ -3892,7 +3903,7 @@ class RemoteFunction:
         return self._with_remote_call_transport(
             queue=True,
             operation="poll",
-            retry_stale=True,
+            retry_stale=retry_stale,
             timeout=timeout,
             call=lambda: self._using_remote_call_client(
                 queue=True,

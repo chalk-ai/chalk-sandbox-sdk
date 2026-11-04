@@ -1302,9 +1302,10 @@ remain controlled by the queue's fixed reclaim interval.
 Terminal call failures are raised by `get()`, `stream()`, and `gather()` without
 submitting another invocation, even if the handler never started. When the
 polling connection drops, they refresh the client and re-poll the same call ID
-and cursor with backoff until the `timeout` passes, or for up to 60 seconds of
-continuous unavailability without one. The `timeout` also bounds each poll, so a
-hung poll cannot outlast it.
+and cursor until the `timeout` passes, or for up to 60 seconds of continuous
+unavailability without one. Re-polls use jittered exponential backoff capped at
+5 seconds, so handles collected together do not retry in lockstep. The
+`timeout` also bounds each poll, so a hung poll cannot outlast it.
 
 Retry-enabled generators buffer output to avoid repeating already emitted
 values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not

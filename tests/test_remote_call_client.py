@@ -1197,13 +1197,12 @@ def test_deferred_collection_repolls_through_repeated_connection_drops(
     monkeypatch, async_context, mode
 ) -> None:
     monkeypatch.setattr(function_mod, "RPC_RETRY_INITIAL_BACKOFF_SECONDS", 0.0)
-    monkeypatch.setattr(function_mod, "RPC_RETRY_MAX_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_MAX_BACKOFF", 0.0)
     FakeRemoteCallClient.poll_results = [
         _poll("completed", chunks=[_result_ipc([99])], cursor="c1"),
     ]
     fn = _async_remote_function() if async_context else _remote_function()
     handle = fn.defer(98)
-    # Each poll refreshes its client once, so these drops outlast two polls.
     FakeRemoteCallClient.poll_errors = [
         RemoteCallUnavailableError("connection dropped") for _ in range(4)
     ]
@@ -1219,7 +1218,7 @@ def test_deferred_get_times_out_while_polling_connection_is_down(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(function_mod, "RPC_RETRY_INITIAL_BACKOFF_SECONDS", 0.01)
-    monkeypatch.setattr(function_mod, "RPC_RETRY_MAX_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_MAX_BACKOFF", 0.01)
     FakeRemoteCallClient.poll_results = [_poll("running", cursor="c1")]
     handle = _remote_function().defer(98)
     assert handle.poll().status_name == "running"
@@ -1236,7 +1235,7 @@ def test_deferred_get_times_out_while_polling_connection_is_down(
 
 def test_deferred_get_gives_up_after_sustained_unavailability(monkeypatch) -> None:
     monkeypatch.setattr(function_mod, "RPC_RETRY_INITIAL_BACKOFF_SECONDS", 0.01)
-    monkeypatch.setattr(function_mod, "RPC_RETRY_MAX_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_MAX_BACKOFF", 0.01)
     monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.1)
     handle = _remote_function().defer(98)
     monkeypatch.setattr(FakeRemoteCallClient, "poll_next", _poll_always_unavailable)
@@ -1245,6 +1244,44 @@ def test_deferred_get_gives_up_after_sustained_unavailability(monkeypatch) -> No
         handle.get()
 
     assert len(_all_polls()) > 2
+
+
+def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
+    sleeps: list[float] = []
+    jitter_bounds: list[tuple[float, float]] = []
+
+    def uniform(low: float, high: float) -> float:
+        jitter_bounds.append((low, high))
+        return high
+
+    monkeypatch.setattr(function_mod.random, "uniform", uniform)
+    monkeypatch.setattr(function_mod.time, "sleep", sleeps.append)
+    FakeRemoteCallClient.poll_results = [
+        _poll("completed", chunks=[_result_ipc([99])], cursor="c1"),
+    ]
+    handle = _remote_function().defer(98)
+    FakeRemoteCallClient.poll_errors = [
+        RemoteCallUnavailableError("connection dropped") for _ in range(8)
+    ]
+
+    assert handle.get() == 99
+    # Full jitter up to a backoff that grows to the 5s cap.
+    expected = [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0]
+    assert sleeps == pytest.approx(expected)
+    assert jitter_bounds == pytest.approx([(0.0, wait) for wait in expected])
+    # One attempt per retry: no extra immediate re-poll on a fresh client.
+    assert len(_all_polls()) == len(sleeps) + 1
+
+
+def test_handle_poll_refreshes_a_stale_client_once() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("running", cursor="c1")]
+    handle = _remote_function().defer(98)
+    FakeRemoteCallClient.poll_errors = [
+        RemoteCallUnavailableError("connection dropped")
+    ]
+
+    assert handle.poll().status_name == "running"
+    assert _all_polls() == [("call-1", "", 0)] * 2
 
 
 def test_deferred_get_does_not_repoll_after_non_transport_error() -> None:
