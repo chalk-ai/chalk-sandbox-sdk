@@ -1,5 +1,10 @@
 from chalkcompute._usage_pool import UsagePool as UsagePool
 from chalkcompute._logging import configure_logging as configure_logging
+from chalkcompute._router import Router as Router
+from chalkcompute._router import RouterClient as RouterClient
+from chalkcompute._router import RouterError as RouterError
+from chalkcompute._router import RouterInfo as RouterInfo
+from chalkcompute._router import RouterNotFoundError as RouterNotFoundError
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
 from chalkcompute._sql import SQLJob as SQLJob
@@ -93,6 +98,10 @@ from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
 from chalkcompute._router_rate_limit import RateLimit as RateLimit
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
+from chalkcompute._function_error import CallCancelledError as CallCancelledError
+from chalkcompute._remote_call_client import (
+    RemoteCallCancelResult as RemoteCallCancelResult,
+)
 from chalkcompute._remote_call_client import RemoteCallClient as RemoteCallClient
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable as RemoteCallClientUnavailable,
@@ -196,6 +205,11 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "Router",
+    "RouterClient",
+    "RouterError",
+    "RouterInfo",
+    "RouterNotFoundError",
     "UsagePool",
     "configure_logging",
     "SandboxGit",
@@ -238,6 +252,8 @@ __all__ = [
     "RemoteFunction",
     "DeployedFunction",
     "FunctionError",
+    "CallCancelledError",
+    "RemoteCallCancelResult",
     "RemoteExecutionError",
     "FunctionBuildError",
     "FunctionSignatureError",

@@ -77,6 +77,7 @@ from chalkcompute._logging import _StatusLogger
 from chalkcompute._traceback import format_exception, format_frame
 from chalkcompute._terminal import styled, supports_color
 from chalkcompute._function_error import (
+    CallCancelledError,
     FunctionError,
     decode_deferred_failure,
     decode_remote_error,
@@ -163,6 +164,7 @@ KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
 _FNQ_STREAMS_SUPPORTED_ENV_VAR = "CHALK_FNQ_STREAMS_SUPPORTED"
+_FNQ_CANCELLATION_SUPPORTED_ENV_VAR = "CHALK_FNQ_CANCELLATION_SUPPORTED"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _DEFAULT_CALL_TIMEOUT: float | None = 60.0
 # A poll that starts at or after a result deadline still gets this long, so
@@ -196,6 +198,7 @@ def _remote_call_container_env(
         "PYTHONPATH": "/app",
         _REMOTE_ENV_VAR: "1",
         _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
+        _FNQ_CANCELLATION_SUPPORTED_ENV_VAR: "true",
         **user_env,
     }
     # Preserve legacy overrides unless relocated handlers need another path.
@@ -466,8 +469,20 @@ class DeployedFunction(Protocol):
     def with_options(
         self, *, retries: int | RetryPolicy | None = None
     ) -> RemoteFunction: ...
-    def deploy(self, **kwargs: Any) -> DeployedFunction: ...
-    def wait_ready(self, **kwargs: Any) -> DeployedFunction: ...
+    def deploy(
+        self,
+        *,
+        poll_interval: float = 0.5,
+        build_timeout: float = 600.0,
+        ready_timeout: float = 300.0,
+        force_new_version: bool = False,
+    ) -> DeployedFunction: ...
+    def wait_ready(
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 2.0,
+    ) -> DeployedFunction: ...
     def delete(self) -> None: ...
     def refresh(self) -> Any: ...
 
@@ -1089,10 +1104,36 @@ class FunctionCallHandle:
         self._cursor = ""
         self._poll_count = 0
         self._last_status = "unknown"
+        self._cancelled = False
+        self._lifecycle_lock = threading.RLock()
 
     @property
     def call_id(self) -> str:
         return self._call_id
+
+    def cancel(self) -> Any:
+        """Cancel this Stream-backed call before a consumer acquires it.
+
+        Successful repeats are idempotent. An acquired call that has not finished
+        raises gRPC FAILED_PRECONDITION and continues executing. A completed or
+        failed call returns its existing status instead; in that case,
+        ``result.is_cancelled`` is ``False``.
+        Inside an event loop, await the returned coroutine.
+        """
+        if _has_running_event_loop():
+            return _run_in_worker_thread(self._sync_cancel)
+        return self._sync_cancel()
+
+    def _sync_cancel(self) -> Any:
+        with self._lifecycle_lock:
+            result = self._function._cancel(self._call_id)
+            if result.is_cancelled:
+                self._cancelled = True
+            return result
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancelled:
+            raise CallCancelledError(f"Remote call {self._call_id} was cancelled")
 
     def poll(self) -> Any:
         return self._poll_once(None, retry_stale=True)
@@ -1115,6 +1156,8 @@ class FunctionCallHandle:
         self._cursor = result.cursor
         self._poll_count = result.poll_count
         self._last_status = result.status_name
+        if result.is_cancelled:
+            self._cancelled = True
         return result
 
     def _poll_for_result(self, deadline: float | None) -> Any:
@@ -1129,6 +1172,7 @@ class FunctionCallHandle:
         unavailable_since: float | None = None
         delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         while True:
+            self._raise_if_cancelled()
             try:
                 # This loop owns retries; an extra immediate attempt per
                 # iteration would only add traffic during an outage.
@@ -1174,7 +1218,7 @@ class FunctionCallHandle:
             raise FunctionError("Remote call results have expired")
 
         if result.is_cancelled:
-            raise FunctionError("Remote call was cancelled")
+            raise CallCancelledError(f"Remote call {self._call_id} was cancelled")
 
         if result.is_failed:
             message = result.error_message or "Remote call failed"
@@ -1201,7 +1245,9 @@ class FunctionCallHandle:
 
         chunks: list[bytes] = []
         while True:
+            self._raise_if_cancelled()
             result = self._poll_for_result(deadline)
+            self._raise_if_cancelled()
             chunks.extend(result.chunks)
 
             if self._raise_if_terminal(result, deadline):
@@ -1221,10 +1267,14 @@ class FunctionCallHandle:
         deadline = None if timeout is None else time.monotonic() + timeout
 
         while True:
+            self._raise_if_cancelled()
             result = self._poll_for_result(deadline)
+            self._raise_if_cancelled()
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
-                yield from reader
+                for batch in reader:
+                    self._raise_if_cancelled()
+                    yield batch
 
             if self._raise_if_terminal(result, deadline):
                 return
@@ -1235,10 +1285,13 @@ class FunctionCallHandle:
         deadline = None if timeout is None else time.monotonic() + timeout
 
         while True:
+            self._raise_if_cancelled()
             result = await asyncio.to_thread(self._poll_for_result, deadline)
+            self._raise_if_cancelled()
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                 for batch in reader:
+                    self._raise_if_cancelled()
                     yield batch
 
             if self._raise_if_terminal(result, deadline):
@@ -3908,6 +3961,19 @@ class RemoteFunction:
             call=lambda: self._using_remote_call_client(
                 queue=True,
                 call=lambda client: client.poll_next(call_id, cursor, poll_count),
+            ),
+        )
+
+    def _cancel(self, call_id: str) -> Any:
+        self._wait_for_background_deploy()
+        return self._with_remote_call_transport(
+            queue=True,
+            operation="cancel",
+            retry_stale=True,
+            timeout=self._call_timeout,
+            call=lambda: self._using_remote_call_client(
+                queue=True,
+                call=lambda client: client.cancel(call_id),
             ),
         )
 

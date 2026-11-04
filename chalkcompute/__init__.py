@@ -5,6 +5,12 @@ import importlib
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    # _router.py
+    "Router": ("chalkcompute._router", "Router"),
+    "RouterClient": ("chalkcompute._router", "RouterClient"),
+    "RouterError": ("chalkcompute._router", "RouterError"),
+    "RouterInfo": ("chalkcompute._router", "RouterInfo"),
+    "RouterNotFoundError": ("chalkcompute._router", "RouterNotFoundError"),
     "configure_logging": ("chalkcompute._logging", "configure_logging"),
     "UsagePool": ("chalkcompute._usage_pool", "UsagePool"),
     # _artifact.py
@@ -43,6 +49,11 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
     "RemoteExecutionError": ("chalkcompute._function_error", "RemoteExecutionError"),
     "FunctionError": ("chalkcompute._function", "FunctionError"),
+    "CallCancelledError": ("chalkcompute._function_error", "CallCancelledError"),
+    "RemoteCallCancelResult": (
+        "chalkcompute._remote_call_client",
+        "RemoteCallCancelResult",
+    ),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
     "FunctionSignatureError": ("chalkcompute._function", "FunctionSignatureError"),
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),

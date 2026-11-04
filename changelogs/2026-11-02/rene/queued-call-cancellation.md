@@ -1,0 +1,2 @@
+- Add idempotent cancellation for deferred function and class-method calls before their first consumer acquisition; cancelled results raise `CallCancelledError`.
+- Reject cancellation after acquisition without changing execution or retry behavior.

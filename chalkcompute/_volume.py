@@ -1512,7 +1512,8 @@ class VolumeClient:
         """Upload an image's lazy local files into volumes.
 
         Creates one volume per destination directory and commits files in
-        batches. Returned mounts follow the default mutable ref.
+        batches. Returned mounts are pinned to the uploaded version, so
+        writes under them are discarded with the mount.
 
         Parameters
         ----------
@@ -1540,7 +1541,11 @@ class VolumeClient:
                 with vol.batch_upload() as batch:
                     for lf in files:
                         batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
-                volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+                volumes.append(
+                    VolumeMount(
+                        name=vol.name, mount_path=dest_dir, version_id=vol.version.id
+                    )
+                )
         except BaseException:
             for vol in reversed(created):
                 try:

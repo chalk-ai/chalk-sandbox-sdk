@@ -12,6 +12,40 @@ or local `chalk-remote-call-python` changes, see
 pip install chalkcompute
 ```
 
+## Cancelling deferred calls
+
+Handles returned by function and class-method `defer()` calls support cancellation:
+
+```python
+import chalkcompute as cc
+
+call = worker.defer(inputs)
+result = call.cancel()  # Succeeds only before a consumer acquires the input.
+
+try:
+    call.get()
+except cc.CallCancelledError:
+    pass
+```
+
+Inside an event loop, use `await call.cancel()`. Successful cancellation removes
+queued input, returns the cancelled status, and makes `get()` and `stream()` raise
+`CallCancelledError` without resubmitting work. Repeating a successful cancellation
+is idempotent. A result timeout does not cancel the call.
+
+Acquisition is the execution boundary: buffered/coalesced inputs and deliveries
+whose acquisition response was lost already count as acquired. Cancellation after
+that boundary fails with gRPC `FAILED_PRECONDITION` (the call has already been acquired),
+and execution, output, and normal retries continue unchanged. There is no
+cancellation-induced generator restart or output replay.
+
+Cancellation requires a Stream-backed queue whose consumer uses the DP API
+`AcquireWork` path; legacy Redis List queues do not support it. The SDK's pinned
+`chalk-remote-call-python==1.10.13` already supports that path. Generated
+function/class images advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`; set it to
+`false` in the deployment environment to opt out. Custom images must advertise
+support only when their consumers use the DP API acquisition path.
+
 ## Quick start
 
 ```python
@@ -35,6 +69,35 @@ finally:
 `Sandbox(...)` only describes the sandbox; `.run()` builds the image, starts it
 and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
 sandbox with Claude Code, `gh` and Git identity configured.
+
+## Model routers
+
+Define a stable model alias in Python and deploy it to your Chalk environment:
+
+```python
+import chalkcompute as cc
+
+from chalkcompute.router import Classifier, Connection
+
+provider = Connection.from_name("my-openai")
+small = provider.model("gpt-4.1-mini")
+large = provider.model("gpt-4.1")
+
+router = cc.Router(
+    "assistant",
+    default=small,
+    fallbacks=[large],
+    classifier=Classifier.heuristic(),
+    routes={"0": small, "1": large},
+).deploy()
+
+print(router.model)  # chalk/assistant
+```
+
+Construction is local; deployment creates or updates persistent route configuration.
+It uses normal Chalk credentials, reuses saved provider connections, and returns
+the same handle. See the [full router example](docs/router.md) for connection
+creation, function and model classifiers, inference, and resource lifecycle.
 
 ## Logging and progress
 

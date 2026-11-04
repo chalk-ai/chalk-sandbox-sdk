@@ -1400,6 +1400,87 @@ def _json_loads(text: str) -> Any:
     return json.loads(text, parse_constant=_reject_constant)
 
 
+def ndcg(
+    *,
+    name: str = "ndcg",
+    inputs: Sequence[str] = ("output", "relevance"),
+    k: int = 10,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a normalized discounted cumulative gain scorer at cutoff ``k``.
+
+    Each row represents one query. The first input is a JSON array of unique
+    string item IDs in ranked order; the second is a JSON object mapping IDs
+    to finite, nonnegative relevance grades. For example, ``'["b", "a"]'``
+    and ``'{"a": 3, "b": 1}'``. Unjudged IDs have relevance zero.
+
+    Gain is ``2**relevance - 1``, discounted by ``log2(position + 1)`` with
+    positions starting at one. The ideal ranking uses all reference items,
+    including ones not returned, and the same cutoff. Missing results earn
+    no gain. Empty or all-zero references score zero. Invalid inputs,
+    including duplicate returned IDs or non-finite gains, score zero with
+    an ``error`` in metadata. Valid results record ``k``, ``dcg``, and ``idcg``.
+
+    Call ``scorers.ndcg(k=10)`` at module scope and pass the returned handle
+    to an evaluation's ``scorers``. Other keywords go to
+    :func:`chalkcompute.function`.
+    """
+    _assert_deployable("cc.scorers.ndcg")
+    candidate, reference = _validate_pair(inputs, "ndcg")
+    if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
+        raise ValueError("ndcg: k must be a positive integer")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        try:
+            ranked = _json_loads(_text(columns[candidate]))
+            relevance = _json_loads(_text(columns[reference]))
+            if not isinstance(ranked, list) or any(
+                not isinstance(item, str) for item in ranked
+            ):
+                raise ValueError("ndcg: output must be a JSON array of string IDs")
+            if len(set(ranked)) != len(ranked):
+                raise ValueError("ndcg: output must contain unique IDs")
+            if not isinstance(relevance, dict):
+                raise ValueError("ndcg: relevance must be a JSON object")
+            gains: dict[str, float] = {}
+            for item, grade in relevance.items():
+                if (
+                    isinstance(grade, bool)
+                    or not isinstance(grade, (int, float))
+                    or not math.isfinite(grade)
+                    or grade < 0
+                ):
+                    raise ValueError("ndcg: grades must be finite nonnegative numbers")
+                gain = math.expm1(grade * math.log(2))
+                if not math.isfinite(gain):
+                    raise ValueError("ndcg: gains must be finite")
+                gains[item] = gain
+
+            def discounted(values: Sequence[float]) -> float:
+                return math.fsum(
+                    gain / math.log2(position + 1)
+                    for position, gain in enumerate(values, start=1)
+                )
+
+            actual = discounted([gains.get(item, 0.0) for item in ranked[:k]])
+            ideal = discounted(sorted(gains.values(), reverse=True)[:k])
+        except (ValueError, OverflowError) as exc:
+            return EvaluationScorerResult(score=0.0, metadata={"error": str(exc)})
+        return EvaluationScorerResult(
+            score=min(1.0, actual / ideal) if ideal > 0 else 0.0,
+            metadata={"k": k, "dcg": actual, "idcg": ideal},
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
+
+
 def json_valid(
     *,
     name: str = "json-valid",
