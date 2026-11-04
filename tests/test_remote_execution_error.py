@@ -14,7 +14,10 @@ from chalkcompute._function_error import (
     decode_remote_error,
     remote_error_from_exception,
 )
-from chalkcompute._remote_call_client import RemoteCallStatusError
+from chalkcompute._remote_call_client import (
+    RemoteCallStatusError,
+    RemoteCallUnavailableError,
+)
 
 
 def payload() -> str:
@@ -140,6 +143,12 @@ def test_transport_errors_do_not_decode_proxy_failures() -> None:
     assert decode_remote_error(wire, "score") is None
     assert remote_error_from_exception(error, "score") is None
     assert _is_stale_remote_call_error(error)
+
+
+def test_unavailable_error_is_stale_regardless_of_message() -> None:
+    # The native client raises this when a connection drops; classify it by
+    # type, not by the wording of the underlying gRPC status.
+    assert _is_stale_remote_call_error(RemoteCallUnavailableError("connection dropped"))
 
 
 @pytest.mark.parametrize(
