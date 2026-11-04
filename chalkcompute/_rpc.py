@@ -28,8 +28,8 @@ _RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
 # enforces a read limit; there is no client-side send-size knob.
 RPC_READ_MAX_BYTES = 100 << 20
 
-# Match the historical grpcio service_config retryPolicy for UNAVAILABLE,
-# including its full jitter on each backoff.
+# Retain the historical grpcio service_config retry counts and backoff
+# parameters, adding full jitter to spread retries across clients.
 RPC_RETRY_MAX_ATTEMPTS = 5
 RPC_RETRY_INITIAL_BACKOFF_SECONDS = 0.1
 RPC_RETRY_MAX_BACKOFF_SECONDS = 1.0
@@ -95,10 +95,10 @@ class TracingInterceptor:
 class RetryInterceptor:
     """Retry unary RPCs that fail with ``UNAVAILABLE``.
 
-    Mirrors the historical grpcio ``service_config`` retry policy: five total
-    attempts, exponential backoff from 0.1s to 1s with multiplier 2, and each
-    wait drawn uniformly up to that backoff so clients that fail together do
-    not retry in lockstep.
+    Uses the historical grpcio ``service_config`` parameters: five total
+    attempts and exponential backoff from 0.1s to 1s with multiplier 2.
+    Each wait uses full jitter so clients that fail together spread out
+    their retries.
     """
 
     def intercept_unary_sync(

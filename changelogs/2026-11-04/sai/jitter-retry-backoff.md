@@ -1,10 +1,12 @@
 Client-side retries now jitter their backoff, so many clients that fail at
-the same moment no longer retry in lockstep. Each wait is drawn uniformly
-between zero and the current backoff step, as in gRPC's retry policy. This
-applies to transport retries of RPCs that return `UNAVAILABLE`,
-`ScalingGroup.call` retrying gateway 503s while a group scales from zero, and
-`Sandbox.restore` retrying resume conflicts. Attempt counts, backoff caps, and
-timeouts are unchanged.
+the same moment no longer retry in lockstep. Transport retries of RPCs that
+return `UNAVAILABLE` use full jitter, drawing each wait uniformly between
+zero and the current backoff step. `ScalingGroup.call` retrying gateway 503s
+and `Sandbox.restore` retrying resume conflicts draw between 0.5 and 1.5 times
+the step, preserving its expected wait rather than doubling retry traffic.
+The maximum caps the nominal step, including the first step; individual
+mean-preserving waits can reach 1.5 times that maximum and are clipped to the
+remaining deadline.
 
 Deferred result collection also uses the shared backoff. Its 60-second
 unavailability budget now bounds both retry waits and polling RPCs, even

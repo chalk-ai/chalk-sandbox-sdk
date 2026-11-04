@@ -1021,9 +1021,11 @@ class ScalingGroup:
         deadline = time.monotonic() + cold_start_timeout
         next_status_check = time.monotonic() + _COLD_START_STATUS_CHECK_SECONDS
         # Callers of a group scaling from zero all see the 503 together; jitter
-        # keeps them from retrying in lockstep once a replica comes up.
+        # keeps them from retrying in lockstep while preserving the mean wait.
         backoff = Backoff(
-            _COLD_START_INITIAL_BACKOFF_SECONDS, _COLD_START_MAX_BACKOFF_SECONDS
+            _COLD_START_INITIAL_BACKOFF_SECONDS,
+            _COLD_START_MAX_BACKOFF_SECONDS,
+            jitter="mean_preserving",
         )
         while True:
             response = SYNC_HTTP_CLIENT.execute(

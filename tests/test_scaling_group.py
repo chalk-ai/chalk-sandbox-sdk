@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -184,14 +185,41 @@ def test_scaling_group_call_jitters_retry_waits(
 
     def uniform(low: float, high: float) -> float:
         bounds.append((low, high))
-        return high / 2
+        return (low + high) / 2
 
     monkeypatch.setattr(scaling_group_mod.time, "sleep", sleeps.append)
     monkeypatch.setattr(backoff_mod.random, "uniform", uniform)
 
     assert sg.call("/") is ok
-    assert bounds == [(0.0, 0.25), (0.0, 0.5), (0.0, 1.0)]
-    assert sleeps == [0.125, 0.25, 0.5]
+    assert bounds == [(0.125, 0.375), (0.25, 0.75), (0.5, 1.5)]
+    assert sleeps == [0.25, 0.5, 1.0]
+
+
+def test_scaling_group_call_preserves_capped_retry_cadence(monkeypatch) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    sg, http_client = _deployed_group(monkeypatch)
+    http_client.execute.side_effect = None
+    http_client.execute.return_value = unavailable
+    now = 100.0
+    sleeps = []
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(
+        scaling_group_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_INITIAL_BACKOFF_SECONDS", 1.0)
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_MAX_BACKOFF_SECONDS", 1.0)
+    monkeypatch.setattr(
+        backoff_mod.random, "uniform", lambda low, high: (low + high) / 2
+    )
+
+    assert sg.call("/", cold_start_timeout=4.0) is unavailable
+    assert sleeps == [1.0] * 4
+    assert http_client.execute.call_count == 5
 
 
 def test_scaling_group_call_does_not_retry_app_errors(

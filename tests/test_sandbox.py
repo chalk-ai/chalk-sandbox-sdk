@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+import chalkcompute._sandbox as sandbox_mod
 from chalkcompute import (
     Image,
     NetworkPolicy,
@@ -523,14 +525,49 @@ def test_sandbox_restore_retries_conflict_while_suspended_resource_deletes() -> 
 
     with (
         patch("chalkcompute._sandbox.time.sleep") as sleep,
-        patch("chalkcompute._backoff.random.uniform", return_value=0.1) as uniform,
+        patch("chalkcompute._backoff.random.uniform", return_value=0.3) as uniform,
     ):
         sandbox.restore()
 
     assert stub.resume_sandbox.call_count == 2
-    uniform.assert_called_once_with(0.0, 0.25)
-    sleep.assert_called_once_with(0.1)
+    uniform.assert_called_once_with(0.125, 0.375)
+    sleep.assert_called_once_with(0.3)
     assert sandbox.info is not None and sandbox.info.status == "running"
+
+
+def test_sandbox_restore_preserves_capped_retry_cadence(monkeypatch) -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    conflict = ConnectRpcError(Code.ALREADY_EXISTS, "restore conflict")
+    stub.resume_sandbox.side_effect = conflict
+    client._stub = stub
+    sandbox = client.get("sandbox-123")
+    now = 100.0
+    sleeps = []
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(
+        sandbox_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr(sandbox_mod, "_RESUME_CONFLICT_RETRY_TIMEOUT_SECONDS", 4.0)
+    monkeypatch.setattr(
+        sandbox_mod, "_RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS", 1.0
+    )
+    monkeypatch.setattr(sandbox_mod, "_RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS", 1.0)
+    monkeypatch.setattr(
+        "chalkcompute._backoff.random.uniform", lambda low, high: (low + high) / 2
+    )
+
+    with pytest.raises(ConnectRpcError) as exc_info:
+        sandbox.restore()
+
+    assert exc_info.value is conflict
+    assert sleeps == [1.0] * 4
+    assert stub.resume_sandbox.call_count == 5
 
 
 @pytest.mark.parametrize("use_client_create", [False, True])
