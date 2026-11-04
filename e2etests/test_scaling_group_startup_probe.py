@@ -153,3 +153,28 @@ def test_automatic_startup_probe_serves_first_call_after_deploy(
     finally:
         if group.id is not None:
             group.delete()
+
+
+@needs_staging
+@pytest.mark.parametrize("compute_class", [ComputeClass.K8S, ComputeClass.HOST])
+def test_http_without_startup_probe_serves_first_call_after_deploy(
+    compute_class: ComputeClass,
+) -> None:
+    """The route fallback must also cover HTTP services without health probes."""
+    group = ScalingGroup(
+        name=build_scoped_name(f"ex-http-route-{compute_class.name.lower()}"),
+        image="python:3.12-slim",
+        entrypoint=["python", "-u", "-c", HTTP_SERVER],
+        compute_class=compute_class,
+        authenticated=True,
+    )
+    try:
+        group.deploy(ready_timeout=180)
+        response = group.call("/checks", method="GET", cold_start_timeout=0)
+        assert response.status == 200, response.content
+        # The root returns an application 404 with a body. The fallback only
+        # needs to establish routing, without calling /health or requiring 200.
+        assert response.content == b"0"
+    finally:
+        if group.id is not None:
+            group.delete()

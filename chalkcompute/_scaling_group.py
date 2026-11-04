@@ -90,6 +90,10 @@ _GATEWAY_UNAVAILABLE_MARKERS = (
 _COLD_START_INITIAL_BACKOFF_SECONDS = 0.25
 _COLD_START_MAX_BACKOFF_SECONDS = 5.0
 _COLD_START_STATUS_CHECK_SECONDS = 10.0
+_ROUTE_READY_TIMEOUT_SECONDS = 60.0
+_ROUTE_READY_REQUEST_TIMEOUT_SECONDS = 5.0
+_ROUTE_READY_INITIAL_BACKOFF_SECONDS = 0.25
+_ROUTE_READY_MAX_BACKOFF_SECONDS = 2.0
 _FAILED_STATUSES = ("Failed", "Error", "Unhealthy")
 
 
@@ -326,8 +330,12 @@ class ScalingGroup:
     gRPC probe configured by function deployments. Explicit ``startup_probe``
     settings take precedence. These probes support authenticated groups.
 
-    HTTP groups without a configured readiness probe must set e.g.
-    ``startup_probe=StartupProbe.http("/health")`` to wait for routed readiness.
+    HTTP groups without a startup probe also poll the public route for up to
+    60 seconds after replica readiness. Empty 404s, gateway-unavailable responses,
+    and client errors are retried; other responses establish route availability,
+    not application health. A timeout logs a warning and deployment returns.
+    An application returning an empty 404 at ``/`` is indistinguishable from a
+    missing route; configure ``StartupProbe.http("/health")`` to avoid that wait.
     The generic gRPC probe accepts UNIMPLEMENTED, which gateways can also return;
     use an explicit known health RPC when backend readiness must be verified.
     Portless and scale-to-zero groups do not receive an automatic startup probe.
@@ -611,6 +619,10 @@ class ScalingGroup:
     ) -> ScalingGroup:
         """Build the image, upload local files, and create the scaling group.
 
+        HTTP groups with a positive replica minimum and no startup probe also
+        wait up to 60 additional seconds for the public route. This best-effort
+        check logs a warning on timeout; use a startup probe to require health.
+
         Parameters
         ----------
         poll_interval
@@ -821,7 +833,53 @@ class ScalingGroup:
                 require_ready_replicas=self._min_replicas > 0,
             )
 
+        if (
+            self._min_replicas > 0
+            and self._protocol != "grpc"
+            and self._startup_probe is None
+            and self._scaling_group_info.web_url is not None
+        ):
+            progress_update(key, detail="Waiting for route")
+            self._wait_for_route()
+
         return self
+
+    def _wait_for_route(self) -> None:
+        """Best-effort fallback when no routed startup probe is configured."""
+        deadline = time.monotonic() + _ROUTE_READY_TIMEOUT_SECONDS
+        delay = _ROUTE_READY_INITIAL_BACKOFF_SECONDS
+        last_status = "unknown"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = self.call(
+                    "/",
+                    method="GET",
+                    timeout=min(_ROUTE_READY_REQUEST_TIMEOUT_SECONDS, remaining),
+                    # This loop owns the retry budget, including gateway 503s.
+                    cold_start_timeout=0,
+                )
+                last_status = str(response.status)
+                route_missing = response.status == 404 and not response.content
+                if not route_missing and not _is_gateway_unavailable(response):
+                    return
+            except Exception as exc:
+                last_status = type(exc).__name__
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, _ROUTE_READY_MAX_BACKOFF_SECONDS)
+
+        logger.warning(
+            "Scaling group %s route was not ready after %.1fs (last status=%s)",
+            self._name or self._scaling_group_id,
+            _ROUTE_READY_TIMEOUT_SECONDS,
+            last_status,
+        )
 
     def revisions(
         self,

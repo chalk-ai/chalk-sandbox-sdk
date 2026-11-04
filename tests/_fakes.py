@@ -103,11 +103,14 @@ class FakeConnectClient(StubbedConnectClient):
 
 
 class ScalingGroupClient(StubbedConnectClient):
-    def __init__(self, *, authentication: str | None = None) -> None:
+    def __init__(
+        self, *, authentication: str | None = None, web_url: str | None = None
+    ) -> None:
         self.requests: list[Any] = []
         self._access_token = "test-token"
         self.ensure_auth_calls = 0
         self.authentication = authentication
+        self.web_url = web_url
 
     def _ensure_auth(self) -> None:
         self.ensure_auth_calls += 1
@@ -141,7 +144,7 @@ class ScalingGroupClient(StubbedConnectClient):
                 id="sg-1",
                 name=name,
                 status="Available",
-                web_url="https://example.com",
+                web_url=self.web_url or "",
                 ready_replicas=1,
                 available_replicas=1,
                 spec=spec,

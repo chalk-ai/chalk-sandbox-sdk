@@ -112,7 +112,6 @@ class _ScalingGroupReadinessClient(StubbedConnectClient):
                     id="sg-1",
                     name=request.spec.container_spec.name,
                     status=self.create_status,
-                    web_url="http://127.0.0.1",
                 )
             )
         if method.name == "get_scaling_group":
@@ -120,7 +119,6 @@ class _ScalingGroupReadinessClient(StubbedConnectClient):
             sg = self.polls.pop(0)
             sg.id = request.id
             sg.name = self.poll_name
-            sg.web_url = "http://127.0.0.1"
             return sg_pb.GetScalingGroupResponse(scaling_group=sg)
         raise AssertionError(f"unexpected method: {method.name}")
 

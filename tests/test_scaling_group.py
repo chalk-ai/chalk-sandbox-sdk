@@ -82,6 +82,8 @@ def test_scaling_group_call_sends_pyqwest_content(
     sg = ScalingGroup(image="nginx:alpine", name="content-test")
     sg._client = cast(Any, client)
     sg.deploy()
+    assert sg.info is not None
+    sg.info.web_url = "https://example.com"
     http_client = MagicMock()
     monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
 
@@ -152,6 +154,8 @@ def _deployed_group(monkeypatch: pytest.MonkeyPatch, *responses: MagicMock) -> A
     sg = ScalingGroup(image="nginx:alpine", name="cold-start")
     sg._client = cast(Any, client)
     sg.deploy()
+    assert sg.info is not None
+    sg.info.web_url = "https://example.com"
     http_client = MagicMock()
     http_client.execute.side_effect = list(responses)
     monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)

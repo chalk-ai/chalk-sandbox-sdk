@@ -219,7 +219,7 @@ def test_automatic_probe_does_not_require_a_route_or_wake_zero_replicas(
     assert _deployed_container_spec(sg).startup_probe is None
 
 
-def test_http_without_known_health_path_preserves_replica_only_readiness() -> None:
+def test_http_without_known_health_path_uses_no_controller_startup_probe() -> None:
     sg = ScalingGroup(image="ubuntu:latest")
     assert _deployed_container_spec(sg).startup_probe is None
 
