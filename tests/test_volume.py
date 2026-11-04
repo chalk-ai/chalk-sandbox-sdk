@@ -168,7 +168,7 @@ def test_put_dir_propagates_upload_failure(tmp_path, monkeypatch):
     assert volume.version.id == 10
 
 
-def test_upload_lazy_files_preserves_mutable_mount(tmp_path, monkeypatch):
+def test_upload_lazy_files_pins_uploaded_version(tmp_path, monkeypatch):
     from chalkcompute import Image
 
     client = _make_client(monkeypatch)
@@ -182,9 +182,9 @@ def test_upload_lazy_files_preserves_mutable_mount(tmp_path, monkeypatch):
         Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
     )
     assert len(mounts) == 1
-    assert mounts[0].version_id is None
+    assert mounts[0].version_id == 12
     assert mounts[0].ref_name is None
-    assert "versionId" not in mounts[0].to_spec_dict()
+    assert mounts[0].to_spec_dict()["versionId"] == 12
 
 
 def test_volume_client_from_env(monkeypatch):

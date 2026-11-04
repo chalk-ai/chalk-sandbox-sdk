@@ -1,0 +1,1 @@
+- Pin volumes created for an image's lazy local files to their uploaded version, so writes under those mounts are discarded with the workload and deleting it no longer races unpublished writes
