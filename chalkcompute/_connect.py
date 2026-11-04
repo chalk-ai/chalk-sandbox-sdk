@@ -12,7 +12,7 @@ import os
 import re
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -377,6 +377,35 @@ class ConnectClient:
         if len(matches) == 1:
             return matches[0]
         return environment
+
+    def function_dashboard_url(self, function_name: str) -> str | None:
+        """Return the dashboard URL for an external function, if known.
+
+        Only the environment's own ``dashboard_url`` is trusted; the host is
+        never guessed. Returns ``None`` when it is unset or the lookup fails (for example the
+        caller lacks ``DEPLOY_READ``); the link is a convenience and must never
+        fail a deployment.
+        """
+        try:
+            response = self.call(
+                self.stub(team_connect.TeamServiceClientSync).get_env,
+                team_pb.GetEnvRequest(),
+            )
+        except (ConnectRpcError, *HTTP_TRANSPORT_ERRORS):
+            return None
+        environment = response.environment
+        if (
+            environment is None
+            or not environment.dashboard_url
+            or not environment.project_id
+            or not self._env_id
+        ):
+            return None
+        base = environment.dashboard_url.rstrip("/")
+        return (
+            f"{base}/projects/{environment.project_id}/environments/{self._env_id}"
+            f"/external-functions/{quote(function_name, safe='')}"
+        )
 
     def grpc_engine_target(self) -> tuple[str, bool]:
         """Return the active environment's gRPC engine target and TLS mode."""
