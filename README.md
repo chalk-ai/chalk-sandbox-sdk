@@ -925,7 +925,18 @@ print(info.status)
 # Terminate, optionally with a grace period
 sandbox.terminate()
 existing_sandbox.terminate(grace_period_seconds=30)
+
+# Inspect the stopped sandbox (the first .info access fetches fresh metadata)
+info = sandbox.info
+if info is not None:
+    print(info.id, info.status, info.status_message)
+sandbox.refresh()  # explicitly fetch metadata again, including after termination
 ```
+
+Metadata reads require `deploy.read`; `terminate()` itself does not fetch metadata.
+After a configured sandbox is terminated, `.id` is cleared so it can be run again;
+the stopped sandbox's ID remains available in `.info.id`. Starting another run
+discards the previous run's cached metadata and inspection ID.
 
 ## Executing commands
 
