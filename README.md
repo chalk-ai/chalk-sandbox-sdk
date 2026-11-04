@@ -1368,7 +1368,10 @@ polling connection drops, they refresh the client and re-poll the same call ID
 and cursor until the `timeout` passes, or for up to 60 seconds of continuous
 unavailability without one. Re-polls use jittered exponential backoff capped at
 5 seconds, so handles collected together do not retry in lockstep. The
-`timeout` also bounds each poll, so a hung poll cannot outlast it.
+`timeout` also bounds each poll, so a hung poll cannot outlast it. The
+60-second fallback bounds both retry waits and polls. Poll timeouts return
+without a further status lookup. With `timeout=0`, collection still polls
+once with up to one second to observe an already finished call.
 
 Retry-enabled generators buffer output to avoid repeating already emitted
 values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pytest
@@ -1281,6 +1282,89 @@ def test_deferred_get_gives_up_after_sustained_unavailability(monkeypatch) -> No
     assert len(_all_polls()) > 2
 
 
+@pytest.mark.parametrize("timeout", [None, 0.25])
+def test_deferred_get_clips_backoff_and_stops_before_another_poll(
+    monkeypatch, timeout
+) -> None:
+    now = 100.0
+    sleeps = []
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(
+        function_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr("chalkcompute._backoff.random.uniform", lambda low, high: high)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.25)
+    handle = _remote_function().defer(98)
+    error = RemoteCallUnavailableError("connection dropped")
+
+    def unavailable(self, call_id, cursor="", poll_count=0):
+        self.polls.append((call_id, cursor, poll_count))
+        raise error
+
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", unavailable)
+
+    expected_error = RemoteCallUnavailableError if timeout is None else TimeoutError
+    with pytest.raises(expected_error) as exc_info:
+        handle.get(timeout=timeout)
+
+    assert sleeps == pytest.approx([0.1, 0.15])
+    assert len(_all_polls()) == 2
+    if timeout is None:
+        assert exc_info.value is error
+    else:
+        assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize("call_timeout", [None, 60.0])
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_collection_fallback_bounds_a_hung_retry(
+    monkeypatch, call_timeout, async_context, mode
+) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+    fn = _async_remote_function() if async_context else _remote_function()
+    fn._call_timeout = call_timeout
+    handle = fn.defer(98)
+    error = RemoteCallUnavailableError("connection dropped")
+    attempts = []
+
+    def unavailable_then_hang(self, call_id, cursor="", poll_count=0):
+        self.polls.append((call_id, cursor, poll_count))
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise error
+        try:
+            release.wait(2)
+            raise error
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", unavailable_then_hang)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.15)
+    monkeypatch.setattr("chalkcompute._backoff.random.uniform", lambda low, high: 0.0)
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(RemoteCallUnavailableError) as exc_info:
+            _collect(handle, mode, async_context=async_context)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        assert finished.wait(3)
+
+    assert elapsed < 1.0
+    assert exc_info.value is error
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
+    assert _all_polls() == [("call-1", "", 0)] * 2
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
 def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
     sleeps: list[float] = []
     jitter_bounds: list[tuple[float, float]] = []
@@ -1289,7 +1373,7 @@ def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
         jitter_bounds.append((low, high))
         return high
 
-    monkeypatch.setattr(function_mod.random, "uniform", uniform)
+    monkeypatch.setattr("chalkcompute._backoff.random.uniform", uniform)
     monkeypatch.setattr(function_mod.time, "sleep", sleeps.append)
     FakeRemoteCallClient.poll_results = [
         _poll("completed", chunks=[_result_ipc([99])], cursor="c1"),
@@ -1330,27 +1414,47 @@ def test_deferred_get_does_not_repoll_after_non_transport_error() -> None:
     assert _all_polls() == [("call-1", "", 0)]
 
 
-def test_deferred_get_deadline_bounds_a_hung_poll(monkeypatch) -> None:
+@pytest.mark.parametrize("call_timeout", [0.2, 60.0])
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_collection_deadline_skips_timeout_status_lookup(
+    monkeypatch, call_timeout, async_context, mode
+) -> None:
     release = threading.Event()
+    finished = threading.Event()
+    diagnostics = []
 
     def hang(self, call_id, cursor="", poll_count=0):
         self.polls.append((call_id, cursor, poll_count))
-        release.wait(5)
-        return _poll("running")
+        try:
+            release.wait(2)
+            return _poll("running")
+        finally:
+            finished.set()
 
-    handle = _remote_function().defer(98)
+    def diagnostic_rpc(method, request, *, timeout=30.0):
+        diagnostics.append((method.name, timeout))
+        raise AssertionError("Polling timeouts must not start a diagnostic RPC")
+
+    fn = _async_remote_function() if async_context else _remote_function()
+    fn._call_timeout = call_timeout
+    handle = fn.defer(98)
     monkeypatch.setattr(FakeRemoteCallClient, "poll_next", hang)
+    monkeypatch.setattr(fn._client, "call", diagnostic_rpc, raising=False)
 
     started = time.monotonic()
     try:
-        # call_timeout is 60s; the result deadline must bound the poll.
+        # Both a result deadline and call_timeout must skip status lookups.
         with pytest.raises(
             TimeoutError, match=r"Remote call call-1 .* timed out \(last status"
         ):
-            handle.get(timeout=0.2)
+            _collect(handle, mode, async_context=async_context, timeout=0.2)
+        elapsed = time.monotonic() - started
     finally:
         release.set()
-    assert time.monotonic() - started < 2.0
+        assert finished.wait(3)
+    assert elapsed < 1.0
+    assert diagnostics == []
 
 
 def test_deferred_get_can_be_awaited_in_async_context() -> None:
