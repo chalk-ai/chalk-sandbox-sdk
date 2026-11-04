@@ -25,7 +25,7 @@ from chalkcompute.router import Connection, Route, RoutingRequest
 
 @cc.function
 def assistant_route(request: RoutingRequest) -> str:
-    if request.metadata.get("task") == "coding":
+    if "python" in request.text.lower():
         return "coding"
     if len(request.text) > 6000:
         return "complex"
@@ -54,11 +54,11 @@ def main() -> None:
     inference = OpenAI(
         base_url=os.environ["CHALK_ROUTER_BASE_URL"],
         api_key=os.environ["CHALK_ROUTER_API_KEY"],
+        default_headers={"X-Chalk-Env-Id": os.environ["CHALK_ENVIRONMENT"]},
     )
     response = inference.chat.completions.create(
         model=router.model,  # chalk/assistant
         messages=[{"role": "user", "content": "Write a Python LRU cache."}],
-        metadata={"task": "coding"},
     )
     print(response.choices[0].message.content)
 
@@ -71,10 +71,19 @@ Install `openai` alongside `chalkcompute` for the inference call. With a local S
 checkout, use the documented [local SDK function setup](../local-sdk-remote-call-testing.md)
 so the deployed function can import `RoutingRequest`.
 
+Set `CHALK_ENVIRONMENT` to the same environment used for deployment. For example,
+with the environment-scoped staging router, set it to `tmnm-aws-qa` and set
+`CHALK_ROUTER_BASE_URL` to `https://api.staging.chalk.dev/v1/router`. The
+`X-Chalk-Env-Id` header selects that environment's router.
+
+The request fields are forwarded to the selected provider, including `metadata`.
+OpenAI can reject chat `metadata` unless `store=True` is enabled. This example
+classifies the prompt text without enabling storage.
+
 The function decorator follows the normal function deployment lifecycle.
 `Router.deploy()` waits for the classifier's deployment and readiness before
 publishing the router. The function and router must use the same Chalk environment.
-The function reference uses its stable ID and **follows its active deployment**;
+The function reference uses its deployed name and **follows its active deployment**;
 this API does not promise immutable serving of historical function versions.
 
 The router and function remain deployed after this script exits. Repeated runs
@@ -119,6 +128,8 @@ classifier = Classifier.function(assistant_route, mode="shadow")
 Shadow mode records the classification while serving the default. Off mode skips
 classification. Function and model classifiers default to a one-second deadline;
 set `timeout_ms` only when your workload requires a different limit (1–30000 ms).
+Functions default to one warm replica. If you configure scale-to-zero, a cold
+start can exceed the classifier deadline and serve the default target.
 
 For model classification, use `Classifier.completion(target)` or
 `Classifier.decisions(target)`, and put criteria on your `Route` descriptions.
@@ -170,15 +181,15 @@ last-writer-wins; there is no compare-and-swap operation.
 Deploy the matching metadata API, then the router, before configuring a function
 classifier. Existing non-function routes and clients keep their current protocol
 and behavior. The SDK waits for an active function deployment before publishing
-its route. Hosted routers receive the metadata API address automatically through the
-existing `CHALK_API_HOST`; no new environment variables or secrets are needed
-from the SDK user.
+its route. The platform configures the function-queue endpoint and router identity
+for hosted routers; no additional credentials are needed from the SDK user.
 
-Function classification uses the incoming Chalk credential or router API key.
-The metadata API checks the caller's route access and the current published
-function binding with the router, then invokes that function in the router's
-environment using Chalk's existing signing infrastructure. A route grant permits
-its configured classifier; it does not grant arbitrary function invocation.
+Inference authenticates the caller's Chalk credential or router API key and
+checks access to the route. The router invokes the configured classifier by name
+through the data-plane function queue, using its own platform identity scoped to
+the router's environment. It does not forward the caller's credential to the
+function queue. A route grant permits its configured classifier; it does not
+grant arbitrary function invocation.
 
 Creating or editing a function-backed route requires `deploy.redeploy`. Inference
 callers only need access to invoke the route. The function retains its own runtime

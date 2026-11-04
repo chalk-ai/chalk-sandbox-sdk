@@ -22,7 +22,7 @@ steps:
       echo "--- :rotating_light: Ruff lint gate"
       uv run --with ruff ruff check chalkcompute tests e2etests
       echo "--- :mag: Ty type gate"
-      uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
+      uv run --with ty ty check chalkcompute/ tests/typing/ --exclude chalkcompute/_gen/
     agents:
       queue: default
     timeout_in_minutes: 5
