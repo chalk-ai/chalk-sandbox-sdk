@@ -15,15 +15,16 @@ const SERVICE_AUTH_ENDPOINT_ENV_VAR: &str = "CHALK_API_SERVER";
 const SERVICE_AUTH_ENVIRONMENT_ENV_VAR: &str = "CHALK_ENVIRONMENT_ID";
 const SERVICE_AUTH_GRPC_ENGINE_ENV_VAR: &str = "CHALK_GRPC_ENGINE";
 
+pyo3::import_exception!(chalkcompute._function_error, FunctionUnavailableError);
 pyo3::create_exception!(
     chalkcompute._native,
     RemoteCallUnavailableError,
-    PyRuntimeError
+    FunctionUnavailableError
 );
 pyo3::create_exception!(
     chalkcompute._native,
     RemoteCallTransportError,
-    PyRuntimeError
+    FunctionUnavailableError
 );
 
 pyo3::create_exception!(chalkcompute._native, RemoteCallStatusError, PyRuntimeError);

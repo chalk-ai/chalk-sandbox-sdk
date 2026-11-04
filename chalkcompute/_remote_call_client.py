@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from chalkcompute._function_error import FunctionUnavailableError
+
 logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -91,7 +93,7 @@ else:
     _NATIVE_IMPORT_ERROR = None
 
 
-class _RemoteCallUnavailableError(RuntimeError):
+class _RemoteCallUnavailableError(FunctionUnavailableError):
     pass
 
 
@@ -113,7 +115,7 @@ RemoteCallNotFoundError: type[Exception] = getattr(
 )
 
 
-class _RemoteCallTransportError(RuntimeError):
+class _RemoteCallTransportError(FunctionUnavailableError):
     pass
 
 

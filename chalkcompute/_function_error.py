@@ -13,6 +13,16 @@ class FunctionError(Exception):
     """Base exception for Function errors."""
 
 
+class FunctionUnavailableError(RuntimeError):
+    """A remote call failed before the function returned or raised.
+
+    No replica accepted the call, or the connection to it failed, e.g. while a
+    scale-to-zero group is starting or has no capacity. Retrying may succeed. When
+    the function itself raises, ``.remote()`` raises ``RemoteExecutionError``
+    instead. Deadlines raise ``TimeoutError``.
+    """
+
+
 class RemoteExecutionError(FunctionError):
     """A remote invocation failed. The original exception is carried as data.
 
