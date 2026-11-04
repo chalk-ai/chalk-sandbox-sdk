@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
@@ -18,7 +20,16 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from connectrpc.protocol import ProtocolType
 
-from chalkcompute._auth_config import active_environment_from_env, load_token
+from chalkcompute._auth_config import (
+    ArgumentSource,
+    EnvVarSource,
+    PrimaryEnvironmentSource,
+    Source,
+    TokenSource,
+    active_environment_from_env,
+    active_environment_variable_from_env,
+    load_token,
+)
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_connect as image_connect
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
@@ -52,6 +63,47 @@ from chalkcompute._web_identity import (
 logger = logging.getLogger(__name__)
 
 _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
+
+# Every SDK object builds its own ConnectClient, so announce each target once.
+_announced_targets: set[tuple[str, str, Source | None]] = set()
+_announced_targets_lock = threading.Lock()
+
+
+def _announce_environment(
+    env_id: str,
+    env_name: str | None,
+    api_server: str,
+    source: Source | None,
+) -> None:
+    """Tell the user which environment credential auth selected.
+
+    Written to stderr rather than logged: unconfigured logging hides INFO, and an
+    unnoticed fallback to the default token deploys to the wrong environment.
+    """
+    if not env_id:
+        return
+    with _announced_targets_lock:
+        if (env_id, api_server, source) in _announced_targets:
+            return
+        _announced_targets.add((env_id, api_server, source))
+    target = f"{env_name} ({env_id})" if env_name and env_name != env_id else env_id
+    message = f"using environment {target} at {api_server}"
+    if source is not None:
+        message += f" ({source.description})"
+    if isinstance(source, TokenSource) and source.is_default:
+        message = (
+            f"chalkcompute: warning: {message}. Set CHALK_ENVIRONMENT_ID to "
+            "select the environment explicitly."
+        )
+    else:
+        message = f"chalkcompute: {message}"
+    try:
+        sys.stderr.write(message + "\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        # A closed/redirected console must not fail authentication.
+        pass
+
 
 _StubT = TypeVar("_StubT")
 _RespT = TypeVar("_RespT")
@@ -275,6 +327,11 @@ class ConnectClient:
             if token is not None
             else active_environment_from_env() or ""
         )
+        environment_source: Source | None = None
+        if token is not None:
+            environment_source = token.environmentSource
+        elif (found := active_environment_variable_from_env()) is not None:
+            environment_source = EnvVarSource(found[0])
 
         if self._chalk_client is not None:
             cc = self._chalk_client
@@ -293,6 +350,10 @@ class ConnectClient:
                     or getattr(cc, "_environment", None)
                     or ""
                 )
+                if requested_env:
+                    environment_source = ArgumentSource("chalk_client")
+        if not requested_env and environment_source is None:
+            environment_source = PrimaryEnvironmentSource()
 
         if not self._api_server or not client_id or not client_secret:
             raise ConnectError(
@@ -324,6 +385,7 @@ class ConnectClient:
             environment_id = self._resolve_environment_id(
                 requested_env or data.primary_environment or ""
             )
+            environment_name = self._environment_id_to_name.get(environment_id)
             if environment_id:
                 data = auth_client.get_token(
                     auth_pb.GetTokenRequest(
@@ -346,6 +408,12 @@ class ConnectClient:
         )
         self._service_prefixes = _int_string_map(data.service_prefixes)
         self._env_id = environment_id
+        _announce_environment(
+            environment_id,
+            environment_name,
+            self._api_server,
+            environment_source,
+        )
 
         self._headers = {
             "Content-Type": "application/json",

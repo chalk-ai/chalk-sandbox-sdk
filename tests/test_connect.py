@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import chalkcompute._auth_config as _auth_config
+import chalkcompute._connect as _connect
 from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectError,
@@ -399,6 +400,144 @@ tokens:
         assert posted["address"] == "https://api.project.chalk.ai"
         assert posted["request"].client_id == "project-client"
         assert posted["request"].client_secret == "project-secret"
+
+
+class TestConnectClientEnvironmentAnnouncement:
+    @pytest.fixture(autouse=True)
+    def isolate_auth(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context", lambda: None
+        )
+        monkeypatch.setattr(_connect, "_announced_targets", set())
+        for name in (
+            "CHALK_API_SERVER",
+            "CHALK_CLIENT_ID",
+            "CHALK_CLIENT_SECRET",
+            "CHALK_ENVIRONMENT",
+            "CHALK_ENVIRONMENT_ID",
+            "CHALK_ACTIVE_ENVIRONMENT",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        _install_token_client(
+            monkeypatch,
+            {
+                "accessToken": "token",
+                "primaryEnvironment": "env-primary",
+                "environmentIdToName": {
+                    "env-lab": "lab",
+                    "env-qa": "qa",
+                    "env-primary": "primary",
+                },
+            },
+        )
+        _auth_config._load_global_config.cache_clear()
+        yield
+        _auth_config._load_global_config.cache_clear()
+
+    def _write_config(self, tmp_path: Any, tokens: str) -> None:
+        (tmp_path / ".chalk.yml").write_text(f"tokens:\n{tokens}")
+
+    def test_warns_when_default_token_selects_environment(self, tmp_path, capsys):
+        self._write_config(
+            tmp_path,
+            """
+  default:
+    clientId: c
+    clientSecret: s
+    apiServer: https://api.lab.chalk.ai
+    activeEnvironment: env-lab
+""",
+        )
+
+        ConnectClient()._ensure_auth()
+
+        assert capsys.readouterr().err == (
+            "chalkcompute: warning: using environment lab (env-lab) at "
+            "https://api.lab.chalk.ai (default token). "
+            "Set CHALK_ENVIRONMENT_ID to select the environment explicitly.\n"
+        )
+
+    def test_warns_when_default_token_falls_back_to_primary(self, tmp_path, capsys):
+        self._write_config(
+            tmp_path,
+            """
+  default:
+    clientId: c
+    clientSecret: s
+    apiServer: https://api.lab.chalk.ai
+""",
+        )
+
+        ConnectClient()._ensure_auth()
+
+        err = capsys.readouterr().err
+        assert err.startswith(
+            "chalkcompute: warning: using environment primary (env-primary) at "
+            "https://api.lab.chalk.ai (default token)."
+        )
+
+    def test_environment_variable_overrides_default_token_without_warning(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        self._write_config(
+            tmp_path,
+            """
+  default:
+    clientId: c
+    clientSecret: s
+    apiServer: https://api.lab.chalk.ai
+    activeEnvironment: env-lab
+""",
+        )
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-qa")
+
+        ConnectClient()._ensure_auth()
+
+        assert capsys.readouterr().err == (
+            "chalkcompute: using environment qa (env-qa) at "
+            "https://api.lab.chalk.ai (env var CHALK_ENVIRONMENT_ID)\n"
+        )
+
+    def test_announces_project_token_without_warning(self, tmp_path, capsys):
+        self._write_config(
+            tmp_path,
+            f"""
+  default:
+    clientId: c
+    clientSecret: s
+    apiServer: https://api.lab.chalk.ai
+    activeEnvironment: env-lab
+  {str(tmp_path.resolve())!r}:
+    clientId: c
+    clientSecret: s
+    apiServer: https://api.qa.chalk.ai
+    activeEnvironment: env-qa
+""",
+        )
+
+        ConnectClient()._ensure_auth()
+
+        assert capsys.readouterr().err == (
+            "chalkcompute: using environment qa (env-qa) at "
+            f"https://api.qa.chalk.ai ({tmp_path.resolve()} token)\n"
+        )
+
+    def test_announces_each_target_once_per_process(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.qa.chalk.ai")
+        monkeypatch.setenv("CHALK_CLIENT_ID", "c")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "s")
+
+        ConnectClient()._ensure_auth()
+        ConnectClient()._ensure_auth()
+
+        assert capsys.readouterr().err == (
+            "chalkcompute: using environment primary (env-primary) at "
+            "https://api.qa.chalk.ai (primary environment of the credentials)\n"
+        )
 
 
 class TestConnectClientWebIdentity:
