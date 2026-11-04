@@ -1,0 +1,1 @@
+- Keep sandbox metadata accessible through `info` and `refresh()` after termination, report terminated handles accurately, and clear retained metadata when starting another run.
