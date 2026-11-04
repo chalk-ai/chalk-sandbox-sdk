@@ -1,0 +1,1 @@
+- Add `cc.Router(..., classifier=fn)` support for `@cc.function` classifiers: the router calls the function by name in its own environment through the function queue, so no credentials are configured, and `Router.deploy()` waits for the function before publishing the route.

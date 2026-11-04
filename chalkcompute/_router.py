@@ -513,10 +513,11 @@ class RouterClient:
                     function.deploy()
                     function.wait_ready()
                     version = function.version_info
-                    if version is None or not version.function_id:
-                        raise RouterError("deployed classifier has no function ID")
+                    if version is None or not version.function_name:
+                        raise RouterError("deployed classifier has no function name")
                     assert isinstance(backend.kind.value, pb.FunctionClassifierBackend)
-                    backend.kind.value.function_id = version.function_id
+                    # The router calls the function by name through the function queue.
+                    backend.kind.value.function_name = version.function_name
         existing = next(
             (r for r in self._routes() if r.public_model_id == router.model), None
         )

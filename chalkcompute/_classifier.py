@@ -51,8 +51,13 @@ class Classifier:
     ) -> Classifier:
         """Use ``@cc.function def classify(request: RoutingRequest) -> str``.
 
-        Deployment waits for the function before publishing the router. Subsequent
-        deployments of that function take effect without redeploying the router.
+        The router calls the function in the router's environment with its own
+        platform identity, through the data-plane function queue; no credentials
+        are configured here. Deployment waits for the function before publishing
+        the router, and later deployments of the function take effect without
+        redeploying the router. A function that scales to zero misses
+        ``timeout_ms`` on a cold start and the route serves its default, so keep
+        at least one replica warm for live classification.
         """
         from chalkcompute._function import RemoteFunction
 

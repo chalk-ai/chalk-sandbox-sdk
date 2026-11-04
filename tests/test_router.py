@@ -490,7 +490,7 @@ def test_function_deploys_and_waits_before_router_publication(
     backend_config = stub.create_model_route.call_args.args[
         0
     ].routing.judge.backend.kind.value
-    assert backend_config.function_id == classifier._version_info.function_id
+    assert backend_config.function_name == classifier._version_info.function_name
     assert backend_config.input_name == "request"
 
 
