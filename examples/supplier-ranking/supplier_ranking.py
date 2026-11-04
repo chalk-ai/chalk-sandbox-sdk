@@ -60,7 +60,10 @@ CATALOG = {
 def supplier_ranking(item_description: str) -> str:
     from openai import OpenAI
 
-    client = OpenAI(api_key=os.environ["CHALK_ROUTER_API_KEY"])
+    client = OpenAI(
+        api_key=os.environ["CHALK_ROUTER_API_KEY"],
+        default_headers={"X-Chalk-Env-Id": os.environ["CHALK_ENVIRONMENT_ID"]},
+    )
     response = client.chat.completions.create(
         model=os.environ["SUPPLIER_MODEL"],
         response_format={"type": "json_object"},
