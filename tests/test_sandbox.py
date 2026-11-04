@@ -514,11 +514,15 @@ def test_sandbox_restore_retries_conflict_while_suspended_resource_deletes() -> 
     client._stub = stub  # type: ignore[assignment]
     sandbox = client.get("sandbox-123")
 
-    with patch("chalkcompute._sandbox.time.sleep") as sleep:
+    with (
+        patch("chalkcompute._sandbox.time.sleep") as sleep,
+        patch("chalkcompute._backoff.random.uniform", return_value=0.1) as uniform,
+    ):
         sandbox.restore()
 
     assert stub.resume_sandbox.call_count == 2
-    sleep.assert_called_once_with(0.25)
+    uniform.assert_called_once_with(0.0, 0.25)
+    sleep.assert_called_once_with(0.1)
     assert sandbox.info is not None and sandbox.info.status == "running"
 
 

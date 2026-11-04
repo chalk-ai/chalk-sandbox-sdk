@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import chalkcompute._backoff as backoff_mod
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ExecutionBackend, NetworkPolicy, ScalingGroup
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
@@ -170,6 +171,27 @@ def test_scaling_group_call_retries_gateway_unavailable(
 
     assert sg.call("/", json={"x": 1}) is ok
     assert http_client.execute.call_count == 3
+
+
+def test_scaling_group_call_jitters_retry_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    ok = _response(200, b"ok")
+    sg, _ = _deployed_group(monkeypatch, unavailable, unavailable, unavailable, ok)
+    sleeps: list[float] = []
+    bounds: list[tuple[float, float]] = []
+
+    def uniform(low: float, high: float) -> float:
+        bounds.append((low, high))
+        return high / 2
+
+    monkeypatch.setattr(scaling_group_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(backoff_mod.random, "uniform", uniform)
+
+    assert sg.call("/") is ok
+    assert bounds == [(0.0, 0.25), (0.0, 0.5), (0.0, 1.0)]
+    assert sleeps == [0.125, 0.25, 0.5]
 
 
 def test_scaling_group_call_does_not_retry_app_errors(
