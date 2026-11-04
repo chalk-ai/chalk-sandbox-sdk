@@ -977,6 +977,7 @@ class Sandbox:
         self._id: str | None = None
         self._info: SandboxInfo | None = None
         self._terminated = False
+        self._terminated_id: str | None = None
         # Files added with fs.add_file before run(); uploaded once ready.
         self._pending_files: list[FileUpload] = []
 
@@ -1158,8 +1159,14 @@ class Sandbox:
         :meth:`run` created the sandbox but failed before a snapshot was
         fetched (for example, a readiness check that errored), this fetches
         one now and raises if that fetch itself fails.
+
+        After :meth:`terminate`, the next access fetches the stopped sandbox's
+        metadata from the server. Subsequent accesses use that cached snapshot;
+        call :meth:`refresh` to fetch it again.
         """
-        if self._info is None and self._id is not None:
+        if self._info is None and (
+            self._id is not None or self._terminated_id is not None
+        ):
             self._info = self._fetch_info()
         return self._info
 
@@ -1174,13 +1181,15 @@ class Sandbox:
         return self._built_image_uri
 
     def refresh(self) -> SandboxInfo:
-        """Force-refresh sandbox info from the server."""
+        """Force-refresh sandbox info from the server, including after termination."""
         self._info = self._fetch_info()
         return self._info
 
     def _fetch_info(self) -> SandboxInfo:
         client = self._require_client()
-        sandbox_id = self._require_started()
+        sandbox_id = self._id or self._terminated_id
+        if sandbox_id is None:
+            sandbox_id = self._require_started()
         try:
             resp = client._stub.get_sandbox(
                 pb.GetSandboxRequest(id=sandbox_id),
@@ -1419,6 +1428,10 @@ class Sandbox:
                 "ready; call .run() with wait=True."
             )
 
+        # A new run must never expose metadata from the previous sandbox.
+        self._info = None
+        self._terminated_id = None
+        self._terminated = False
         client = self._client
         if client is None:
             client = SandboxClient.from_env(chalk_client=self._chalk_client)
@@ -1513,11 +1526,8 @@ class Sandbox:
                                 secret_name = resolved._secret_name
                                 resolved_credentials.append((secret, secret_name))
                             transform.headers_secrets[placeholder] = secret_name
-        # Bind the client and clear _terminated before instantiating so a
-        # handle still behaves like a fresh run (not a no-op .terminate()) if
-        # readiness polling fails mid-_instantiate.
+        # Bind the client before polling so a readiness failure can be cleaned up.
         self._client = client
-        self._terminated = False
         client._instantiate(
             self,
             image,
@@ -1548,12 +1558,19 @@ class Sandbox:
 
     def _require_client(self) -> Any:
         if self._client is None:
-            self._require_started()
+            if self._terminated_id is None:
+                self._require_started()
             # Deserialized handles bind to the receiver, never the creator's token.
             self._client = SandboxClient.from_env()
         return self._client
 
     def _require_started(self) -> str:
+        if self._terminated:
+            raise SandboxTerminatedError(
+                f"Sandbox {self._terminated_id} has terminated",
+                sandbox_id=self._terminated_id,
+                status="terminated",
+            )
         if self._id is None:
             raise SandboxError("Sandbox is not running. Call .run() first.")
         return self._id
@@ -1973,6 +1990,9 @@ class Sandbox:
     def terminate(self, grace_period_seconds: int | None = None) -> None:
         """Terminate this sandbox.
 
+        Metadata remains available through :attr:`info` and :meth:`refresh`.
+        Termination does not fetch metadata or require read permission.
+
         Parameters
         ----------
         grace_period_seconds
@@ -1995,6 +2015,10 @@ class Sandbox:
             _handle_rpc_error(e, sandbox_id)
             raise
         self._terminated = True
+        self._terminated_id = sandbox_id
+        self._info = None
+        if self._image is not None:
+            self._id = None
         if any(mount.type == VolumeMountType.CHALKFS for mount in self._volumes):
             volume_client = self._volume_client or VolumeClient.from_connect(
                 self._connect_client(client)
@@ -2004,9 +2028,6 @@ class Sandbox:
             )
         self._volumes = []
         self._volume_client = None
-        if self._image is not None:
-            self._id = None
-            self._info = None
 
     def _connect_client(self, client: SandboxClient) -> ConnectClient:
         """Return the authenticated Connect client backing ``client``."""

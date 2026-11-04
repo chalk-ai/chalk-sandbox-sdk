@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -14,13 +15,19 @@ from chalkcompute import (
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
-from protobuf.wkt import Timestamp
+from protobuf.wkt import Duration, Timestamp
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
-from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
+from chalkcompute._sandbox import (
+    SandboxClient,
+    SandboxCreationError,
+    SandboxError,
+    SandboxNotFoundError,
+    SandboxTerminatedError,
+)
 from chalkcompute._volume import VolumeMount, VolumeMountType
 
 
@@ -1205,6 +1212,228 @@ def test_sandbox_terminate_empty_dir_does_not_create_volume_client() -> None:
         stub.terminate_sandbox.assert_called_once_with(
             pb.TerminateSandboxRequest(id="sandbox-123"), headers=client._headers
         )
+
+
+@pytest.fixture(params=[False, True], ids=["created", "attached"])
+def lifecycle_sandbox(
+    request: pytest.FixtureRequest,
+) -> Iterator[tuple[Sandbox, MagicMock]]:
+    with SandboxClient() as client:
+        stub = MagicMock(wraps=_Stub())
+        stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        client._stub = stub
+        sandbox = (
+            client.get("sandbox-123")
+            if request.param
+            else Sandbox(image="ubuntu:latest", sandbox_client=client).run()
+        )
+        yield sandbox, stub
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize(
+    "status, message",
+    [
+        (pb.SandboxStatus.TERMINATED, "Termination requested"),
+        (pb.SandboxStatus.SUCCEEDED, "Process completed"),
+    ],
+)
+def test_sandbox_info_after_terminate_reads_server_metadata(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+    cached: bool,
+    status: pb.SandboxStatus,
+    message: str,
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    if cached:
+        sandbox.refresh()
+    stub.get_sandbox.reset_mock()
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(
+            id="sandbox-123",
+            status=status,
+            created_at=Timestamp(seconds=1),
+            name="retained-sandbox",
+            status_message=message,
+        )
+    )
+
+    sandbox.terminate(grace_period_seconds=30)
+    sandbox.terminate()
+    stub.get_sandbox.assert_not_called()
+    stub.terminate_sandbox.assert_called_once_with(
+        pb.TerminateSandboxRequest(id="sandbox-123", grace_period=Duration(seconds=30)),
+        headers=sandbox._client._headers,
+    )
+
+    info = sandbox.info
+    assert info is not None
+    assert info.id == "sandbox-123"
+    assert info.status == status.name.lower()
+    assert info.status_message == message
+    assert info.name == "retained-sandbox"
+    assert info.created_at == "1970-01-01T00:00:01+00:00"
+    assert sandbox.info is info
+    stub.get_sandbox.assert_called_once_with(
+        pb.GetSandboxRequest(id="sandbox-123"), headers=sandbox._client._headers
+    )
+
+    refreshed = sandbox.refresh()
+    assert refreshed == info
+    assert refreshed is not info
+    assert stub.get_sandbox.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "code, error, message",
+    [
+        (Code.PERMISSION_DENIED, SandboxError, "deploy.read required"),
+        (Code.NOT_FOUND, SandboxNotFoundError, "Sandbox sandbox-123 not found"),
+    ],
+)
+def test_sandbox_metadata_errors_after_terminate(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+    code: Code,
+    error: type[Exception],
+    message: str,
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    stub.get_sandbox.side_effect = ConnectRpcError(code, "deploy.read required")
+
+    sandbox.terminate()
+    stub.get_sandbox.assert_not_called()
+    with pytest.raises(error, match=message):
+        _ = sandbox.info
+    with pytest.raises(error, match=message):
+        sandbox.refresh()
+    assert all(
+        call.args[0].id == "sandbox-123" for call in stub.get_sandbox.call_args_list
+    )
+
+
+@pytest.mark.parametrize("operation", ["exec", "fs", "snapshot", "suspend", "restore"])
+def test_sandbox_running_operations_after_terminate_report_termination(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock], operation: str
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    sandbox.terminate()
+
+    with pytest.raises(SandboxTerminatedError, match="sandbox-123 has terminated"):
+        if operation == "exec":
+            sandbox.exec("echo", "hello")
+        elif operation == "fs":
+            sandbox.fs.read_bytes("/tmp/example")
+        else:
+            getattr(sandbox, operation)()
+    stub.get_sandbox.assert_not_called()
+
+
+def test_sandbox_failed_termination_preserves_running_handle(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    previous_info = sandbox.refresh()
+    stub.terminate_sandbox.side_effect = ConnectRpcError(
+        Code.UNAVAILABLE, "retry later"
+    )
+
+    with pytest.raises(ConnectRpcError, match="retry later"):
+        sandbox.terminate()
+    assert sandbox.id == "sandbox-123"
+    assert sandbox.info is previous_info
+
+    stub.terminate_sandbox.side_effect = None
+    sandbox.terminate()
+    assert stub.terminate_sandbox.call_count == 2
+
+
+def test_sandbox_metadata_survives_volume_cleanup_failure(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    sandbox._volumes = [VolumeMount("owned", "/data", type=VolumeMountType.CHALKFS)]
+    sandbox._volume_client = MagicMock()
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.TERMINATED)
+    )
+
+    with patch(
+        "chalkcompute._sandbox.cleanup_owned_volumes",
+        side_effect=RuntimeError("cleanup failed"),
+    ):
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            sandbox.terminate()
+
+    assert sandbox.info is not None and sandbox.info.status == "terminated"
+    sandbox.terminate()
+    stub.terminate_sandbox.assert_called_once()
+
+
+@pytest.mark.parametrize("failure_stage", [None, "build", "create", "readiness"])
+def test_sandbox_rerun_clears_terminated_metadata(failure_stage: str | None) -> None:
+    with SandboxClient() as client:
+        stub = MagicMock(wraps=_Stub())
+        stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        client._stub = stub
+        sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client).run()
+        sandbox.terminate()
+        stub.get_sandbox.return_value = pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.TERMINATED)
+        )
+        assert sandbox.info is not None and sandbox.info.status == "terminated"
+        stub.get_sandbox.reset_mock()
+
+        if failure_stage == "build":
+            sandbox._image = Image.debian_slim()
+            with patch.object(
+                sandbox, "_build_image", side_effect=RuntimeError("build failed")
+            ):
+                with pytest.raises(RuntimeError, match="build failed"):
+                    sandbox.run()
+        else:
+            stub.create_sandbox.return_value = pb.CreateSandboxResponse(
+                sandbox=pb.SandboxInfo(
+                    id="sandbox-456",
+                    status=pb.SandboxStatus.PENDING
+                    if failure_stage == "readiness"
+                    else pb.SandboxStatus.RUNNING,
+                )
+            )
+            stub.get_sandbox.return_value = pb.GetSandboxResponse(
+                sandbox=pb.SandboxInfo(
+                    id="sandbox-456", status=pb.SandboxStatus.RUNNING
+                )
+            )
+            if failure_stage == "create":
+                stub.create_sandbox.side_effect = ConnectRpcError(
+                    Code.UNAVAILABLE, "retry later"
+                )
+                with pytest.raises(ConnectRpcError, match="retry later"):
+                    sandbox.run()
+            elif failure_stage == "readiness":
+                stub.get_sandbox.side_effect = ConnectRpcError(
+                    Code.PERMISSION_DENIED, "deploy.read required"
+                )
+                with pytest.raises(SandboxError, match="still running"):
+                    sandbox.run()
+                stub.get_sandbox.side_effect = None
+            else:
+                sandbox.run()
+
+        if failure_stage in {"build", "create"}:
+            assert sandbox.id is None
+            assert sandbox.info is None
+            stub.get_sandbox.assert_not_called()
+        else:
+            assert sandbox.id == "sandbox-456"
+            assert sandbox.info is not None and sandbox.info.id == "sandbox-456"
+            assert sandbox.info.status == "running"
+            assert all(
+                call.args[0].id == "sandbox-456"
+                for call in stub.get_sandbox.call_args_list
+            )
+            sandbox.terminate()
+            assert stub.terminate_sandbox.call_args.args[0].id == "sandbox-456"
 
 
 class _RerunPermissionDeniedStub:
