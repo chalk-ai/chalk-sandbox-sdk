@@ -132,6 +132,56 @@ For the example above, one deploy creates:
 
 Because the version is in every name, a run stays on the groups and queues of the version it started on, even if the workflow is redeployed mid-run.
 
+## Deployment
+
+**How functions do it.** `@cc.function` starts a background deploy as soon as the decorator runs. That works because a function's deploy depends only on that function.
+
+**Why workflows can't start that early.** A workflow's deploy depends on every task it uses: their specs decide the scaling groups and feed the version hash. When `@cc.workflow` runs, tasks defined below it, or in modules imported later, don't exist yet.
+
+**So the decorators only register, and the deploy starts at the first of:**
+
+| Trigger | Behavior |
+|---|---|
+| `wf.deploy()` | Deploys now and blocks until done; raises on failure |
+| First `wf.remote()` / `wf.defer()` in the process | Deploys if needed, then starts the run |
+| Interpreter exit | Deploys workflows that were defined but never deployed or called, so a script that only defines workflows still deploys. A failure exits the process with a non-zero status |
+
+By then every task the workflow uses has been defined, so the deploy sees the complete set.
+
+**How a call knows whether to deploy.** Each workflow object tracks one state per process:
+
+```
+PENDING ──first trigger──► DEPLOYING (one shared in-flight deploy) ──► DEPLOYED(version) | FAILED(error)
+```
+
+- `PENDING`: `.remote()` / `.defer()` start the deploy and wait for it.
+- `DEPLOYING`: they wait on the deploy already in flight. Concurrent callers share one deploy.
+- `DEPLOYED`: they start the run directly, with no deploy and no extra RPC.
+
+The first deploy in a process always asks the server (`EnsureWorkflow`), because a new process can't know what's already deployed. The server compares content hashes, and an unchanged workflow comes back immediately as reused: no image builds, no new groups, no new version. `RemoteFunction` behaves the same through `EnsureExternalFunction`.
+
+**No duplicate deploys.** The exit hook only deploys workflows still in `PENDING`, and `.remote()` / `.defer()` skip workflows already `DEPLOYED`:
+
+| Script does | Ensure calls |
+|---|---|
+| Defines `nightly`, nothing else | 1, at exit |
+| `nightly.deploy()` | 1 |
+| `nightly.deploy()`, then `nightly.remote()` ×3 | 1 |
+| `nightly.remote()` ×3, no `.deploy()` | 1, on the first call |
+| `nightly.deploy()` twice | 2; the second comes back as reused |
+
+An explicit `.deploy()` always asks the server again, as `RemoteFunction.deploy()` does. Even then, the server reuses identical content, so the worst case is one extra round trip, never a second set of groups or a new version.
+
+**What `.deploy()` waits for:** images built, every scaling group accepted, the version recorded, and new runs pointed at it. It does not wait for running pods: workflow groups scale to zero, so there may be none.
+
+**Errors** surface as they do for functions: raised from `.deploy()`, `.remote()` or `.defer()`, or a non-zero exit when the exit-time deploy fails.
+
+**Never deploy:** `cc.RemoteWorkflow.from_name(...)`, `wf.run_from_source(...)`, a plain `await wf(...)`, and every import inside a worker. An env var set in worker containers makes the decorators inert, as `CHALK_REMOTE_FUNCTION` does for functions.
+
+**Startup latency.** Because the deploy starts later than a function's, the first `.remote()` waits for it. To win most of that time back, each `@cc.task(image=...)` starts building its image in the background when the decorator runs. Images depend only on their own definition, so they're usually built by the time the deploy starts.
+
+**Notebooks.** Re-running a cell that defines a workflow creates a new object in `PENDING`, so its next `.remote()` deploys the edited code.
+
 ## `WorkflowRun` handle
 
 | Method | Behavior |
@@ -149,7 +199,6 @@ Because the version is in every name, a run stays on the groups and queues of th
 
 ## Open
 
-- When an implicit deploy starts, what `.deploy()` waits for, and how deploy errors are reported.
 - `max_replicas` and per-replica concurrency for task groups.
 - Implementation: how versions are computed, a server-side `EnsureWorkflow` RPC, backlog-based scaling.
 - What happens to `deploy_workflow_worker`, `cc.run_workflow` and `cc.trigger_workflow`.
