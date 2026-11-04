@@ -76,6 +76,7 @@ from chalkcompute._logging import _StatusLogger
 from chalkcompute._traceback import format_exception, format_frame
 from chalkcompute._terminal import styled, supports_color
 from chalkcompute._function_error import (
+    CallCancelledError,
     FunctionError,
     decode_deferred_failure,
     decode_remote_error,
@@ -157,6 +158,7 @@ KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
 _FNQ_STREAMS_SUPPORTED_ENV_VAR = "CHALK_FNQ_STREAMS_SUPPORTED"
+_FNQ_CANCELLATION_SUPPORTED_ENV_VAR = "CHALK_FNQ_CANCELLATION_SUPPORTED"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _DEFAULT_CALL_TIMEOUT: float | None = 60.0
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
@@ -180,6 +182,7 @@ def _remote_call_container_env(
         "PYTHONPATH": "/app",
         _REMOTE_ENV_VAR: "1",
         _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
+        _FNQ_CANCELLATION_SUPPORTED_ENV_VAR: "true",
         **user_env,
     }
     # Preserve legacy overrides unless relocated handlers need another path.
@@ -1083,10 +1086,34 @@ class FunctionCallHandle:
         self._is_async = bool(getattr(function, "_is_async", False))
         self._cursor = ""
         self._poll_count = 0
+        self._cancelled = False
+        self._lifecycle_lock = threading.RLock()
 
     @property
     def call_id(self) -> str:
         return self._call_id
+
+    def cancel(self) -> Any:
+        """Cancel this Stream-backed call before a consumer acquires it.
+
+        Successful repeats are idempotent. Once acquired, cancellation fails with
+        gRPC FAILED_PRECONDITION and execution continues unchanged.
+        Inside an event loop, await the returned coroutine.
+        """
+        if _has_running_event_loop():
+            return _run_in_worker_thread(self._sync_cancel)
+        return self._sync_cancel()
+
+    def _sync_cancel(self) -> Any:
+        with self._lifecycle_lock:
+            result = self._function._cancel(self._call_id)
+            if result.is_cancelled:
+                self._cancelled = True
+            return result
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancelled:
+            raise CallCancelledError(f"Remote call {self._call_id} was cancelled")
 
     def poll(self) -> Any:
         from chalkcompute._remote_call_client import RemoteCallNotFoundError
@@ -1103,6 +1130,8 @@ class FunctionCallHandle:
             ) from None
         self._cursor = result.cursor
         self._poll_count = result.poll_count
+        if result.is_cancelled:
+            self._cancelled = True
         return result
 
     def _timeout_error(self, last_status: str) -> TimeoutError:
@@ -1117,7 +1146,7 @@ class FunctionCallHandle:
             raise FunctionError("Remote call results have expired")
 
         if result.is_cancelled:
-            raise FunctionError("Remote call was cancelled")
+            raise CallCancelledError(f"Remote call {self._call_id} was cancelled")
 
         if result.is_failed:
             message = result.error_message or "Remote call failed"
@@ -1144,7 +1173,9 @@ class FunctionCallHandle:
 
         chunks: list[bytes] = []
         while True:
+            self._raise_if_cancelled()
             result = self.poll()
+            self._raise_if_cancelled()
             chunks.extend(result.chunks)
 
             if self._raise_if_terminal(result, deadline):
@@ -1164,10 +1195,14 @@ class FunctionCallHandle:
         deadline = None if timeout is None else time.monotonic() + timeout
 
         while True:
+            self._raise_if_cancelled()
             result = self.poll()
+            self._raise_if_cancelled()
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
-                yield from reader
+                for batch in reader:
+                    self._raise_if_cancelled()
+                    yield batch
 
             if self._raise_if_terminal(result, deadline):
                 return
@@ -1178,10 +1213,13 @@ class FunctionCallHandle:
         deadline = None if timeout is None else time.monotonic() + timeout
 
         while True:
+            self._raise_if_cancelled()
             result = await asyncio.to_thread(self.poll)
+            self._raise_if_cancelled()
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                 for batch in reader:
+                    self._raise_if_cancelled()
                     yield batch
 
             if self._raise_if_terminal(result, deadline):
@@ -3857,6 +3895,19 @@ class RemoteFunction:
             call=lambda: self._using_remote_call_client(
                 queue=True,
                 call=lambda client: client.poll_next(call_id, cursor, poll_count),
+            ),
+        )
+
+    def _cancel(self, call_id: str) -> Any:
+        self._wait_for_background_deploy()
+        return self._with_remote_call_transport(
+            queue=True,
+            operation="cancel",
+            retry_stale=True,
+            timeout=self._call_timeout,
+            call=lambda: self._using_remote_call_client(
+                queue=True,
+                call=lambda client: client.cancel(call_id),
             ),
         )
 

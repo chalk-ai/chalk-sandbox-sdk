@@ -13,6 +13,10 @@ class FunctionError(Exception):
     """Base exception for Function errors."""
 
 
+class CallCancelledError(FunctionError):
+    """A deferred invocation was cancelled and has no successful result."""
+
+
 class RemoteExecutionError(FunctionError):
     """A remote invocation failed. The original exception is carried as data.
 

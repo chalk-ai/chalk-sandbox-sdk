@@ -353,6 +353,7 @@ class FakeRemoteCallClient:
         self.call_options: list[dict] = []
         self.enqueue_options: list[dict] = []
         self.purges: list[str] = []
+        self.cancellations: list[tuple[str, bool]] = []
         self.polls: list[tuple[str, str, int]] = []
         self.closed = False
         FakeRemoteCallClient.instances.append(self)
@@ -401,6 +402,17 @@ class FakeRemoteCallClient:
         if self.poll_errors:
             raise self.poll_errors.pop(0)
         return self.poll_results.pop(0)
+
+    def cancel(self, call_id: str):
+        from chalkcompute._remote_call_client import (
+            RemoteCallCancelResult,
+        )
+
+        self.cancellations.append((call_id, False))
+        return RemoteCallCancelResult(
+            6,
+            "cancelled",
+        )
 
     def purge_function(self, function_name: str) -> int:
         if self.purge_errors:
@@ -1484,6 +1496,111 @@ def test_call_timeout_none_disables_deadline() -> None:
 
     assert thread.is_alive()
     assert result == {}
+
+
+def test_deferred_cancel_is_idempotent_and_stops_get():
+    from chalkcompute import CallCancelledError
+
+    handle = _remote_function().defer(98)
+    result = handle.cancel()
+    assert result.is_cancelled
+    client = FakeRemoteCallClient.instances[-1]
+    assert handle.cancel() == result
+    assert client.cancellations == [("call-1", False), ("call-1", False)]
+    with pytest.raises(CallCancelledError, match="call-1"):
+        handle.get()
+    assert len(client.enqueues) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_cancelled_poll_never_resubmits_or_delivers_chunks(stream, async_call):
+    from chalkcompute import CallCancelledError
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("cancelled", chunks=[_result_ipc([99])]),
+    ]
+    handle = _remote_function().defer(98)
+    handle._is_async = async_call
+
+    async def run():
+        if stream:
+            return [item async for item in handle.stream()]
+        return await handle.get()
+
+    with pytest.raises(CallCancelledError, match="call-1"):
+        if async_call:
+            asyncio.run(run())
+        elif stream:
+            list(handle.stream())
+        else:
+            handle.get()
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+def test_deferred_cancel_awaitable_in_event_loop():
+    async def run():
+        handle = _remote_function().defer(98)
+        result = await handle.cancel()
+        assert result.is_cancelled
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("async_call", [False, True])
+def test_failed_cancel_preserves_suspended_stream(monkeypatch, async_call):
+    FakeRemoteCallClient.poll_results = [
+        _poll("running", chunks=[_result_ipc([1]), _result_ipc([2])]),
+    ]
+    handle = _remote_function().defer(98)
+    handle._is_async = async_call
+    attempts = []
+
+    def already_acquired(self, call_id):
+        attempts.append(call_id)
+        raise RuntimeError(9, "call has already been acquired and cannot be cancelled")
+
+    monkeypatch.setattr(FakeRemoteCallClient, "cancel", already_acquired)
+
+    async def run():
+        stream = handle.stream()
+        assert (await anext(stream)).column(0).to_pylist() == [1]
+        with pytest.raises(RuntimeError, match="already been acquired"):
+            await handle.cancel()
+        assert (await anext(stream)).column(0).to_pylist() == [2]
+
+    if async_call:
+        asyncio.run(run())
+    else:
+        stream = handle.stream()
+        assert next(stream).column(0).to_pylist() == [1]
+        with pytest.raises(RuntimeError, match="already been acquired"):
+            handle.cancel()
+        assert next(stream).column(0).to_pylist() == [2]
+    assert not handle._cancelled
+    assert attempts == ["call-1"]
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_cancel_rejects_unknown_argument(monkeypatch, async_call):
+    handle = _remote_function().defer(98)
+
+    def unexpected_cancel(*args):
+        pytest.fail("unsupported termination must not access transport or deploy")
+
+    monkeypatch.setattr(handle._function, "_cancel", unexpected_cancel)
+
+    async def run():
+        with pytest.raises(TypeError, match="terminate_containers"):
+            await handle.cancel(terminate_containers=True)
+
+    if async_call:
+        asyncio.run(run())
+    else:
+        with pytest.raises(TypeError, match="terminate_containers"):
+            handle.cancel(terminate_containers=True)
+    assert not handle._cancelled
 
 
 def test_retry_options_are_scoped_and_preserve_argument_named_retries() -> None:
