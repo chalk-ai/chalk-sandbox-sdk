@@ -1,0 +1,1 @@
+- `deploy_workflow_worker` and `run_workflow` keep a script's other chalkpy extras when adding `workflows`: `chalkpy[bigquery]>=2.164` now installs `chalkpy[bigquery,workflows]>=2.164` on the worker instead of `chalkpy[workflows]>=2.164`.

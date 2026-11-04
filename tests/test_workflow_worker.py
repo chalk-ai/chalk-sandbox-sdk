@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 from pathlib import Path
@@ -117,7 +118,65 @@ def test_worker_requirements_adds_the_workflows_extra_and_keeps_pins() -> None:
     other_extra = (
         '# /// script\n# dependencies = ["chalkpy[runtime]==2.161.0"]\n# ///\n'
     )
-    assert worker_requirements(other_extra) == ["chalkpy[workflows]==2.161.0"]
+    assert worker_requirements(other_extra) == ["chalkpy[runtime,workflows]==2.161.0"]
+
+
+def _script_with(*dependencies: str) -> str:
+    listed = ", ".join(json.dumps(d) for d in dependencies)
+    return f"# /// script\n# dependencies = [{listed}]\n# ///\n"
+
+
+@pytest.mark.parametrize(
+    ("requirement", "expected"),
+    [
+        (
+            "chalkpy[workflows,bigquery]>=2.164.2",
+            "chalkpy[workflows,bigquery]>=2.164.2",
+        ),
+        ("chalkpy[bigquery]>=2.164.2", "chalkpy[bigquery,workflows]>=2.164.2"),
+        ("chalkpy[bigquery, snowflake]", "chalkpy[bigquery,snowflake,workflows]"),
+        ("chalkpy [bigquery] >= 2.164", "chalkpy[bigquery,workflows] >= 2.164"),
+        ("chalkpy[]", "chalkpy[workflows]"),
+        ("chalkpy[Workflows]==2.164.2", "chalkpy[Workflows]==2.164.2"),
+        ("ChalkPy[bigquery]~=2.164", "ChalkPy[bigquery,workflows]~=2.164"),
+        (
+            "chalkpy>=2.164; python_version >= '3.11'",
+            "chalkpy[workflows]>=2.164; python_version >= '3.11'",
+        ),
+        (
+            "chalkpy[bigquery];python_version>='3.11'",
+            "chalkpy[bigquery,workflows];python_version>='3.11'",
+        ),
+        (
+            "chalkpy[bigquery] @ https://example.com/chalkpy-2.164.2-py3-none-any.whl",
+            "chalkpy[bigquery,workflows] @ https://example.com/chalkpy-2.164.2-py3-none-any.whl",
+        ),
+        (
+            "chalkpy @ git+https://github.com/chalk-ai/chalk@main",
+            "chalkpy[workflows] @ git+https://github.com/chalk-ai/chalk@main",
+        ),
+    ],
+)
+def test_worker_requirements_merges_the_workflows_extra(
+    requirement: str, expected: str
+) -> None:
+    assert worker_requirements(_script_with(requirement, "numpy")) == [
+        expected,
+        "numpy",
+    ]
+
+
+def test_worker_requirements_extends_every_chalkpy_entry() -> None:
+    source = _script_with(
+        "chalkpy[bigquery]>=2.164; python_version >= '3.11'",
+        "chalkpy>=2.150; python_version < '3.11'",
+        "chalkpy-extensions[bigquery]",
+    )
+    assert worker_requirements(source) == [
+        "chalkpy[bigquery,workflows]>=2.164; python_version >= '3.11'",
+        "chalkpy[workflows]>=2.150; python_version < '3.11'",
+        "chalkpy-extensions[bigquery]",
+    ]
 
 
 def test_worker_requirements_without_metadata_pins_the_local_versions(
