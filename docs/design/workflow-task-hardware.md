@@ -110,8 +110,18 @@ Each workflow version gets one scaling group and one queue per distinct spec, wh
 
 | Name | Format | Example |
 |---|---|---|
-| Queue | `chalkcompute-workflows.<workflow>.<version>.<hash(spec)>` | `chalkcompute-workflows.nightly.3f9a1c2e.b71d04aa` |
-| Scaling group | `<workflow>-<version[:8]>-<hash(spec)[:8]>` (a DNS label: no dots, ≤ 40 chars, workflow name truncated) | `nightly-3f9a1c2e-b71d04aa` |
+| Queue | `chalkcompute-workflows.<workflow>.<version>.<hash(spec)>` (full names; Temporal allows 1000 chars) | `chalkcompute-workflows.nightly.3f9a1c2e.b71d04aa` |
+| Scaling group | `<prefix>-<version[:8]>-<hash(spec)[:8]>` | `nightly-3f9a1c2e-b71d04aa` |
+
+Scaling group names must be a single DNS label: at most 63 characters, lowercase letters, digits and dashes. Every name fits by construction, whatever the workflow's name:
+
+- **The hashes carry the identity.** Two 8-character hashes plus their dashes take 18 characters, leaving at most 45 for `<prefix>`.
+- **`<prefix>` is only for humans.** It is the workflow name lowercased, with `_` and `.` replaced by `-`, other characters dropped, and truncated to 45 characters. If the result is empty or starts with a digit, it becomes `wf-` plus what's left.
+- **Truncation can't cause collisions.** The version hash covers the *full* workflow name, so two workflows whose names truncate to the same prefix still get different group names.
+- **Full names are stored with the group** (workflow name, version and spec), so the UI shows them instead of the truncated label.
+- **The server computes the names.** If workflow workers ever expose a port, their public hostname `<environment id>-<group name>` has a smaller budget that depends on the environment id, which only the server knows. Workers serve no port today, so 63 applies.
+
+For comparison, `RemoteFunction` truncates long names to 63 characters, so two long function names with the same first 63 characters map to the same scaling group.
 
 For the example above, one deploy creates:
 
