@@ -1096,8 +1096,10 @@ class FunctionCallHandle:
     def cancel(self) -> Any:
         """Cancel this Stream-backed call before a consumer acquires it.
 
-        Successful repeats are idempotent. Once acquired, cancellation fails with
-        gRPC FAILED_PRECONDITION and execution continues unchanged.
+        Successful repeats are idempotent. An acquired call that has not finished
+        raises gRPC FAILED_PRECONDITION and continues executing. A completed or
+        failed call returns its existing status instead; in that case,
+        ``result.is_cancelled`` is ``False``.
         Inside an event loop, await the returned coroutine.
         """
         if _has_running_event_loop():

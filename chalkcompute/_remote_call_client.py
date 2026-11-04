@@ -395,7 +395,9 @@ class RemoteCallClient:
     def cancel(self, call_id: str) -> RemoteCallCancelResult:
         """Cancel a Stream-backed call before acquisition; successful repeats are idempotent.
 
-        Acquired calls fail with gRPC FAILED_PRECONDITION and keep running unchanged.
+        Acquired calls that have not finished fail with gRPC FAILED_PRECONDITION
+        and continue executing. Completed or failed calls return their existing
+        status, with ``is_cancelled`` set to ``False``.
         """
         raw = self._inner_or_raise().cancel(call_id, False)
         return RemoteCallCancelResult(
