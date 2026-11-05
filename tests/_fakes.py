@@ -183,6 +183,12 @@ class MemoryWeightVolume:
     def at_version(self, version):
         return MemoryWeightVolume(_owner=self._owner, _version=version)
 
+    def iter_versions(self, *, limit=100):
+        from types import SimpleNamespace
+
+        for i in range(len(self._owner.snapshots)):
+            yield SimpleNamespace(id=i, parent_id=i - 1 if i else None)
+
     def read_file(self, path):
         from chalkcompute._volume import VolumeFileNotFoundError
 

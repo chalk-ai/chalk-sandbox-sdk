@@ -1,0 +1,1 @@
+Add optional WeightStream registration and bounded durable metadata reconciliation, immutable publication snapshot observations, committed-metadata-pending outcomes, and control-plane pin/unpin support while preserving volume-only use.

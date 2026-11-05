@@ -6,6 +6,10 @@ import importlib
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     "WeightStream": ("chalkcompute._weights", "WeightStream"),
+    "WeightMetadataPending": (
+        "chalkcompute._weight_stream_metadata",
+        "WeightMetadataPending",
+    ),
     "WeightPublisher": ("chalkcompute._weights", "WeightPublisher"),
     "WeightStreamError": ("chalkcompute._weights_format", "WeightStreamError"),
     # _router.py
