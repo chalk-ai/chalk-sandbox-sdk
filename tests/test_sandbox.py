@@ -1193,7 +1193,12 @@ def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
         fake_client.close()
 
 
-def test_sandbox_terminate_empty_dir_does_not_create_volume_client() -> None:
+@pytest.mark.parametrize(
+    "volume_type", [VolumeMountType.EMPTY_DIR, VolumeMountType.SHARED_MEMORY]
+)
+def test_sandbox_terminate_ephemeral_mount_does_not_create_volume_client(
+    volume_type,
+) -> None:
     with SandboxClient() as client:
         stub = MagicMock(wraps=_Stub())
         stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
@@ -1201,7 +1206,7 @@ def test_sandbox_terminate_empty_dir_does_not_create_volume_client() -> None:
         sandbox = Sandbox(
             image="ubuntu:latest",
             sandbox_client=client,
-            volumes=[VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)],
+            volumes=[VolumeMount("scratch", "/tmp", type=volume_type)],
         )
         sandbox.run()
 
