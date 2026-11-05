@@ -13,6 +13,7 @@ import importlib
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -58,7 +59,7 @@ def overlay_archive(source_root):
     }
 
 
-def prepare(out, source_root, guard_root, audited_source_root):
+def prepare(out, source_root, guard_root, audited_source_root, *, host_prewarm=False):
     out.mkdir(parents=True, exist_ok=False)
     frozen = out / "guard"
     frozen.mkdir()
@@ -71,17 +72,23 @@ def prepare(out, source_root, guard_root, audited_source_root):
     (out / "overlay.tar.gz").write_bytes(archive)
     (out / "preflight_payload.py").write_bytes(Path(payload.__file__).read_bytes())
     (out / "cpu_preflight.py").write_bytes(Path(__file__).read_bytes())
+    if host_prewarm:
+        (out / "host_guard.py").write_bytes(
+            Path(__file__).with_name("host_guard.py").read_bytes()
+        )
     source_hashes = {
         relative: payload.digest(audited_source_root / filename)
         for relative, filename in payload.SOURCE_FILES.items()
     }
     plan = {
-        "kind": "sglang_cpu_preflight_plan",
+        "kind": "sglang_host_prewarm_plan"
+        if host_prewarm
+        else "sglang_cpu_preflight_plan",
         "image": payload.IMAGE,
         "lease_seconds": LEASE_SECONDS,
         "cpu": "4",
         "memory": "16Gi",
-        "compute_class": "K8S",
+        "compute_class": "HOST" if host_prewarm else "K8S",
         "gpu_claimed": False,
         "chalk_identity": False,
         "owned_volume_names": [],
@@ -91,6 +98,11 @@ def prepare(out, source_root, guard_root, audited_source_root):
         "launcher_sha256": payload.digest(out / "cpu_preflight.py"),
         "guard_files": guards,
         "source_hashes": source_hashes,
+        "host_guard_sha256": payload.digest(out / "host_guard.py")
+        if host_prewarm
+        else None,
+        "host_pool_id": "ExternalClusterHosts" if host_prewarm else None,
+        "expected_host_id": "svlsbfe05ebc-oracle-a100" if host_prewarm else None,
     }
     write_json(out / "plan.json", plan)
     return plan
@@ -98,18 +110,26 @@ def prepare(out, source_root, guard_root, audited_source_root):
 
 def validate_prepared(out):
     plan = read_json(out / "plan.json")
+    host = plan["kind"] == "sglang_host_prewarm_plan"
     if not (
-        plan["kind"] == "sglang_cpu_preflight_plan"
+        plan["kind"] in {"sglang_cpu_preflight_plan", "sglang_host_prewarm_plan"}
         and plan["image"] == payload.IMAGE
         and plan["lease_seconds"] == LEASE_SECONDS
         and plan["cpu"] == "4"
         and plan["memory"] == "16Gi"
-        and plan["compute_class"] == "K8S"
+        and plan["compute_class"] == ("HOST" if host else "K8S")
         and plan["gpu_claimed"] is False
         and plan["chalk_identity"] is False
         and plan["owned_volume_names"] == []
+        and plan.get("host_pool_id") == ("ExternalClusterHosts" if host else None)
+        and plan.get("expected_host_id")
+        == ("svlsbfe05ebc-oracle-a100" if host else None)
     ):
         raise ValueError("CPU preflight resource/image plan changed")
+    if host and payload.digest(out / "host_guard.py") != plan["host_guard_sha256"]:
+        raise ValueError("Reviewed HOST guard changed")
+    if not host and plan.get("host_guard_sha256") is not None:
+        raise ValueError("K8S plan cannot select a HOST guard")
     if (
         payload.digest(out / "overlay.tar.gz") != plan["overlay_sha256"]
         or payload.digest(out / "preflight_payload.py") != plan["payload_sha256"]
@@ -144,7 +164,7 @@ proof=namespace['run_preflight'](root/'output',CONFIG['source_hashes'])
 """
 
 
-def make_sandbox(cc, name, image, program):
+def make_sandbox(cc, name, image, program, *, host_prewarm=False):
     """Construct only; identity must be explicitly disabled despite SDK default."""
     return cc.Sandbox(
         name=name,
@@ -153,7 +173,9 @@ def make_sandbox(cc, name, image, program):
         restart_policy=cc.RestartPolicy.NEVER,
         cpu="4",
         memory="16Gi",
-        compute_class=cc.ComputeClass.K8S,
+        compute_class=cc.ComputeClass.HOST if host_prewarm else cc.ComputeClass.K8S,
+        runtime=cc.Runtime.GVISOR if host_prewarm else None,
+        host_pool_id="ExternalClusterHosts" if host_prewarm else None,
         execution_target=cc.ExecutionBackend.SERVERLESS,
         lifetime="900s",
         chalk_identity=False,
@@ -168,6 +190,104 @@ def make_sandbox(cc, name, image, program):
     )
 
 
+def export_guest_file(sandbox, path, *, max_bytes, record, out):
+    """Read bounded chunks; retain transport diagnostics without file contents."""
+    from pathlib import PurePosixPath
+
+    parsed = PurePosixPath(path)
+    if not parsed.is_absolute() or ".." in parsed.parts:
+        raise ValueError("Export requires an absolute safe guest path")
+    if not 0 <= max_bytes <= payload.MAX_BUNDLE_BYTES:
+        raise ValueError("Export exceeds fixed fixture bound")
+    chunk_bytes = 32 * 1024  # Base64 remains below 44 KiB per exec response.
+    stage, offset = "stat", 0
+    response = None
+
+    def redacted(value):
+        text = str(value or "")[:4096]
+        # Credentials are disabled, but transport errors may include endpoint URLs.
+        text = re.sub(r"https?://[^\s]+", "[redacted-url]", text)
+        text = re.sub(
+            r"(?i)(bearer\s+|(?:token|secret|password|api[_-]?key)\s*[=:]\s*)[^\s,;]+",
+            r"\1[redacted]",
+            text,
+        )
+        return text
+
+    def command(code):
+        nonlocal response
+        response = None
+        budget = record["cpu_deadline_epoch"] - time.time() - 120
+        if budget <= 0:
+            raise TimeoutError("Fixture export reached cleanup reserve")
+        response = sandbox.exec(
+            "/opt/sglang/bin/python",
+            "-c",
+            code,
+            timeout_secs=min(20, max(1, int(budget))),
+        )
+        if response.error is not None or response.exit_code not in (0, None):
+            raise RuntimeError("Read-only fixture export command failed")
+        return response.stdout_text
+
+    try:
+        size = int(
+            command(
+                "from pathlib import Path; print(Path("
+                + repr(path)
+                + ").stat().st_size)"
+            )
+        )
+        if not 0 <= size <= max_bytes:
+            raise ValueError("Guest file exceeds authorized export bound")
+        chunks = []
+        stage = "chunk"
+        for offset in range(0, size, chunk_bytes):
+            count = min(chunk_bytes, size - offset)
+            code = (
+                "import base64\nfrom pathlib import Path\nwith Path("
+                + repr(path)
+                + ').open("rb") as handle:\n handle.seek('
+                + str(offset)
+                + ")\n print(base64.b64encode(handle.read("
+                + str(count)
+                + ")).decode())\n"
+            )
+            chunk = base64.b64decode(command(code).strip(), validate=True)
+            if len(chunk) != count:
+                raise RuntimeError("Guest file returned a short export chunk")
+            chunks.append(chunk)
+            write_json(
+                out / "export-progress.json",
+                {
+                    "exported_bytes": offset + count,
+                    "total_bytes": size,
+                    "recorded_at": time.time(),
+                },
+            )
+        return b"".join(chunks)
+    except BaseException as error:
+        write_json(
+            out / "export-failure.json",
+            {
+                "stage": stage,
+                "offset": offset,
+                "chunk_bytes": chunk_bytes,
+                "error_type": type(error).__name__,
+                "error": redacted(error),
+                "response_error": redacted(response.error)
+                if response is not None
+                else None,
+                "exit_code": response.exit_code if response is not None else None,
+                "signal": getattr(response, "signal", None),
+                "stderr": redacted(getattr(response, "stderr_text", "")),
+                "stdout_bytes": len(getattr(response, "stdout_text", "").encode()),
+                "recorded_at": time.time(),
+            },
+        )
+        raise
+
+
 def execute(out, env_file):
     plan = validate_prepared(out)
     # The exclusive ledger prevents accidental repeat execution of one plan.
@@ -178,6 +298,11 @@ def execute(out, env_file):
     sys.path.insert(0, str((out / "guard").resolve()))
     guard = importlib.import_module("cpu_seed")
     guard.load_env(env_file)
+    host = None
+    if plan["kind"] == "sglang_host_prewarm_plan":
+        host = importlib.import_module("host_guard")
+        host.install_release_check(guard)
+        write_json(out / "host-membership-before-auth.json", host.membership())
     import chalkcompute as cc
     from chalkcompute._connect import ConnectClient
     from chalkcompute._gen.chalk.server.v1 import team_connect, team_pb
@@ -218,12 +343,13 @@ def execute(out, env_file):
         "cpu_started_at": now,
         "cpu_deadline_epoch": now + LEASE_SECONDS,
         "status": "preparing",
-        "compute_class": "K8S",
+        "compute_class": plan["compute_class"],
         "cpu": "4",
         "memory": "16Gi",
         "gpu_claimed": False,
         "owned_volume_names": [],
         "plan_sha256": payload.digest(out / "plan.json"),
+        "expected_host_id": plan.get("expected_host_id"),
     }
     root = "/tmp/sglang-preflight-" + phase
     config = {
@@ -243,7 +369,11 @@ def execute(out, env_file):
         guest_root=progress_root,
     )
     ledger = out / "launcher.json"
-    watch = guard.arm_cpu_watchdog(record, ledger)
+    watch = (
+        host.arm_watchdog(guard, record, ledger)
+        if host
+        else guard.arm_cpu_watchdog(record, ledger)
+    )
 
     def interrupted(signum, frame):
         raise KeyboardInterrupt
@@ -252,16 +382,50 @@ def execute(out, env_file):
     signal.signal(signal.SIGTERM, interrupted)
     try:
         sandbox_client = guard.guarded_sandbox_client(record, ledger)
-        sandbox = make_sandbox(cc, name, plan["image"], program)
+        if host:
+            write_json(out / "host-membership-before-create.json", host.membership())
+        sandbox = make_sandbox(
+            cc, name, plan["image"], program, host_prewarm=host is not None
+        )
         sandbox_client.run(sandbox, timeout=min(600, guard.remaining(record) - 120))
+        if host:
+            from training_smoke import ResourceGuard
+
+            placement_guard = ResourceGuard(
+                name, out, record, contexts[0], contexts[-1]
+            )
+            resources = placement_guard.capture_container_resource(
+                sandbox.id, "seed_resources"
+            )
+            if not resources:
+                raise RuntimeError("HOST placement resource identity missing")
+            placements = []
+            for resource in resources:
+                items = placement_guard.kube_items(
+                    "chalkcontainers",
+                    name=resource["name"],
+                    context=resource["context"],
+                )
+                placements.extend(
+                    item.get("status", {}).get("host_placement") for item in items
+                )
+            if len(placements) == 1 and isinstance(placements[0], dict):
+                record["observed_host_id"] = placements[0].get("host_id")
+                write_json(ledger, record)
+            write_json(out / "host-placement.json", host.require_placement(placements))
+            identity = host.runtime_identity(sandbox.id)
+            record["host_runtime_id"] = identity["id"]
+            write_json(out / "host-runtime-identity.json", identity)
+            write_json(ledger, record)
         progress = guard.poll_guest_until_complete(sandbox, record, ledger, poll)
         proof = progress["proof"]
         write_json(out / "cpu-proof.json", proof)
-        bundle = guard.read_guest_file(
+        bundle = export_guest_file(
             sandbox,
             root + "/output/fixture.tar.gz",
             max_bytes=payload.MAX_BUNDLE_BYTES,
             record=record,
+            out=out,
         )
         if (
             len(bundle) != proof["bundle"]["bytes"]
@@ -303,6 +467,11 @@ def main():
     parser.add_argument("--guard-root", type=Path)
     parser.add_argument("--audited-source-root", type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--host-prewarm",
+        action="store_true",
+        help="Prepare fixed Oracle CPU HOST plan; claims nothing",
+    )
     parser.add_argument("--env-file", type=Path)
     args = parser.parse_args()
     if args.execute:
@@ -319,6 +488,7 @@ def main():
             args.source_root.resolve(),
             args.guard_root.resolve(),
             args.audited_source_root.resolve(),
+            host_prewarm=args.host_prewarm,
         )
 
 

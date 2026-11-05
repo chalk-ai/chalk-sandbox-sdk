@@ -296,3 +296,119 @@ def test_cpu_constructor_disables_default_managed_creator_identity():
     sandbox = runner.make_sandbox(cc, "unsubmitted-cpu-plan", payload.IMAGE, "pass")
     assert sandbox.id is None
     assert sandbox._chalk_identity is False
+
+
+def test_host_constructor_is_cpu_only_identity_free_and_pool_scoped():
+    import chalkcompute as cc
+
+    sandbox = runner.make_sandbox(
+        cc, "unsubmitted-host-plan", payload.IMAGE, "pass", host_prewarm=True
+    )
+    assert sandbox.id is None and sandbox._gpu is None
+    assert sandbox._chalk_identity is False and sandbox._referenced_volumes == []
+    assert sandbox._compute_class == cc.ComputeClass.HOST
+    assert sandbox._runtime == cc.Runtime.GVISOR
+    assert sandbox._host_pool_id == "ExternalClusterHosts"
+    assert sandbox._cpu == "4" and sandbox._memory == "16Gi"
+
+
+def test_host_preparation_freezes_extra_native_cleanup_guard(prepared):
+    output, _ = prepared
+    root = output.parent
+    host_output = root / "host-prepared"
+    plan = runner.prepare(
+        host_output, root / "sdk", root / "guards", root / "upstream", host_prewarm=True
+    )
+    assert runner.validate_prepared(host_output) == plan
+    assert plan["kind"] == "sglang_host_prewarm_plan" and plan["gpu_claimed"] is False
+    assert plan["host_pool_id"] == "ExternalClusterHosts"
+    assert plan["expected_host_id"] == "svlsbfe05ebc-oracle-a100"
+    (host_output / "host_guard.py").write_text("changed")
+    with pytest.raises(ValueError, match="HOST guard"):
+        runner.validate_prepared(host_output)
+
+
+def export_response(stdout="", *, error=None, exit_code=0, stderr=""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        stdout_text=stdout,
+        error=error,
+        exit_code=exit_code,
+        stderr_text=stderr,
+        signal=None,
+    )
+
+
+def run_export(tmp_path, responses, *, deadline=None):
+    from types import SimpleNamespace
+    import time
+
+    calls = []
+
+    def command(*args, **kwargs):
+        calls.append((args, kwargs))
+        value = next(responses)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    value = runner.export_guest_file(
+        SimpleNamespace(exec=command),
+        "/fixture.tar.gz",
+        max_bytes=100000,
+        record={"cpu_deadline_epoch": deadline or time.time() + 900},
+        out=tmp_path,
+    )
+    return value, calls
+
+
+def test_fixture_export_success_uses_bounded_responses(tmp_path):
+    import base64
+
+    data = b"x" * 70000
+    responses = [export_response(str(len(data)))] + [
+        export_response(base64.b64encode(data[start : start + 32768]).decode())
+        for start in range(0, len(data), 32768)
+    ]
+    actual, calls = run_export(tmp_path, iter(responses))
+    assert actual == data and len(calls) == 4
+    assert calls[0][0][0] == "/opt/sglang/bin/python"
+    assert not (tmp_path / "export-failure.json").exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        export_response(
+            error="token=private https://private.example/a",
+            exit_code=1,
+            stderr="Bearer sensitive",
+        ),
+        TimeoutError("transport timeout"),
+    ],
+)
+def test_fixture_export_preserves_redacted_command_failure(tmp_path, failure):
+    with pytest.raises((RuntimeError, TimeoutError)):
+        run_export(tmp_path, iter([export_response("10"), failure]))
+    diagnostic = json.loads((tmp_path / "export-failure.json").read_text())
+    assert diagnostic["stage"] == "chunk" and diagnostic["offset"] == 0
+    text = json.dumps(diagnostic)
+    assert "sensitive" not in text and "private" not in text
+    assert diagnostic["error_type"] in ("RuntimeError", "TimeoutError")
+
+
+def test_fixture_export_rejects_short_chunk_and_retains_no_payload(tmp_path):
+    with pytest.raises(RuntimeError, match="short"):
+        run_export(tmp_path, iter([export_response("10"), export_response("YWJj")]))
+    diagnostic = json.loads((tmp_path / "export-failure.json").read_text())
+    assert diagnostic["stdout_bytes"] == 4
+    assert "YWJj" not in json.dumps(diagnostic)
+
+
+def test_fixture_export_stops_for_cleanup_reserve(tmp_path):
+    import time
+
+    with pytest.raises(TimeoutError, match="cleanup reserve"):
+        run_export(tmp_path, iter([]), deadline=time.time() + 100)
+    assert json.loads((tmp_path / "export-failure.json").read_text())["stage"] == "stat"
