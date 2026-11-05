@@ -7,11 +7,15 @@ Install ``chalkcompute[weights]`` in the trainer. Serving replicas use the
 from chalkcompute._weight_stream_metadata import (
     WeightMetadataPending as WeightMetadataPending,
 )
+from chalkcompute._weights import (
+    MaterializedWeightCheckpoint as MaterializedWeightCheckpoint,
+)
 from chalkcompute._weights import WeightPublisher as WeightPublisher
 from chalkcompute._weights import WeightStream as WeightStream
 from chalkcompute._weights_format import WeightStreamError as WeightStreamError
 
 __all__ = [
+    "MaterializedWeightCheckpoint",
     "WeightPublisher",
     "WeightStream",
     "WeightStreamError",

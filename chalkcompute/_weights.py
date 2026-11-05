@@ -10,6 +10,7 @@ import threading
 import time
 from copy import deepcopy
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +38,16 @@ if TYPE_CHECKING:
 
     from chalkcompute._connect import ConnectClient
     from chalkcompute._weight_stream_metadata import _WeightStreamMetadata
+
+
+@dataclass(frozen=True)
+class MaterializedWeightCheckpoint:
+    """A full checkpoint committed to one immutable output volume snapshot."""
+
+    volume_name: str
+    volume_version_id: int
+    version: int
+    source_volume_version_id: int
 
 
 class WeightStream:
@@ -209,11 +220,19 @@ class WeightStream:
             assert manifest.parent_version is not None
             version = manifest.parent_version
 
-    def materialize(self, version: int, destination: str | Path) -> Path:
+    def materialize(
+        self,
+        version: int,
+        destination: str | Path,
+        *,
+        source_volume_version_id: int | None = None,
+    ) -> Path:
         """Reconstruct an exact HF checkpoint for audits or model promotion.
 
         The destination must be absent. Work is staged in a sibling directory,
-        so failures never leave a checkpoint that looks complete.
+        so failures never leave a checkpoint that looks complete. Set
+        ``source_volume_version_id`` to replay entirely from that immutable
+        snapshot, independent of CURRENT, PIN, and pruning on main.
         """
         from safetensors.torch import load_file, save_file
 
@@ -221,7 +240,18 @@ class WeightStream:
         if destination.exists():
             raise FileExistsError(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        snapshot = self._snapshot()
+        if source_volume_version_id is not None:
+            if (
+                isinstance(source_volume_version_id, bool)
+                or not isinstance(source_volume_version_id, int)
+                or source_volume_version_id < 0
+            ):
+                raise ValueError(
+                    "source_volume_version_id must be a nonnegative integer"
+                )
+            snapshot = self._volume.at_version(source_volume_version_id)
+        else:
+            snapshot = self._snapshot()
         chain = self._chain(snapshot, version)
         base = chain[0]
         with tempfile.TemporaryDirectory(
@@ -241,14 +271,38 @@ class WeightStream:
 
             verify_payloads(stage, base)
             for filename in sorted({e.file for e in base.tensors}):
-                state.update(load_file(str(safe_path(stage, filename))))
+                shard = load_file(str(safe_path(stage, filename)))
+                if state.keys() & shard.keys():
+                    raise WeightStreamError("Duplicate tensor in keyframe shards")
+                state.update(shard)
+            expected = {entry.name: entry for entry in base.tensors}
+            if state.keys() != expected.keys() or any(
+                tuple(tensor.shape) != expected[name].shape
+                or str(tensor.dtype).removeprefix("torch.") != expected[name].dtype
+                for name, tensor in state.items()
+            ):
+                raise WeightStreamError("Keyframe tensors do not match manifest")
+            if (
+                architecture_hash((stage / "config.json").read_bytes(), state.items())
+                != base.architecture_hash
+            ):
+                raise WeightStreamError(
+                    "Keyframe architecture does not match config and tensors"
+                )
             for manifest in chain[1:]:
+                by_file: dict[str, list[TensorEntry]] = {}
                 for entry in manifest.tensors:
+                    by_file.setdefault(entry.file, []).append(entry)
+                for filename, entries in by_file.items():
+                    # A publisher packs all tensors into one shared patches.bin.
+                    # Read each blob once, then release it before the next file.
                     blob = snapshot.read_file(
-                        f"{version_dir(manifest.version)}/{entry.file}"
+                        f"{version_dir(manifest.version)}/{filename}"
                     )
-                    payload = blob[entry.offset : entry.offset + entry.length]
-                    apply_patch(state[entry.name], decode_patch(entry, payload))
+                    for entry in entries:
+                        payload = blob[entry.offset : entry.offset + entry.length]
+                        apply_patch(state[entry.name], decode_patch(entry, payload))
+                    del blob, payload
             # Replace original weight shards/index with one deterministic checkpoint.
             for filename in {e.file for e in base.tensors}:
                 safe_path(stage, filename).unlink()
@@ -258,6 +312,108 @@ class WeightStream:
             (stage / "chalk-weight-version.json").write_bytes(pointer_json(version))
             os.rename(stage, destination)
         return destination
+
+    def materialize_to_volume(
+        self,
+        version: int,
+        *,
+        source_volume_version_id: int,
+        destination: Volume,
+    ) -> MaterializedWeightCheckpoint:
+        """Write a complete HF checkpoint to an empty, caller-owned output volume.
+
+        Source and output commit IDs are immutable. The caller owns output volume
+        cleanup, including on error; this method never deletes an external volume.
+        The output volume must have a single writer during this operation.
+        """
+        if (
+            isinstance(source_volume_version_id, bool)
+            or not isinstance(source_volume_version_id, int)
+            or source_volume_version_id < 0
+        ):
+            raise ValueError("source_volume_version_id must be a nonnegative integer")
+        if destination.name == self._volume.name:
+            raise WeightStreamError("Checkpoint output must use a different volume")
+        if destination.version_id is not None or destination.ref != "main":
+            raise WeightStreamError(
+                "Checkpoint output requires a mutable main-ref volume"
+            )
+        destination.reload()
+        if destination.listdir():
+            raise WeightStreamError("Checkpoint output volume must be empty")
+        with tempfile.TemporaryDirectory(
+            prefix="chalk-weight-checkpoint-"
+        ) as directory:
+            folder = self.materialize(
+                version,
+                Path(directory) / "checkpoint",
+                source_volume_version_id=source_volume_version_id,
+            )
+            try:
+                config = json.loads((folder / "config.json").read_bytes())
+            except (OSError, ValueError) as error:
+                raise WeightStreamError(
+                    "Checkpoint requires valid config.json"
+                ) from error
+            if not isinstance(config, dict):
+                raise WeightStreamError("Checkpoint config.json must be an object")
+            tokenizer_files = (
+                "tokenizer.json",
+                "tokenizer.model",
+                "spiece.model",
+                "vocab.txt",
+            )
+            if not (
+                any((folder / name).is_file() for name in tokenizer_files)
+                or (
+                    (folder / "vocab.json").is_file()
+                    and (folder / "merges.txt").is_file()
+                )
+                or any(folder.glob("*.tiktoken"))
+            ):
+                raise WeightStreamError("Checkpoint requires tokenizer assets")
+            (folder / "chalk-weight-source.json").write_text(
+                json.dumps(
+                    {
+                        "volume_name": self._volume.name,
+                        "volume_version_id": source_volume_version_id,
+                        "version": version,
+                    },
+                    sort_keys=True,
+                )
+            )
+            files = sorted(path for path in folder.rglob("*") if path.is_file())
+            if len(files) > 200:
+                raise WeightStreamError(
+                    "Checkpoint exceeds atomic 200-file output commit"
+                )
+            with destination.batch_upload(max_files_per_commit=200) as batch:
+                for path in files:
+                    batch.put_file(path.relative_to(folder).as_posix(), path)
+            output_snapshot_id = destination.version.id
+            if (
+                isinstance(output_snapshot_id, bool)
+                or not isinstance(output_snapshot_id, int)
+                or output_snapshot_id < 0
+            ):
+                raise WeightStreamError(
+                    "Output commit did not return an immutable snapshot ID"
+                )
+            # Verify the identity through an immutable read, never a reload of main.
+            committed = destination.at_version(output_snapshot_id)
+            if (
+                committed.read_file("chalk-weight-source.json")
+                != (folder / "chalk-weight-source.json").read_bytes()
+            ):
+                raise WeightStreamError(
+                    "Output snapshot does not contain this checkpoint"
+                )
+        return MaterializedWeightCheckpoint(
+            destination.name,
+            output_snapshot_id,
+            version,
+            source_volume_version_id,
+        )
 
     def prune(self, *, keep_keyframes: int = 2) -> list[int]:
         if keep_keyframes < 1:

@@ -160,3 +160,20 @@ Check CURRENT, resume from its exact checkpoint, and reconcile metadata before
 continuing; do not reuse the recorded logical version. `committed_unindexed`
 means an error after commit but before successful metadata indexing that was not
 a known metadata outage. These states preserve the original exception.
+
+
+For asynchronous promotion, freeze the registered source volume commit explicitly:
+`stream.materialize(version, path, source_volume_version_id=commit_id)` reads the
+entire reachable keyframe/patch chain and its HF assets from that snapshot, even
+if main later advances or prunes it. Explicit zero is preserved. Missing ancestry,
+corrupt payloads, mismatched tensor metadata, and changed config fail before a
+complete local checkpoint appears.
+
+`stream.materialize_to_volume(version, source_volume_version_id=commit_id,
+destination=output_volume)` requires an empty output volume with a single writer,
+valid config, and tokenizer assets. It commits full safetensors plus all keyframe
+assets atomically, and returns `MaterializedWeightCheckpoint` with the output
+volume name and immutable `volume_version_id`. Register that exact commit as the
+model artifact. Later output-main writes cannot change it. The caller owns the
+output volume lifecycle and must clean it up on failure or cancellation; the SDK
+never deletes a caller-owned volume.
