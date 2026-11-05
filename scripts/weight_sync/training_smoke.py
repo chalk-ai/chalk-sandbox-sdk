@@ -548,6 +548,17 @@ def sample(group):
 
 def disconnect_probe(group, guard, ssh_host):
     """Close a real routed SSE request, then require the same healthy replica."""
+    evidence = {"started_at": time.time(), "phase": "checking_identity"}
+    guard.record["client_disconnect"] = evidence
+
+    def save(**fields):
+        evidence.update(fields)
+        (guard.out / "client-disconnect.json").write_text(
+            json.dumps(evidence, indent=2)
+        )
+        guard.save()
+
+    save()
 
     def identities():
         result = []
@@ -624,6 +635,11 @@ print(json.dumps(sorted(result, key=lambda item: item['pid'])))
         return json.loads(response.stdout)
 
     processes_before = native_processes(before[0][2])
+    save(
+        replicas_before=before,
+        native_processes_before=processes_before,
+        phase="opening_stream",
+    )
     group._client._ensure_auth()
     request = Request(
         group.web_url + "/v1/completions",
@@ -648,6 +664,11 @@ print(json.dumps(sorted(result, key=lambda item: item['pid'])))
         assert response.headers.get("x-chalk-policy-version") == "0"
         first = response.readline()
         assert first.startswith(b"data:") and b"[DONE]" not in first
+    save(
+        stream_closed_at=time.time(),
+        first_sse_chunk_bytes=len(first),
+        phase="checking_health",
+    )
     # EOF is intentionally not consumed. The supervisor must finish native
     # generation without losing its admission token or restarting the replica.
     health = []
@@ -678,6 +699,9 @@ print(json.dumps(sorted(result, key=lambda item: item['pid'])))
     assert metrics["chalk_weight_sync_failures"] == 0
     assert metrics["chalk_weight_sync_updates"] == 0
     result = {
+        **evidence,
+        "completed_at": time.time(),
+        "phase": "passed",
         "replicas_before": before,
         "replicas_after": after,
         "native_processes_before": processes_before,
