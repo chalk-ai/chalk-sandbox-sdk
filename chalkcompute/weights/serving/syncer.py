@@ -74,6 +74,7 @@ class WeightSyncer:
         self.metrics = metrics or Metrics()
         self.reload = reload
         self.architecture_hash: str | None = None
+        self._model_elements: int | None = None
         self._lock = asyncio.Lock()
 
     def desired(self) -> int:
@@ -150,6 +151,7 @@ class WeightSyncer:
             if first.kind != "keyframe":
                 raise StreamError("Boot requires a keyframe")
             self.architecture_hash = first.architecture_hash
+            self._model_elements = sum(math.prod(e.shape) for e in first.tensors)
             try:
                 await launch(self.root / version_dir(first.version))
                 for manifest in patches:
@@ -202,11 +204,18 @@ class WeightSyncer:
                     for e in m.tensors
                 }
                 self.metrics.bytes = sum(length for _, _, _, length in payloads)
-                total = sum(
-                    math.prod(e.shape) for m in plan.manifests for e in m.tensors
+                for manifest in plan.manifests:
+                    if manifest.kind == "keyframe":
+                        self._model_elements = sum(
+                            math.prod(e.shape) for e in manifest.tensors
+                        )
+                # Density describes the target publication against the whole
+                # model, including untouched tensors. Bytes/time describe the
+                # entire replay, whose intermediate changes may overlap.
+                changed = sum(e.nnz for e in plan.manifests[-1].tensors)
+                self.metrics.density = (
+                    changed / self._model_elements if self._model_elements else 0
                 )
-                changed = sum(e.nnz for m in plan.manifests for e in m.tensors)
-                self.metrics.density = changed / total if total else 0
                 self.metrics.lag_versions = 0
                 self.metrics.updates += 1
             return True

@@ -426,3 +426,32 @@ def test_keyframe_metrics_count_shared_safetensors_file_once(tmp_path):
         assert syncer.metrics.bytes == manifest.tensors[0].length
 
     asyncio.run(run())
+
+
+def test_patch_density_includes_unchanged_model_tensors(tmp_path):
+    from dataclasses import replace
+    from chalkcompute.weights.serving.supervisor import Metrics
+
+    base = put(tmp_path, 0, None, keyframe=True)
+    untouched = replace(base.tensors[0], name="unchanged", shape=(98,), nnz=98)
+    base = replace(base, tensors=(*base.tensors, untouched))
+    (tmp_path / version_dir(0) / "manifest.json").write_bytes(base.to_json())
+
+    async def run():
+        gate = AdmissionGate()
+        metrics = Metrics()
+        syncer = WeightSyncer(tmp_path, FakeAdapter(), gate, metrics=metrics)
+
+        async def launch(path):
+            pass
+
+        await syncer.bootstrap(launch)
+        patch = put(tmp_path, 1, 0)
+        patch = replace(
+            patch, tensors=(replace(patch.tensors[0], encoding="sparse", nnz=1),)
+        )
+        (tmp_path / version_dir(1) / "manifest.json").write_bytes(patch.to_json())
+        await syncer.sync_once()
+        assert metrics.density == 0.01
+
+    asyncio.run(run())
