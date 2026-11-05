@@ -35,6 +35,7 @@ def train_full_parameters(df, config):
     )
     canonical = {entry.name for entry in manifest.tensors}
     stream = WeightStream(config["stream"], config["model"])
+    started_monotonic = time.monotonic()
     report = {
         "status": "running",
         "kind": "full_parameter_bf16_sgd_sft",
@@ -47,7 +48,14 @@ def train_full_parameters(df, config):
     }
 
     def save(phase, **extra):
-        report["phases"].append({"phase": phase, "time": time.time(), **extra})
+        report["phases"].append(
+            {
+                "phase": phase,
+                "time": time.time(),
+                "elapsed_ms": (time.monotonic() - started_monotonic) * 1000,
+                **extra,
+            }
+        )
         stream.volume.put_file(
             "evidence/trainer.json", json.dumps(report, indent=2).encode()
         )
@@ -66,12 +74,15 @@ def train_full_parameters(df, config):
     torch.cuda.manual_seed_all(0)
     checkpoint = root / version_dir(0)
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, local_files_only=True)
+    save("model_load_begin")
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint,
         local_files_only=True,
         torch_dtype=torch.bfloat16,
         attn_implementation="sdpa",
-    ).to("cuda")
+    )
+    save("model_cpu_loaded")
+    model = model.to("cuda")
     model.config.use_cache = False
     model.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
@@ -79,6 +90,7 @@ def train_full_parameters(df, config):
     assert all(parameter.requires_grad for parameter in model.parameters())
     publisher = stream.publisher(keyframe_every=50)
     save("model_loaded", parameters=sum(p.numel() for p in model.parameters()))
+    save("publisher_resume_begin")
     publisher.resume(state())
     save("publisher_resumed")
     if hasattr(df, "collect"):
@@ -125,6 +137,13 @@ def train_full_parameters(df, config):
         optimizer.zero_grad(set_to_none=True)
         del loss
         torch.cuda.synchronize()
+        save(
+            "optimizer_step_complete",
+            step=step,
+            loss=loss_value,
+            gradient_elements=gradient_elements,
+            compute_ms=(time.monotonic() - started) * 1000,
+        )
         # Bitwise BF16 comparison counts actual changes before dense fallback.
         # This test-only inspection adds no third retained full-state clone.
         previous = publisher._previous
@@ -140,6 +159,12 @@ def train_full_parameters(df, config):
         }
         actual_changed = sum(changed.values())
         assert actual_changed > 0
+        save(
+            "publication_begin",
+            step=step,
+            actual_changed_elements=actual_changed,
+            total_model_elements=total_elements,
+        )
         publish_start = time.monotonic()
         publish_started_at = time.time()
         version = publisher.publish(state(), step=step)
