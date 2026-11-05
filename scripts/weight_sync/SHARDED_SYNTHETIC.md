@@ -20,7 +20,7 @@ construction. It generates a canonical HF shard index and copies root auxiliary
 files into the reference. Symlinked HF cache layouts require separate reviewed
 staging; arbitrary nested metadata directories are not supported.
 
-## Separate frozen remote candidate — unexecuted
+## Separate frozen remote candidate — one small run completed
 
 `sharded-synthetic-frozen-v4` is separate from the unchanged full-8B frozen v4.
 Its plan SHA-256 is
@@ -30,7 +30,8 @@ The local artifact is under
 It contains 28 frozen helper sources, 239 controller SDK sources, the reviewed
 runtime overlay and pinned prebuilt image, and a compiled 91,439-byte entrypoint.
 `preview.json` contains exact validation, execution, cleanup and verification
-commands. No execution authorization or resource allocation has been created.
+commands. The exact v4 candidate was authorized and executed once; independent
+release verification passed. See [measured evidence](SHARDED_SYNTHETIC_EVIDENCE.md).
 
 The proposed phase uses the singleton Oracle HOST pool, **4 CPU, 8 GiB RAM,
 zero GPU**, with an absolute 600-second phase deadline and 120-second cleanup
@@ -116,8 +117,8 @@ the original lease and permanent execution failure. Fresh read-only checks of 24
 prove all 21 registered groups have no nonzombie members.
 Added Python sources pass Ruff and ty.
 
-Actual remote SDK cache/upload/cgroup/disk measurements remain **unmeasured**.
-The candidate requires parent source/command review before any allocation.
-Only after genuine small-pipeline evidence and independently proved release may
-a conservative full-8B streaming resource proposal be prepared. Full-8B peaks,
-native fused mapping, inference behavior and performance remain unmeasured here.
+The exact v4 small SDK pipeline completed once with byte proofs and independent
+release verification. Actual observations and their limits are recorded in
+[the evidence note](SHARDED_SYNTHETIC_EVIDENCE.md). Full-8B peaks, native fused
+mapping, inference behavior and performance remain unmeasured here; the existing
+full-model gates and authorization requirements are unchanged.
