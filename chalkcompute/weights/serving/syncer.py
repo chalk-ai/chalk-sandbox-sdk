@@ -212,9 +212,9 @@ class WeightSyncer:
                 # Density describes the target publication against the whole
                 # model, including untouched tensors. Bytes/time describe the
                 # entire replay, whose intermediate changes may overlap.
-                changed = sum(e.nnz for e in plan.manifests[-1].tensors)
+                transmitted = sum(e.nnz for e in plan.manifests[-1].tensors)
                 self.metrics.density = (
-                    changed / self._model_elements if self._model_elements else 0
+                    transmitted / self._model_elements if self._model_elements else 0
                 )
                 self.metrics.lag_versions = 0
                 self.metrics.updates += 1
