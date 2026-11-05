@@ -17,8 +17,10 @@ proxy admits known native OpenAI API routes and rejects management routes.
 Streaming bodies pass through without buffering. Each admitted response carries
 `x-chalk-policy-version`. `/chalk/health` returns the applied version and
 `x-chalk-weight-version`; `/chalk/metrics` exposes Prometheus measurements. Density is the final target
-publication's changed elements divided by the complete keyframe's model element
-count. Apply time and bytes include every version in that replay batch; shared
+publication's transmitted elements divided by the complete keyframe's model element
+count. Sparse entries count exact changes; dense entries count the entire tensor,
+so this fraction is an upper bound on the true changed-element fraction.
+Apply time and bytes include every version in that replay batch; shared
 safetensors shard bytes are counted once per version.
 
 The supervisor verifies every payload in the planned replay before any device
