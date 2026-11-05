@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, hdrs, web
+
+logger = logging.getLogger(__name__)
 
 
 class UnhealthyError(RuntimeError):
@@ -42,13 +45,14 @@ class AdmissionGate:
         self.version: int | None = None
         self.healthy = True
         self.failed = asyncio.Event()
+        self.failure_reason: str | None = None
         self._paused = False
         self._active = 0
         self._condition = asyncio.Condition()
         self._update_lock = asyncio.Lock()
 
     @contextlib.asynccontextmanager
-    async def admit(self) -> AsyncGenerator[int]:
+    async def admit(self, *, context: str = "inference request") -> AsyncGenerator[int]:
         async with self._condition:
             await self._condition.wait_for(lambda: not self._paused or not self.healthy)
             if not self.healthy or self.version is None:
@@ -57,10 +61,10 @@ class AdmissionGate:
             self._active += 1
         try:
             yield version
-        except BaseException:
+        except BaseException as exc:
             # Mark uncertainty before decrementing active: an update waiting on
-            # the final request must never race a disconnected engine request.
-            await self.fail()
+            # the final request must never race uncertain native completion.
+            await self.fail(f"{type(exc).__name__} during admitted {context}")
             raise
         finally:
             async with self._condition:
@@ -100,8 +104,11 @@ class AdmissionGate:
                     self._paused = False
                     self._condition.notify_all()
 
-    async def fail(self) -> None:
+    async def fail(self, reason: str | None = None) -> None:
         async with self._condition:
+            if reason is not None and self.failure_reason is None:
+                self.failure_reason = reason
+                logger.error("Live policy failed closed: %s", reason)
             self.healthy = False
             self.failed.set()
             self._condition.notify_all()
@@ -157,6 +164,7 @@ def create_app(
         client_max_size=0,
         handler_args={"handler_cancellation": True, "auto_decompress": False},
     )
+    native_tasks: set[asyncio.Task] = set()
 
     async def clients(app: web.Application):
         async with ClientSession(
@@ -165,7 +173,16 @@ def create_app(
             skip_auto_headers={hdrs.ACCEPT_ENCODING},
         ) as client:
             app[client_key] = client
-            yield
+            try:
+                yield
+            finally:
+                # The serving entrypoint stops the engine process group before
+                # app cleanup, so cancelling an uncertain drain cannot race an
+                # engine weight write or leave native generation running.
+                remaining = tuple(native_tasks)
+                for task in remaining:
+                    task.cancel()
+                await asyncio.gather(*remaining, return_exceptions=True)
 
     client_key = web.AppKey("engine_client", ClientSession)
     app.cleanup_ctx.append(clients)
@@ -189,38 +206,105 @@ def create_app(
     async def proxy(request: web.Request) -> web.StreamResponse:
         if request.path not in _OPENAI_ROUTES:
             raise web.HTTPNotFound()
+        detached = asyncio.Event()
+        queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue(maxsize=8)
+        metadata = asyncio.get_running_loop().create_future()
+
+        async def enqueue(value: bytes | BaseException | None) -> None:
+            if detached.is_set():
+                return
+            put = asyncio.create_task(queue.put(value))
+            disconnected = asyncio.create_task(detached.wait())
+            try:
+                await asyncio.wait(
+                    (put, disconnected), return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                for task in (put, disconnected):
+                    task.cancel()
+                await asyncio.gather(put, disconnected, return_exceptions=True)
+
+        async def consume_native() -> None:
+            try:
+                async with gate.admit(
+                    context=f"{request.method} {request.path}"
+                ) as version:
+                    if detached.is_set():
+                        # No native request was started while admission waited.
+                        metadata.set_result(
+                            UnhealthyError("Client disconnected before admission")
+                        )
+                        return
+                    async with app[client_key].request(
+                        request.method,
+                        engine_url.rstrip("/") + str(request.rel_url),
+                        headers=_headers(request.headers),
+                        data=request.content.iter_any(),
+                        allow_redirects=False,
+                    ) as upstream:
+                        headers = _headers(upstream.headers, response=True)
+                        headers["x-chalk-policy-version"] = str(version)
+                        metadata.set_result((upstream.status, headers))
+                        async for chunk in upstream.content.iter_chunked(64 * 1024):
+                            await enqueue(chunk)
+                # Releasing admission requires native HTTP EOF, even if the
+                # downstream client disappeared while generation was running.
+            except asyncio.CancelledError as exc:
+                detached.set()
+                if not metadata.done():
+                    metadata.set_result(exc)
+                raise
+            except BaseException as exc:
+                if not metadata.done():
+                    metadata.set_result(exc)
+                await enqueue(exc)
+            finally:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    # Cancellation can arrive while publishing an error into a
+                    # full queue. Cleanup must never await the stopped consumer.
+                    detached.set()
+                await enqueue(None)
+
+        native = asyncio.create_task(consume_native(), name="inference-native-drain")
+        native_tasks.add(native)
+        native.add_done_callback(native_tasks.discard)
         response: web.StreamResponse | None = None
         try:
-            async with gate.admit() as version:
-                async with app[client_key].request(
-                    request.method,
-                    engine_url.rstrip("/") + str(request.rel_url),
-                    headers=_headers(request.headers),
-                    data=request.content.iter_any(),
-                    allow_redirects=False,
-                ) as upstream:
-                    headers = _headers(upstream.headers, response=True)
-                    headers["x-chalk-policy-version"] = str(version)
-                    response = web.StreamResponse(
-                        status=upstream.status, headers=headers
-                    )
-                    await response.prepare(request)
-                    async for chunk in upstream.content.iter_any():
-                        await response.write(chunk)
-                    await response.write_eof()
-                    return response
+            result = await asyncio.shield(metadata)
+            if isinstance(result, BaseException):
+                raise result
+            status, headers = result
+            response = web.StreamResponse(status=status, headers=headers)
+            await response.prepare(request)
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                if isinstance(chunk, BaseException):
+                    raise chunk
+                await response.write(chunk)
+            await response.write_eof()
+            return response
         except UnhealthyError as exc:
             raise web.HTTPServiceUnavailable(text=str(exc)) from exc
         except (asyncio.CancelledError, ClientError, OSError, TimeoutError) as exc:
-            # A disconnected client does not prove the native engine has stopped
-            # decoding. Fail closed until the process group is restarted.
-            await gate.fail()
+            # Native consumption owns admission and survives client cancellation.
+            # Its own transport errors still fail the gate closed.
+            logger.info(
+                "Inference downstream detached: method=%s route=%s exception=%s",
+                request.method,
+                request.path,
+                type(exc).__name__,
+            )
             if isinstance(exc, asyncio.CancelledError):
                 raise
             if response is not None and response.prepared:
                 response.force_close()
                 raise
             raise web.HTTPBadGateway(text="Inference engine unavailable") from exc
+        finally:
+            detached.set()
 
     app.router.add_get("/chalk/health", health)
     app.router.add_get("/chalk/metrics", prometheus)

@@ -327,7 +327,7 @@ def test_adapter_rejects_bad_rank_ack_and_unsafe_args(tmp_path):
         asyncio.run(BadAdapter(engine_args=["-tp", "2"]).apply(tmp_path, manifest))
 
 
-def test_disconnect_marks_gate_unhealthy_before_another_update():
+def test_disconnect_drains_native_eof_before_another_update():
     async def run():
         started = asyncio.Event()
         release = asyncio.Event()
@@ -338,6 +338,10 @@ def test_disconnect_marks_gate_unhealthy_before_another_update():
             await response.write(b"first")
             started.set()
             await release.wait()
+            # More than the bounded proxy queue: a disconnected consumer must
+            # never leave a producer blocked on queue.put().
+            for _ in range(32):
+                await response.write(b"x" * (64 * 1024))
             return response
 
         engine = web.Application()
@@ -354,15 +358,248 @@ def test_disconnect_marks_gate_unhealthy_before_another_update():
                     )
                     await started.wait()
                     response.close()
-                    await asyncio.wait_for(gate.failed.wait(), 1)
-                    with pytest.raises(RuntimeError, match="unhealthy"):
+                    applied = asyncio.Event()
+
+                    async def update():
                         async with gate.update(1):
-                            pytest.fail(
-                                "Disconnected engine request may still be decoding"
-                            )
+                            applied.set()
+
+                    updater = asyncio.create_task(update())
+                    await asyncio.sleep(0.02)
+                    assert gate.healthy
+                    assert gate._active == 1
+                    assert not applied.is_set()
+                    release.set()
+                    await asyncio.wait_for(updater, 1)
+                    assert applied.is_set()
+                    assert gate.healthy
+                    assert gate._active == 0
             finally:
                 release.set()
                 await public.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_uncertain_native_completion_fails_closed(timeout):
+    async def run():
+        release = asyncio.Event()
+
+        async def generate(request):
+            response = web.StreamResponse()
+            await response.prepare(request)
+            await response.write(b"first")
+            if timeout:
+                await release.wait()
+            else:
+                request.transport.close()
+            return response
+
+        engine = web.Application()
+        engine.router.add_post("/v1/completions", generate)
+        async with TestServer(engine) as upstream:
+            gate = AdmissionGate()
+            gate.version = 1
+            public = TestServer(
+                create_app(
+                    gate,
+                    str(upstream.make_url("")),
+                    request_timeout=0.05 if timeout else None,
+                )
+            )
+            await public.start_server()
+            try:
+                async with ClientSession() as client:
+                    response = await client.post(
+                        public.make_url("/v1/completions"), json={}
+                    )
+                    await asyncio.wait_for(gate.failed.wait(), 1)
+                    assert not gate.healthy
+                    assert "POST /v1/completions" in gate.failure_reason
+                    assert (
+                        "TimeoutError" if timeout else "ClientPayloadError"
+                    ) in gate.failure_reason
+                    with pytest.raises(RuntimeError, match="unhealthy"):
+                        async with gate.update(1):
+                            pytest.fail(
+                                "Uncertain native completion must block updates"
+                            )
+                    response.close()
+            finally:
+                release.set()
+                await public.close()
+
+    asyncio.run(run())
+
+
+def test_serving_shutdown_stops_engine_before_app_drain_cleanup(monkeypatch, tmp_path):
+    import argparse
+
+    from chalkcompute.weights.serving import __main__ as entrypoint
+
+    async def run():
+        events = []
+        exited = asyncio.Event()
+
+        class Process:
+            pid = 12345
+            returncode = None
+
+            async def wait(self):
+                await exited.wait()
+                return 0
+
+        async def spawn(*args, **kwargs):
+            return Process()
+
+        class Adapter:
+            url = "http://127.0.0.1:8001"
+
+            def __init__(self, *args):
+                pass
+
+            def launch_cmd(self, *args):
+                return ["test-engine"]
+
+            async def ready(self):
+                return True
+
+        class Syncer:
+            def __init__(self, root, adapter, gate, **kwargs):
+                self.gate = gate
+
+            async def bootstrap(self, launch):
+                await launch(tmp_path)
+
+            async def run(self):
+                await self.gate.fail("test native failure")
+                await asyncio.Event().wait()
+
+        class Runner:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                assert exited.is_set()
+                events.append("drain-cleanup")
+
+        class Site:
+            def __init__(self, *args):
+                pass
+
+            async def start(self):
+                pass
+
+        def stop_engine(pid, signum):
+            events.append("engine-stop")
+            exited.set()
+
+        monkeypatch.setattr(entrypoint, "VLLMAdapter", Adapter)
+        monkeypatch.setattr(entrypoint, "WeightSyncer", Syncer)
+        monkeypatch.setattr(entrypoint.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(entrypoint.web, "AppRunner", Runner)
+        monkeypatch.setattr(entrypoint.web, "TCPSite", Site)
+        monkeypatch.setattr(entrypoint.os, "killpg", stop_engine)
+        args = argparse.Namespace(
+            weights=str(tmp_path), engine_port=8001, engine_args=[], startup_timeout=1
+        )
+        with pytest.raises(RuntimeError, match="test native failure"):
+            await entrypoint.serve(args)
+        assert events == ["engine-stop", "drain-cleanup"]
+
+    asyncio.run(run())
+
+
+def test_cancel_native_with_full_queue_and_attached_consumer(monkeypatch):
+    from chalkcompute.weights.serving import supervisor
+
+    async def run():
+        full = asyncio.Event()
+        stalled = asyncio.Event()
+
+        class Upstream:
+            status = 200
+            headers = {}
+
+            @property
+            def content(self):
+                return self
+
+            async def iter_chunked(self, size):
+                for index in range(100):
+                    if index == 9:
+                        full.set()
+                    yield b"x" * size
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        class Session:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            def request(self, *args, **kwargs):
+                return Upstream()
+
+        class Response:
+            prepared = True
+
+            def __init__(self, **kwargs):
+                pass
+
+            async def prepare(self, request):
+                pass
+
+            async def write(self, chunk):
+                await stalled.wait()
+
+        class Request:
+            method = "POST"
+            path = rel_url = "/v1/completions"
+            headers = {}
+            content = None
+
+        request = Request()
+        request.content = request
+        request.iter_any = lambda: None
+        monkeypatch.setattr(supervisor, "ClientSession", Session)
+        monkeypatch.setattr(supervisor.web, "StreamResponse", Response)
+        gate = AdmissionGate()
+        gate.version = 0
+        app = create_app(gate, "http://engine")
+        clients = app.cleanup_ctx[0](app)
+        await clients.__anext__()
+        handler = asyncio.create_task(list(app.router.routes())[-1].handler(request))
+        try:
+            await asyncio.wait_for(full.wait(), 1)
+            native = next(
+                task
+                for task in asyncio.all_tasks()
+                if task.get_name() == "inference-native-drain"
+            )
+            native.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(native, 1)
+            assert not handler.done()  # downstream is still attached and stalled
+            assert not gate.healthy
+            assert gate._active == 0
+        finally:
+            handler.cancel()
+            await asyncio.gather(handler, return_exceptions=True)
+            await clients.aclose()
 
     asyncio.run(run())
 
