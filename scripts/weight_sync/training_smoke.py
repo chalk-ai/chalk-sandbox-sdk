@@ -907,6 +907,13 @@ def main():
         record["dataset_id"] = guard.dataset_id
         # Load the plain function module so the real decorator packages its source.
         module_path = Path(__file__).with_name("remote_training.py")
+        source = module_path.read_bytes()
+        (args.out / "remote-training-executed.py").write_bytes(source)
+        record["remote_training_sha256"] = hashlib.sha256(source).hexdigest()
+        record["harness_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        guard.save()
         spec = importlib.util.spec_from_file_location("remote_training", module_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules["remote_training"] = module
