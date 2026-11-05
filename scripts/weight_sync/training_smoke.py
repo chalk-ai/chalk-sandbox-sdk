@@ -820,6 +820,8 @@ def main():
         help="Acquire the seed within the planned serving A100 and its GPU deadline",
     )
     parser.add_argument("--budget-seconds", type=int, default=2400)
+    parser.add_argument("--serving-startup-seconds", type=int, default=600)
+    parser.add_argument("--training-timeout-seconds", type=int, default=1200)
     parser.add_argument(
         "--kube-context",
         default="gke_chalk-serverless-stage_us-central1_chalk-svls-stage-us-central1-gke",
@@ -841,6 +843,10 @@ def main():
         parser.error(
             "--execute requires --cpu-seed-ledger and --prepared-image; GPU seeding is disabled"
         )
+    if not 60 <= args.serving_startup_seconds <= 1200:
+        parser.error("Serving startup must be 60..1200 seconds")
+    if not 60 <= args.training_timeout_seconds <= 1800:
+        parser.error("Training timeout must be 60..1800 seconds")
     if not 900 <= args.budget_seconds <= 3300:
         parser.error("GPU budget must be 900..3300 seconds")
     load_env(args.env_file)
@@ -1209,7 +1215,12 @@ def main():
             )
             guard.groups.append((name + suffix, group))
             group._client = budget_client
-            group.deploy(ready_timeout=1200)
+            group.deploy(
+                ready_timeout=min(
+                    args.serving_startup_seconds,
+                    max(1, int(record["gpu_deadline_epoch"] - time.time())),
+                )
+            )
             record.setdefault("group_ids", {})[name + suffix] = group.id
             guard.save()
             return group
@@ -1229,6 +1240,13 @@ def main():
             "cpu_threads": args.cpu_threads,
         }
         guard.check_budget()
+        if (
+            record["gpu_deadline_epoch"] - time.time()
+            < args.training_timeout_seconds + args.serving_startup_seconds + 120
+        ):
+            raise TimeoutError(
+                "Insufficient remaining lease for trainer and independent fresh comparison"
+            )
         handle = trainer.run_training(
             config=config, build_timeout=600, client=budget_client
         )
@@ -1239,8 +1257,13 @@ def main():
         observer.thread.start()
         try:
             handle.wait(
-                timeout=args.budget_seconds
-                - (time.time() - record["gpu_budget_started_at"])
+                timeout=min(
+                    args.training_timeout_seconds,
+                    record["gpu_deadline_epoch"]
+                    - time.time()
+                    - args.serving_startup_seconds
+                    - 60,
+                )
             )
         finally:
             observer.close()
@@ -1269,7 +1292,16 @@ def main():
         guard.stop_training()
         version = report["full_state_audit"]["version"]
         # Verify visibility before a second engine load from a fresh independent reconstruction.
-        deadline = time.monotonic() + 300
+        deadline = time.monotonic() + min(
+            300,
+            max(
+                0,
+                record["gpu_deadline_epoch"]
+                - time.time()
+                - args.serving_startup_seconds
+                - 60,
+            ),
+        )
         while time.monotonic() < deadline:
             live = sample(serving)
             if live["version"] == str(version):
