@@ -181,8 +181,16 @@ def test_seed_and_periodic_keyframe_preserve_tokenizer_assets(
     from safetensors.torch import save_file
     import huggingface_hub
 
-    source = tmp_path / "hf"
-    source.mkdir()
+    source = (
+        tmp_path
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "models--test--model"
+        / "snapshots"
+        / "pinned"
+    )
+    source.mkdir(parents=True)
     (source / "config.json").write_text('{"model_type":"qwen3","hidden_size":10}')
     (source / "tokenizer.json").write_text('{"tokenizer":"test"}')
     (source / "generation_config.json").write_text('{"eos_token_id":1}')

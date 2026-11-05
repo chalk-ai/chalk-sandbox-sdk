@@ -243,7 +243,7 @@ class WeightStream:
             files = [
                 (p.relative_to(folder).as_posix(), p)
                 for p in folder.rglob("*")
-                if p.is_file() and ".cache" not in p.parts
+                if p.is_file() and ".cache" not in p.relative_to(folder).parts
             ]
             if len(files) + 2 > 200:
                 raise WeightStreamError(
