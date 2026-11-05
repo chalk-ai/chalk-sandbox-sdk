@@ -14,6 +14,22 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "PolicyGeneration": ("chalkcompute._live_policy", "PolicyGeneration"),
     "PolicyChatGeneration": ("chalkcompute._live_policy", "PolicyChatGeneration"),
     "PolicyReplica": ("chalkcompute._live_policy", "PolicyReplica"),
+    "WeightStreamPromotion": (
+        "chalkcompute._weight_promotion",
+        "WeightStreamPromotion",
+    ),
+    "WeightPromotionResult": (
+        "chalkcompute._weight_promotion",
+        "WeightPromotionResult",
+    ),
+    "WeightPromotionFailed": (
+        "chalkcompute._weight_promotion",
+        "WeightPromotionFailed",
+    ),
+    "WeightPromotionCancelled": (
+        "chalkcompute._weight_promotion",
+        "WeightPromotionCancelled",
+    ),
     "WeightStream": ("chalkcompute._weights", "WeightStream"),
     "WeightMetadataPending": (
         "chalkcompute._weight_stream_metadata",

@@ -125,8 +125,8 @@ Responses must include a valid uint64 `x-chalk-policy-version`; missing/invalid
 headers are errors. Completion results retain input prompt and choice indices;
 chat results preserve the native message, including null/structured content and
 tool calls. Both APIs use buffered responses. `publisher()`, `pin()` and `unpin()`
-operate on the associated stream; `promote()` surfaces the service's explicit
-Unimplemented response until complete-checkpoint promotion is available.
+operate on the associated stream. `promote()` starts a durable promotion with an
+explicit idempotency key; unsupported backends surface their Unimplemented error.
 
 If deployment fails, `LivePolicyDeploymentError.policy` retains the handle needed
 to inspect or explicitly delete the group. `prior_group_id` identifies a known
@@ -177,3 +177,32 @@ volume name and immutable `volume_version_id`. Register that exact commit as the
 model artifact. Later output-main writes cannot change it. The caller owns the
 output volume lifecycle and must clean it up on failure or cancellation; the SDK
 never deletes a caller-owned volume.
+
+
+Start an asynchronous promotion with a durable key chosen for the exact target:
+
+```python
+operation = stream.promote(
+    0, "policy-checkpoint", aliases=["candidate"],
+    idempotency_key="training-run-123:version-0:policy-checkpoint",
+)
+# Persist operation.id so another process can inspect or cancel the same work.
+result = operation.wait(timeout=600)
+print(result.model_version_id, result.model_volume_name, result.model_volume_version_id)
+```
+
+`policy.promote(...)` delegates to this same API. If Start loses its response,
+repeat it explicitly with the same key and identical inputs to recover the
+original operation. The SDK never silently creates another job, retries Start,
+or falls back to registering raw patches. `WeightStreamPromotion.get(id)` recovers
+an existing operation; `.refresh()` updates its snapshot, and `.cancel()` requests
+idempotent cancellation. A registry commit that wins the cancellation race returns
+SUCCEEDED and preserves the registered output.
+
+`.wait()` returns `WeightPromotionResult`, raises `WeightPromotionFailed` with its
+sanitized code and operation handle, or raises `WeightPromotionCancelled` with
+the handle. A wait timeout or transport failure leaves the operation running; keep
+the ID and resume it. FAILED/CANCELLED may have `cleanup_pending=True`; refresh the
+same operation to observe cleanup completion. Do not delete a model/output merely
+because cancellation was requested. The operation snapshot retains the frozen
+source volume and metadata, including logical version0 and immutable snapshot0.
