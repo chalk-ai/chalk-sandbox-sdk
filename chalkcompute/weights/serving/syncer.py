@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
+import os
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -167,7 +169,9 @@ class WeightSyncer:
 
     async def sync_once(self) -> bool:
         async with self._lock:
+            reload_start = time.perf_counter()
             await asyncio.to_thread(self.reload, self.root)
+            reload_ms = (time.perf_counter() - reload_start) * 1000
             target = self.desired()
             current = self.gate.version
             self.metrics.lag_versions = (
@@ -176,7 +180,9 @@ class WeightSyncer:
             plan = await asyncio.to_thread(self.plan, target)
             if not plan.manifests:
                 return False
+            verify_start = time.perf_counter()
             await asyncio.to_thread(self.verify, plan)
+            verify_ms = (time.perf_counter() - verify_start) * 1000
             pause_start = time.perf_counter()
             async with self.gate.update(self.drain_timeout):
                 apply_start = time.perf_counter()
@@ -218,6 +224,24 @@ class WeightSyncer:
                 )
                 self.metrics.lag_versions = 0
                 self.metrics.updates += 1
+            if os.environ.get("CHALK_WEIGHT_SYNC_PROFILE") == "1":
+                logger.info(
+                    "%s",
+                    json.dumps(
+                        {
+                            "event": "chalk_weight_sync_profile",
+                            "phase": "sync",
+                            "from_version": current,
+                            "version": target,
+                            "reload_host_ms": reload_ms,
+                            "verify_host_ms": verify_ms,
+                            "apply_ms": self.metrics.apply_ms,
+                            "pause_ms": self.metrics.pause_ms,
+                            "drain_host_ms": (apply_start - pause_start) * 1000,
+                        },
+                        allow_nan=False,
+                    ),
+                )
             return True
 
     async def run(self) -> None:

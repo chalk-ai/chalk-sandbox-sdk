@@ -1,19 +1,33 @@
 from __future__ import annotations
 
 import sys
+import json
+import logging
+import time
 from pathlib import Path
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from chalkcompute._weights_format import WeightManifest
+from chalkcompute.weights.serving.profiling import validate_profiles
+
+logger = logging.getLogger(__name__)
 
 
 class VLLMAdapter:
     """vLLM 0.33 control endpoint; expose only the supervisor to callers."""
 
-    def __init__(self, port: int = 8001, engine_args: list[str] | None = None):
+    def __init__(
+        self,
+        port: int = 8001,
+        engine_args: list[str] | None = None,
+        *,
+        profile: bool = False,
+    ):
         self.url = f"http://127.0.0.1:{port}"
         self.engine_args = engine_args or []
+        self.profile = profile
+        self.last_profile: dict | None = None
         self.expected_workers = self._parallel_size(
             {"--tensor-parallel-size", "-tp"}
         ) * self._parallel_size({"--pipeline-parallel-size", "-pp"})
@@ -79,11 +93,17 @@ class VLLMAdapter:
                 return await response.text()
 
     async def apply(self, version_dir: Path, manifest: WeightManifest) -> None:
+        self.last_profile = None
+        started = time.perf_counter()
         result = await self._post(
             "/collective_rpc",
             {
                 "method": "ws_apply_dir",
-                "args": [str(version_dir), str(manifest.version)],
+                "args": [
+                    str(version_dir),
+                    str(manifest.version),
+                    *([True] if self.profile else []),
+                ],
             },
         )
         # vLLM returns one JSON-compatible worker acknowledgement per rank.
@@ -99,12 +119,38 @@ class VLLMAdapter:
                 raise RuntimeError(
                     f"Weight update was not acknowledged by a worker: {rank!r}"
                 )
+        if self.profile:
+            workers = validate_profiles(result, manifest.version, self.expected_workers)
+            self.last_profile = {
+                "event": "chalk_weight_sync_profile",
+                "phase": "apply",
+                "version": manifest.version,
+                "workers": workers,
+                "collective_rpc_host_ms": (time.perf_counter() - started) * 1000,
+            }
+            logger.info("%s", json.dumps(self.last_profile, allow_nan=False))
 
     async def reset_cache(self) -> None:
+        started = time.perf_counter()
         result = await self._post("/reset_prefix_cache", {})
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError(
                 "vLLM did not acknowledge a successful prefix cache reset"
+            )
+        if self.profile:
+            logger.info(
+                "%s",
+                json.dumps(
+                    {
+                        "event": "chalk_weight_sync_profile",
+                        "phase": "cache_reset",
+                        "version": self.last_profile["version"]
+                        if self.last_profile
+                        else None,
+                        "host_ms": (time.perf_counter() - started) * 1000,
+                    },
+                    allow_nan=False,
+                ),
             )
 
     async def ready(self) -> bool:

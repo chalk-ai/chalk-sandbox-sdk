@@ -26,6 +26,8 @@ def _listen(value: str) -> tuple[str, int]:
 
 async def serve(args: argparse.Namespace) -> None:
     adapter = VLLMAdapter(args.engine_port, args.engine_args)
+    if os.environ.get("CHALK_WEIGHT_SYNC_PROFILE") == "1":
+        adapter.profile = True
     gate = AdmissionGate()
     metrics = Metrics()
     syncer = WeightSyncer(
