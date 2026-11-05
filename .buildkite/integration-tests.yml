@@ -39,7 +39,7 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :pytest: Run core integration tests ($$CHALK_API_SERVER)"
       uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_sandbox_fs.py e2etests/test_container.py e2etests/test_mcp_eval_python.py -v -s --tb=short
@@ -48,7 +48,7 @@ steps:
         just test-sandbox-snapshots-e2e
       fi
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 15
     retry:
       automatic:
@@ -84,12 +84,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :pytest: Run container sessions integration tests ($$CHALK_API_SERVER)"
       just test-sessions-e2e
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 15
     retry:
       automatic:
@@ -125,12 +125,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :pytest: Run container network policy integration tests ($$CHALK_API_SERVER)"
       just test-network-policy-e2e
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 30
     retry:
       automatic:
@@ -160,12 +160,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :floppy_disk: Run volume service integration tests ($$CHALK_API_SERVER)"
       uv run python -m pytest e2etests/volume/test_volume.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 15
     retry:
       automatic:
@@ -194,12 +194,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :alarm_clock: Deploy and test scheduled remote function"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_remote_function_schedule.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -228,7 +228,7 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :package: Build deployable SDK wheel"
       uv python install 3.14
@@ -252,7 +252,7 @@ steps:
       export OTEL_SERVICE_NAME=chalkcompute-ci-embedding
       uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -281,12 +281,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :arrows_counterclockwise: Deploy and test generator functions"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_generator.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -315,7 +315,7 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :package: Build deployable SDK wheel"
       uv python install 3.14
@@ -338,7 +338,7 @@ steps:
       CHALK_RUN_FUNCTION_SANDBOX_E2E=1 uv run python -m pytest e2etests/test_scalar.py e2etests/test_function_sandbox.py -v -s --tb=short
 
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -368,12 +368,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :crystal_ball: Deploy and test model scaling group"
       uv run python -m pytest e2etests/test_model_scaling_group.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -403,12 +403,12 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       echo "--- :satellite: Deploy and test startup probes"
       uv run python -m pytest e2etests/test_scaling_group_startup_probe.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 20
     retry:
       automatic:
