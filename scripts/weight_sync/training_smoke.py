@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from ftqa_smoke import MODELS, execute, load_env
 
@@ -536,6 +537,147 @@ def sample(group):
     }
 
 
+def disconnect_probe(group, guard, ssh_host):
+    """Close a real routed SSE request, then require the same healthy replica."""
+
+    def identities():
+        result = []
+        for context in guard.kube_contexts:
+            groups = guard.kube_items(
+                "chalkscalinggroups", name="sg-" + group.id, context=context
+            )
+            for item in groups:
+                owner = item["metadata"]["uid"]
+                children = guard.kube_items(
+                    "chalkcontainers", owner=owner, context=context
+                )
+                result.extend(
+                    (
+                        context,
+                        owner,
+                        child["metadata"]["name"],
+                        child["metadata"]["uid"],
+                    )
+                    for child in children
+                )
+        assert len(result) == 1, f"Expected one owned serving replica: {result!r}"
+        return result
+
+    before = identities()
+
+    def native_processes(replica):
+        code = """
+import json
+from pathlib import Path
+result = []
+for path in Path('/proc').glob('[0-9]*'):
+    try:
+        command = (path / 'cmdline').read_bytes()
+        api = b'-m\\0vllm.entrypoints.openai.api_server\\0' in command
+        worker = command.startswith((b'VLLM::EngineCore', b'VLLM::Worker'))
+        if api or worker:
+            started = (path / 'stat').read_text().rpartition(')')[2].split()[19]
+            result.append({'pid': int(path.name), 'start_ticks': started, 'kind': 'api' if api else 'worker'})
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+assert any(item['kind'] == 'api' for item in result), 'No native API process found'
+print(json.dumps(sorted(result, key=lambda item: item['pid'])))
+"""
+        command = [
+            "sudo",
+            "docker",
+            "exec",
+            "chalk-external-hypervisor",
+            "runsc",
+            "--root=/var/lib/chalk-hypervisor/runsc",
+            "exec",
+            replica,
+            "python3",
+            "-c",
+            code,
+        ]
+        response = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                ssh_host,
+                shlex.join(command),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return json.loads(response.stdout)
+
+    processes_before = native_processes(before[0][2])
+    group._client._ensure_auth()
+    request = Request(
+        group.web_url + "/v1/completions",
+        data=json.dumps(
+            {
+                "model": "policy",
+                "prompt": "Count from one to one hundred:",
+                "temperature": 0,
+                "max_tokens": 64,
+                "ignore_eos": True,
+                "stream": True,
+            }
+        ).encode(),
+        headers={
+            "Authorization": f"Bearer {group._client._access_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        assert response.status == 200
+        assert response.headers.get("x-chalk-policy-version") == "0"
+        first = response.readline()
+        assert first.startswith(b"data:") and b"[DONE]" not in first
+    # EOF is intentionally not consumed. The supervisor must finish native
+    # generation without losing its admission token or restarting the replica.
+    health = []
+    for _ in range(20):
+        guard.check_budget()
+        response = group.call("/chalk/health", method="GET", timeout=10)
+        assert response.status == 200, (
+            f"Disconnected client lost readiness: {response.status}"
+        )
+        health.append(json.loads(response.content))
+        time.sleep(0.5)
+    after = identities()
+    assert before == after, "Serving replica restarted after client disconnect"
+    processes_after = native_processes(after[0][2])
+    assert processes_before == processes_after, (
+        "Native processes restarted after client disconnect"
+    )
+    metrics_response = group.call("/chalk/metrics", method="GET", timeout=10)
+    assert metrics_response.status == 200
+    metrics = {
+        line.split()[0]: float(line.split()[1])
+        for line in metrics_response.content.decode().splitlines()
+        if line and not line.startswith("#")
+    }
+    assert metrics["chalk_weight_sync_failures"] == 0
+    assert metrics["chalk_weight_sync_updates"] == 0
+    result = {
+        "replicas_before": before,
+        "replicas_after": after,
+        "native_processes_before": processes_before,
+        "native_processes_after": processes_after,
+        "healthy_samples": health,
+        "next_request": sample(group),
+        "first_sse_chunk_bytes": len(first),
+        "metrics": metrics,
+    }
+    (guard.out / "client-disconnect.json").write_text(json.dumps(result, indent=2))
+    return result
+
+
 class Observer:
     """One bounded deterministic request at a time while real training runs."""
 
@@ -589,6 +731,10 @@ def main():
     parser.add_argument("--steps", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--cpu-threads", type=int, choices=range(1, 17), default=4)
     parser.add_argument(
+        "--external-ssh-host",
+        help="Known external HOST for scoped native process identity checks",
+    )
+    parser.add_argument(
         "--seed-on-serving",
         action="store_true",
         help="Acquire the seed within the planned serving A100 and its GPU deadline",
@@ -603,6 +749,10 @@ def main():
         default="gke_chalk-serverless-stage_us-west1_chalk-svls-c5ypez-us-west1-gke",
     )
     args = parser.parse_args()
+    if args.execute and not args.external_ssh_host:
+        parser.error(
+            "--execute requires --external-ssh-host for native process identity proof"
+        )
     if not 900 <= args.budget_seconds <= 3300:
         parser.error("GPU budget must be 900..3300 seconds")
     load_env(args.env_file)
@@ -920,6 +1070,9 @@ def main():
 
         serving = serving_group("-serve")
         record["baseline"] = sample(serving)
+        record["client_disconnect"] = disconnect_probe(
+            serving, guard, args.external_ssh_host
+        )
         guard.save()
         config = {
             "stream": name,

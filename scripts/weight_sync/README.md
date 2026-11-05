@@ -69,16 +69,24 @@ PYTHONPATH=/path/to/integrated-sdk python scripts/weight_sync/training_smoke.py 
   --source-root /path/to/integrated-sdk --env-file /path/to/ftqa.env \
   --prepared-image /path/to/cpu-preparation/image.json \
   --out /path/to/new-training-evidence --execute --seed-on-serving \
-  --steps 2 --budget-seconds 2400
+  --steps 2 --budget-seconds 2400 --external-ssh-host USER@KNOWN_OWNED_HOST
 ```
 
-The second invocation builds the packaged training source before claiming GPUs.
+CPU preparation builds both the base image and the actual packaged training source.
+The execution invocation reuses that base and resolves its exact packaged image
+before claiming GPUs.
 Its default GPU budget is forty minutes, starting before the first serving claim.
 It uses at most one serving and one training A100 80GB simultaneously. Seeding on
 the planned serving GPU avoids a separate acquisition worker. The final full state
 is independently reconstructed and compared byte-for-byte with every canonical
 trained tensor. The trainer and live group stop before a fresh group loads that
 independent checkpoint for exact greedy-output comparison.
+
+Before training, the launcher closes an actual SSE completion after its first
+chunk. Twenty readiness samples, a healthy follow-up completion, zero failure
+metrics, and identical SG owner/replica UIDs and native API/worker PID start times
+are required. The external SSH check executes only a fixed process identity probe
+inside the exact owned replica. Failure stops the run and releases resources.
 
 The launcher records all resource IDs immediately. A detached `resource_watchdog.py`
 shares the immutable deadline, survives launcher death, inhibits workstation idle
