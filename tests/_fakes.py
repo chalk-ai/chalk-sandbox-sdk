@@ -147,3 +147,105 @@ class ScalingGroupClient(StubbedConnectClient):
                 spec=spec,
             )
         )
+
+
+class MemoryWeightVolume:
+    """Immutable snapshots and atomic batches for weight stream safety tests."""
+
+    ref = "main"
+    version_id = None
+
+    def __init__(self, *, _owner=None, _version=None):
+        from types import SimpleNamespace
+
+        self._owner = _owner or self
+        if _owner is None:
+            self.snapshots = [{}]
+            self.commits = []
+            self.fail_commit = False
+        self._version = _version
+        self.version = SimpleNamespace(id=0 if _version is None else _version)
+        self.name = "weights-test"
+
+    @property
+    def _files(self):
+        index = (
+            len(self._owner.snapshots) - 1 if self._version is None else self._version
+        )
+        return self._owner.snapshots[index]
+
+    def reload(self):
+        from types import SimpleNamespace
+
+        self.version = SimpleNamespace(id=len(self._owner.snapshots) - 1)
+        return self
+
+    def at_version(self, version):
+        return MemoryWeightVolume(_owner=self._owner, _version=version)
+
+    def read_file(self, path):
+        from chalkcompute._volume import VolumeFileNotFoundError
+
+        try:
+            return self._files[path]
+        except KeyError as error:
+            raise VolumeFileNotFoundError(path) from error
+
+    def listdir(self, prefix="", recursive=True):
+        from chalkcompute._volume import FileInfo
+
+        prefix = prefix.rstrip("/")
+        return [
+            FileInfo(path=path, size=len(data), kind="file")
+            for path, data in self._files.items()
+            if not prefix or path.startswith(prefix + "/")
+        ]
+
+    def _commit(self, files):
+        if self._owner.fail_commit:
+            raise RuntimeError("injected commit failure")
+        state = dict(self._files)
+        state.update(files)
+        self._owner.snapshots.append(state)
+        self._owner.commits.append(dict(files))
+        self.reload()
+
+    def put_file(self, path, data):
+        self._commit({path: data})
+
+    def remove_file(self, path):
+        state = dict(self._files)
+        del state[path]
+        self._owner.snapshots.append(state)
+        self.reload()
+
+    def batch_upload(self, *, max_files_per_commit=200):
+        from contextlib import contextmanager
+        from pathlib import Path
+
+        volume = self
+
+        class Batch:
+            def __init__(self):
+                self.files = {}
+
+            def put(self, path, data):
+                self.files[path] = data
+                if len(self.files) >= max_files_per_commit:
+                    self.flush()
+
+            def put_file(self, path, local_path):
+                self.put(path, Path(local_path).read_bytes())
+
+            def flush(self):
+                if self.files:
+                    volume._commit(self.files)
+                    self.files = {}
+
+        @contextmanager
+        def upload():
+            batch = Batch()
+            yield batch
+            batch.flush()
+
+        return upload()
