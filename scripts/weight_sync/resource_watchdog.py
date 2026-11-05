@@ -39,7 +39,13 @@ def main():
     guard.kube_items("chalkscalinggroups", name="watchdog-preflight-" + record["name"])
     guard.kube_items("chalkcontainers", owner="watchdog-preflight-" + record["name"])
     (args.ledger.parent / "watchdog-ready").write_text(
-        json.dumps({"pid": os.getpid(), "ready_at": time.time()})
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "ready_at": time.time(),
+                "phase_id": record.get("gpu_phase_id"),
+            }
+        )
     )
     disarmed = args.ledger.parent / "watchdog-disarmed"
     while time.time() < args.deadline:

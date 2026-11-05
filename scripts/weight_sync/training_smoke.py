@@ -560,6 +560,8 @@ def cleanup_data(guard):
         "training-data-" + guard.name,
         "training-ckpt-" + guard.name,
     ):
+        if name == guard.name and not guard.record.get("owns_source_volume", True):
+            continue
         try:
             try:
                 volume = cc.Volume(name, create_if_missing=False)
@@ -801,6 +803,11 @@ def main():
     parser.add_argument(
         "--execute", action="store_true", help="Claim two A100s after CPU preparation"
     )
+    parser.add_argument(
+        "--cpu-seed-ledger",
+        type=Path,
+        help="Paused CPU proof ledger; execute waits for parent handoff authorization",
+    )
     parser.add_argument("--steps", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--cpu-threads", type=int, choices=range(1, 17), default=4)
     parser.add_argument(
@@ -822,9 +829,17 @@ def main():
         default="gke_chalk-serverless-stage_us-west1_chalk-svls-c5ypez-us-west1-gke",
     )
     args = parser.parse_args()
+    if args.cpu_seed_ledger and not args.prepared_image:
+        parser.error("--cpu-seed-ledger requires --prepared-image")
     if args.execute and not args.external_ssh_host:
         parser.error(
             "--execute requires --external-ssh-host for native process identity proof"
+        )
+    if args.execute and (
+        not args.cpu_seed_ledger or not args.prepared_image or args.seed_on_serving
+    ):
+        parser.error(
+            "--execute requires --cpu-seed-ledger and --prepared-image; GPU seeding is disabled"
         )
     if not 900 <= args.budget_seconds <= 3300:
         parser.error("GPU budget must be 900..3300 seconds")
@@ -834,7 +849,18 @@ def main():
     from chalkcompute._dataset import DatasetClient
     from chalkcompute._connect import ConnectClient
 
-    name = "weight-train-8b-" + uuid.uuid4().hex[:10]
+    seed_record = seed_proof = None
+    if args.cpu_seed_ledger:
+        from seed_handoff import load_seed_lease
+
+        seed_record, seed_proof = load_seed_lease(
+            args.cpu_seed_ledger, args.prepared_image
+        )
+    name = (
+        seed_record["name"]
+        if seed_record
+        else "weight-train-8b-" + uuid.uuid4().hex[:10]
+    )
     args.out.mkdir(parents=True, exist_ok=False)
     record = {
         "name": name,
@@ -842,6 +868,8 @@ def main():
         "status": "preparing",
         "started_at": time.time(),
         "training_container_released": False,
+        "owns_source_volume": seed_record is None,
+        "gpu_phase_id": uuid.uuid4().hex,
         "kube_context": args.kube_context,
         "fallback_kube_context": args.fallback_kube_context,
     }
@@ -960,7 +988,11 @@ def main():
             return response
 
     budget_client = BudgetClient()
-    guard.volume = cc.Volume(name)
+    if seed_record:
+        record["cpu_seed_ledger"] = str(args.cpu_seed_ledger)
+        record["cpu_seed_phase_id"] = seed_record["cpu_phase_id"]
+        record["cpu_seed_proof"] = seed_proof
+    guard.volume = cc.Volume(name, create_if_missing=seed_record is None)
     try:
         with tempfile.TemporaryDirectory(prefix="weight-training-overlay-") as staging:
             recipe = make_image(args.source_root, Path(staging))
@@ -1023,6 +1055,16 @@ def main():
         record["training_deploy_image_uri"] = build_image(
             client, deploy_image, timeout=600
         )
+        if seed_record:
+            if record["source_overlay_sha256"] != seed_record["source_overlay_sha256"]:
+                raise RuntimeError("SDK source differs from CPU seed proof")
+            if (
+                record["training_deploy_image_uri"]
+                != seed_record["training_deploy_image_uri"]
+            ):
+                raise RuntimeError(
+                    "Packaged trainer image differs from CPU preparation"
+                )
         trainer._build_deploy_image = lambda: deploy_image
         guard.save()
         record["status"] = "cpu_prepared"
@@ -1036,12 +1078,13 @@ def main():
             raise RuntimeError(
                 "Authenticated environment namespace absent from cleanup contexts"
             )
-        guard.volume.reload()
-        guard.volume.put_file(
-            "evidence/owned-seed-placeholder.txt",
-            b"Unique smoke stream; seed publishes CURRENT atomically.\n",
-        )
-        if not args.seed_on_serving:
+        if not seed_record:
+            guard.volume.reload()
+            guard.volume.put_file(
+                "evidence/owned-seed-placeholder.txt",
+                b"Unique smoke stream; seed publishes CURRENT atomically.\n",
+            )
+        if not args.seed_on_serving and not seed_record:
             # CPU-only model acquisition finishes before either A100 is claimed.
             seed = cc.Sandbox(
                 name=name + "-seed",
@@ -1107,10 +1150,24 @@ def main():
             if watchdog.poll() is not None:
                 raise RuntimeError("Detached watchdog exited before readiness")
             if (args.out / "watchdog-ready").exists():
+                ready_proof = json.loads((args.out / "watchdog-ready").read_text())
+                if ready_proof.get("phase_id") != record["gpu_phase_id"]:
+                    raise RuntimeError("GPU watchdog readiness phase mismatch")
                 break
             time.sleep(0.2)
         else:
             raise TimeoutError("Detached watchdog readiness was not confirmed")
+
+        if seed_record:
+            from seed_handoff import await_seed_transfer
+
+            await_seed_transfer(
+                guard,
+                args.cpu_seed_ledger,
+                seed_record,
+                seed_proof,
+                args.prepared_image,
+            )
 
         def serving_group(suffix, audit_version=None):
             guard.check_budget()

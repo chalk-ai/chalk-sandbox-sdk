@@ -38,3 +38,40 @@ def test_blocked_evidence_reader_cannot_delay_compute_release(monkeypatch, tmp_p
     assert time.monotonic() - started < 1
     assert guard.record["evidence_retention"] == "timed_out"
     assert events == ["compute_released", "evidence_reader_started"]
+
+
+def test_cleanup_owns_leased_input_only_after_explicit_transfer(monkeypatch, tmp_path):
+    import chalkcompute as cc
+    import chalkcompute._connect as connect
+    from chalkcompute._volume import VolumeNotFoundError
+    from training_smoke import cleanup_data
+
+    touched = []
+    deleted = set()
+
+    class Volume:
+        def __init__(self, name, **kwargs):
+            self.name = name
+            touched.append(name)
+
+        def reload(self):
+            if self.name in deleted:
+                raise VolumeNotFoundError("deleted")
+
+        def delete(self):
+            deleted.add(self.name)
+
+    class Guard:
+        name = "leased-source"
+        dataset_id = None
+        record = {"owns_source_volume": False}
+
+    monkeypatch.setattr(cc, "Volume", Volume)
+    monkeypatch.setattr(connect, "ConnectClient", lambda: None)
+    guard = Guard()
+    assert cleanup_data(guard) == []
+    assert guard.name not in touched
+    assert len(deleted) == 3
+    guard.record["owns_source_volume"] = True
+    assert cleanup_data(guard) == []
+    assert guard.name in deleted
