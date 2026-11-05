@@ -324,23 +324,20 @@ class ScalingGroup:
     Orchestrates image building, local file upload via volumes, and
     scaling-group lifecycle in a single high-level API.
 
-    ``readiness_probe`` checks each replica directly. Groups with a positive
-    replica minimum also get an externally routed startup probe: HTTP groups
-    reuse their configured HTTP readiness path, and gRPC groups use the generic
-    gRPC probe configured by function deployments. Explicit ``startup_probe``
-    settings take precedence. These probes support authenticated groups.
+    ``readiness_probe`` checks each replica. ``startup_probe`` checks the public
+    endpoint before ``deploy()`` returns.
 
-    HTTP groups without a startup probe also poll the public route for up to
-    60 seconds after replica readiness. Empty 404s, gateway-unavailable responses,
-    and client errors are retried; other responses establish route availability,
-    not application health. A timeout logs a warning and deployment returns.
-    An application returning an empty 404 at ``/`` is indistinguishable from a
-    missing route; configure ``StartupProbe.http("/health")`` to avoid that wait.
-    The generic gRPC probe accepts UNIMPLEMENTED, which gateways can also return;
-    use an explicit known health RPC when backend readiness must be verified.
-    Portless and scale-to-zero groups do not receive an automatic startup probe.
-    A successful startup probe does not guarantee a redeploy is serving the new
-    revision.
+    With a port and ``min_replicas > 0``, deployment checks the public endpoint:
+
+    * HTTP: reuse the readiness path, or poll ``GET /`` for up to 60 extra
+      seconds. The fallback checks routing, not app health. On timeout, it logs
+      a warning and returns.
+    * gRPC: use the same generic startup probe as function deployments.
+
+    Set ``startup_probe`` to override the default. Authenticated groups work too.
+    A known HTTP health path, e.g. ``StartupProbe.http("/health")``, avoids waiting
+    on an app's empty root 404. A known gRPC health RPC avoids false positives
+    from gateway responses. These checks do not verify the served revision.
 
     ``network_policy`` configures host egress. Omit it for the server default;
     ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
