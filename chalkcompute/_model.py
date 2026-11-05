@@ -36,9 +36,12 @@ Usage::
 from __future__ import annotations
 
 import base64
+import binascii
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Mapping
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Mapping, TypeAlias
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -65,8 +68,53 @@ MODELS_ENV_VAR = "_CHALK_BIND_MODELS"
 """Env var name read by :func:`apply_models_from_env`.
 
 Value is a base64-encoded Arrow IPC schema where each field name is a model
-name and each field type is the model's output ``pa.DataType``.
+name and each field type is the model's output ``pa.DataType``. Bindings with
+selectors carry field metadata and a ``v2:`` prefix so older SDK runtimes fail
+instead of silently ignoring their selectors.
 """
+
+_MODELS_V2_PREFIX = "v2:"
+_DEPLOYMENT_METADATA = b"chalkcompute.deployment_name"
+_VERSION_METADATA = b"chalkcompute.version"
+
+
+def _validate_model_selectors(deployment_name: str | None, version: int | None) -> None:
+    if deployment_name is not None:
+        if not isinstance(deployment_name, str):
+            raise TypeError("deployment_name must be a non-empty str")
+        if not deployment_name:
+            raise ValueError("deployment_name must be a non-empty str")
+    if version is not None:
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise TypeError("version must be a positive int")
+        if not 0 < version < 2**63:
+            raise ValueError("version must be a positive int less than 2**63")
+
+
+@dataclass(frozen=True)
+class ModelBindingSpec:
+    """A model binding for ``@function(models=...)`` or ``@cls(models=...)``.
+
+    The mapping key is the model name and its catalog name is ``model.<key>``.
+    ``deployment_name`` selects an exact deployment of that model. ``version``
+    defaults to the latest published version, including with a deployment
+    selector; pass an older version explicitly when that deployment serves it.
+    The deployed image must contain an SDK supporting this binding format.
+    """
+
+    output_type: pa.DataType
+    deployment_name: str | None = None
+    version: int | None = None
+
+    def __post_init__(self) -> None:
+        import pyarrow as pa
+
+        if not isinstance(self.output_type, pa.DataType):
+            raise TypeError("model output_type must be a pa.DataType")
+        _validate_model_selectors(self.deployment_name, self.version)
+
+
+_ModelBindingValue: TypeAlias = "pa.DataType | ModelBindingSpec"
 
 
 class ModelError(Exception):
@@ -78,7 +126,7 @@ class ModelNotFoundError(ModelError):
 
 
 class ModelNotDeployedError(ModelError):
-    """Raised when the model exists but has no scaling group with a reachable URL."""
+    """Raised when the selection has no active deployment with a web URL."""
 
 
 def bind_model(
@@ -86,6 +134,7 @@ def bind_model(
     *,
     output_type: "pa.DataType",
     version: int | None = None,
+    deployment_name: str | None = None,
     qualified_name: str | None = None,
     method_name: str | None = None,
     client: ConnectClient | None = None,
@@ -102,15 +151,23 @@ def bind_model(
         Either a **scaling group name** (the engine's resolution convention for
         ``F.catalog_call("model.<X>", ...)``) or a **model name** from the Chalk
         model registry. Lookup tries scaling-group first and falls back to
-        treating ``name`` as a model name and resolving its latest deployed
-        scaling group.
+        treating ``name`` as a model name. With ``deployment_name``, ``name``
+        is always treated as a model name and direct scaling-group lookup is
+        skipped.
     output_type
         PyArrow type of the model's output column. Required for plan-time type
         resolution in chalkdf.
     version
         Optional explicit model version, used only when ``name`` resolves via
-        the model-registry fallback. Ignored if ``name`` is already a scaling
-        group name. Defaults to the model's ``latest_model_version``.
+        model-based path. Rejected if ``name`` resolves directly as a scaling
+        group name. Defaults to the model's latest published version, including
+        when ``deployment_name`` is set. Selection checks the deployment's
+        current revision at binding time; later redeployments can change it.
+    deployment_name
+        Optional exact deployment name for the model. Without it, the requested
+        model version must have exactly one active deployment with a nonempty
+        ``web_url``. To select a deployment serving an older published version,
+        pass that version explicitly. A URL is not a connectivity check.
     qualified_name
         Optional override for the FQN registered in the local catalog. Defaults
         to ``f"model.{name}"``, matching what you'd pass to
@@ -132,8 +189,9 @@ def bind_model(
         A model with this name exists but has no scaling group with a
         ``web_url``.
     ModelError
-        Any other RPC failure.
+        Ambiguous selection, inconsistent responses, or any other RPC failure.
     """
+    _validate_model_selectors(deployment_name, version)
     # `chalkdf` must be imported first; it bootstraps `libchalk` onto sys.path.
     from chalkdf import Catalog
     from libchalk.runtime.remote_call import (  # ty: ignore[unresolved-import]
@@ -148,7 +206,9 @@ def bind_model(
         return
 
     client = client or ConnectClient(chalk_client=chalk_client)
-    web_url = _resolve_web_url(client, name, version=version)
+    web_url = _resolve_web_url(
+        client, name, version=version, deployment_name=deployment_name
+    )
 
     target, use_tls = grpc_target_from_url(web_url)
     creds = (
@@ -171,46 +231,154 @@ def bind_model(
     )
 
 
-def _resolve_web_url(client: ConnectClient, name: str, *, version: int | None) -> str:
-    """Find a scaling group ``web_url`` for ``name``.
+@dataclass(frozen=True)
+class _ModelDeployment:
+    id: str
+    name: str
+    web_url: str
+    deleted: bool
+    version: int | None
 
-    Two-step resolution:
 
-    1. Try ``GetScalingGroup({name})`` — matches the engine convention that
-       ``F.catalog_call("model.<X>", ...)`` resolves ``<X>`` as a scaling group
-       name. Cheap (one RPC, no enumeration) and the path the engine itself
-       uses.
-    2. If that 404s, fall back to treating ``name`` as a model name: look up
-       the model's ``latest_model_version`` (or the explicit ``version``) and
-       resolve its scaling group via ``ListModelScalingGroups``.
-
-    Raises one of :class:`ModelNotFoundError`, :class:`ModelNotDeployedError`,
-    or :class:`ModelError`.
-    """
-    sg_stub = client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
-    try:
-        sg_response = client.call(
-            sg_stub.get_scaling_group,
-            sg_pb.GetScalingGroupRequest(name=name),
-        )
-    except ConnectRpcError as exc:
-        if exc.code != Code.NOT_FOUND:
-            raise ModelError(f"GetScalingGroup({name!r}) failed: {exc}") from exc
-    else:
-        if version is not None:
+def _model_deployment(
+    record: deploy_pb.ModelScalingGroup | None,
+    legacy: sg_pb.ScalingGroupResponse | None,
+    revision: deploy_pb.ModelScalingGroupRevision | None,
+) -> _ModelDeployment:
+    """Normalize one aligned row, including servers with partial typed records."""
+    group = record if record is not None else legacy
+    if group is None:
+        raise ModelError("ListModelScalingGroups returned an empty deployment row")
+    if record is not None and legacy is not None:
+        if record.id != legacy.id or (
+            record.revision_id
+            and legacy.revision_id
+            and record.revision_id != legacy.revision_id
+        ):
+            raise ModelError("ListModelScalingGroups returned misaligned deployments")
+    selected_revision = group.revision_id or (
+        legacy.revision_id if legacy is not None else ""
+    )
+    if revision is not None:
+        if (
+            revision.model_scaling_group_id != group.id
+            or (selected_revision and revision.id != selected_revision)
+            or not revision.id
+            or revision.model_version <= 0
+        ):
             raise ModelError(
-                f"version={version!r} is ambiguous: {name!r} resolved directly "
-                f"as a scaling group name. Pass the model name (not the scaling "
-                f"group name) when pinning a version."
+                "ListModelScalingGroups returned a misaligned current revision"
             )
-        sg = sg_response.scaling_group
-        url = None if sg is None else sg.web_url or None
-        if not url:
-            raise ModelNotDeployedError(
-                f"Scaling group {name!r} has no webUrl "
-                f"(status={None if sg is None else sg.status!r})"
+    # Typed identity records predate their optional web_url. An explicitly
+    # empty typed URL is authoritative; an absent one can use the legacy field.
+    web_url = (
+        record.web_url
+        if record is not None and record.has_field("web_url")
+        else legacy.web_url
+        if legacy is not None
+        else ""
+    )
+    return _ModelDeployment(
+        id=group.id,
+        name=group.name,
+        web_url=web_url,
+        deleted=group.deleted_at is not None
+        or (legacy is not None and legacy.deleted_at is not None),
+        version=revision.model_version if revision is not None else None,
+    )
+
+
+def _model_deployments(
+    client: ConnectClient, name: str, version: int
+) -> Iterator[_ModelDeployment]:
+    """List the selected model version; the server owns rename-safe matching."""
+    stub = client.stub(deploy_connect.ModelDeploymentServiceClientSync)
+    selector = deploy_pb.ModelVersionSelector(
+        model_name=name,
+        identifier=model_version_pb.ModelVersionIdentifier(
+            identifier=Oneof("version", version)
+        ),
+    )
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    while True:
+        try:
+            page = client.call(
+                stub.list_model_scaling_groups,
+                deploy_pb.ListModelScalingGroupsRequest(
+                    model_version=selector,
+                    cursor=cursor,
+                    limit=100,
+                    include_deleted=False,
+                ),
             )
-        return url
+        except ConnectRpcError as exc:
+            raise ModelError(
+                f"ListModelScalingGroups({name!r}, v{version}) failed: {exc}"
+            ) from exc
+        records, legacy, revisions = (
+            page.model_scaling_groups,
+            page.scaling_groups,
+            page.current_revisions,
+        )
+        count = len(records) if records else len(legacy)
+        if (records and legacy and len(records) != len(legacy)) or (
+            revisions and len(revisions) != count
+        ):
+            raise ModelError("ListModelScalingGroups returned misaligned lists")
+        for index in range(count):
+            deployment = _model_deployment(
+                records[index] if records else None,
+                legacy[index] if legacy else None,
+                revisions[index] if revisions else None,
+            )
+            if deployment.version is not None and deployment.version != version:
+                raise ModelError(
+                    f"Deployment {deployment.name!r} serves v{deployment.version}, "
+                    f"but ListModelScalingGroups requested {name!r} v{version}"
+                )
+            yield deployment
+        cursor = page.next_cursor or None
+        if cursor is None:
+            return
+        if cursor in seen_cursors:
+            raise ModelError("ListModelScalingGroups returned a repeated cursor")
+        seen_cursors.add(cursor)
+
+
+def _resolve_web_url(
+    client: ConnectClient,
+    name: str,
+    *,
+    version: int | None,
+    deployment_name: str | None = None,
+) -> str:
+    """Preserve direct group lookup; share model/version selection for all bindings."""
+    if deployment_name is None:
+        sg_stub = client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+        try:
+            sg_response = client.call(
+                sg_stub.get_scaling_group,
+                sg_pb.GetScalingGroupRequest(name=name),
+            )
+        except ConnectRpcError as exc:
+            if exc.code != Code.NOT_FOUND:
+                raise ModelError(f"GetScalingGroup({name!r}) failed: {exc}") from exc
+        else:
+            if version is not None:
+                raise ModelError(
+                    f"version={version!r} is ambiguous: {name!r} resolved directly "
+                    f"as a scaling group name. Pass the model name (not the scaling "
+                    f"group name) when pinning a version."
+                )
+            sg = sg_response.scaling_group
+            url = None if sg is None else sg.web_url or None
+            if not url:
+                raise ModelNotDeployedError(
+                    f"Scaling group {name!r} has no webUrl "
+                    f"(status={None if sg is None else sg.status!r})"
+                )
+            return url
 
     # Fallback: treat name as a model name in the registry.
     if version is None:
@@ -227,10 +395,13 @@ def _resolve_web_url(client: ConnectClient, name: str, *, version: int | None) -
         except ConnectRpcError as exc:
             if exc.code != Code.NOT_FOUND:
                 raise ModelError(f"GetModel({name!r}) failed: {exc}") from exc
-            raise ModelNotFoundError(
-                f"{name!r} is neither a scaling group name nor a model name in "
-                f"this environment"
-            ) from exc
+            message = (
+                f"Model {name!r} was not found in this environment"
+                if deployment_name is not None
+                else f"{name!r} is neither a scaling group name nor a model name "
+                "in this environment"
+            )
+            raise ModelNotFoundError(message) from exc
         model = model_response.model
         latest = None if model is None else model.latest_model_version
         version = None if latest is None else latest.version
@@ -239,30 +410,54 @@ def _resolve_web_url(client: ConnectClient, name: str, *, version: int | None) -
                 f"Model {name!r} has no published versions in the registry"
             )
 
-    deployment_stub = client.stub(deploy_connect.ModelDeploymentServiceClientSync)
-    list_response = client.call(
-        deployment_stub.list_model_scaling_groups,
-        deploy_pb.ListModelScalingGroupsRequest(
-            model_version=deploy_pb.ModelVersionSelector(
-                model_name=name,
-                identifier=model_version_pb.ModelVersionIdentifier(
-                    identifier=Oneof("version", int(version))
-                ),
-            )
-        ),
-    )
-    url = next(
-        (group.web_url for group in list_response.scaling_groups if group.web_url), None
-    )
-    if url is None:
-        raise ModelNotDeployedError(
-            f"Model {name!r} v{version} has no scaling group with a webUrl"
+    deployments: list[_ModelDeployment] = []
+    by_identity: dict[tuple[str, str], _ModelDeployment] = {}
+    for deployment in _model_deployments(client, name, version):
+        key = (
+            ("id", deployment.id)
+            if deployment.id
+            else ("name", deployment.name)
+            if deployment.name
+            else None
         )
-    return url
+        if key is not None:
+            previous = by_identity.get(key)
+            if previous is not None:
+                if previous != deployment:
+                    raise ModelError(
+                        f"ListModelScalingGroups returned conflicting rows for {key[1]!r}"
+                    )
+                continue
+            by_identity[key] = deployment
+        if (
+            not deployment.deleted
+            and deployment.web_url
+            and (deployment_name is None or deployment.name == deployment_name)
+        ):
+            deployments.append(deployment)
+    if not deployments:
+        selection = (
+            f"deployment {deployment_name!r} of " if deployment_name is not None else ""
+        )
+        raise ModelNotDeployedError(
+            f"No active {selection}model {name!r} v{version} has a webUrl"
+        )
+    if len(deployments) > 1:
+        candidates = ", ".join(
+            sorted(
+                deployment.name or deployment.id or "<unnamed>"
+                for deployment in deployments
+            )
+        )
+        raise ModelError(
+            f"Model {name!r} v{version} has multiple deployments with a webUrl: "
+            f"{candidates}. Pass deployment_name to select one."
+        )
+    return deployments[0].web_url
 
 
-def encode_models_env(models: Mapping[str, "pa.DataType"]) -> str:
-    """Serialize a ``{name: output_type}`` mapping into a base64 string.
+def encode_models_env(models: Mapping[str, _ModelBindingValue]) -> str:
+    """Serialize model names mapped to output types or :class:`ModelBindingSpec`.
 
     Used by the ``@chalkcompute.function`` decorator to ship the binding spec
     into the deployed pod via the :data:`MODELS_ENV_VAR` environment variable.
@@ -273,16 +468,29 @@ def encode_models_env(models: Mapping[str, "pa.DataType"]) -> str:
     if not models:
         return ""
     fields = []
-    for name, dtype in models.items():
+    has_selectors = False
+    for name, value in models.items():
         if not isinstance(name, str) or not name:
             raise TypeError(f"model name must be a non-empty str, got {name!r}")
-        if not isinstance(dtype, pa.DataType):
+        if isinstance(value, ModelBindingSpec):
+            binding = value
+        elif isinstance(value, pa.DataType):
+            binding = ModelBindingSpec(value)
+        else:
             raise TypeError(
-                f"model output_type for {name!r} must be a pa.DataType, got {type(dtype).__name__}"
+                f"model binding for {name!r} must be a pa.DataType or ModelBindingSpec, "
+                f"got {type(value).__name__}"
             )
-        fields.append(pa.field(name, dtype))
+        metadata: dict[bytes, bytes] = {}
+        if binding.deployment_name is not None:
+            metadata[_DEPLOYMENT_METADATA] = binding.deployment_name.encode("utf-8")
+        if binding.version is not None:
+            metadata[_VERSION_METADATA] = str(binding.version).encode("ascii")
+        has_selectors |= bool(metadata)
+        fields.append(pa.field(name, binding.output_type, metadata=metadata or None))
     schema_bytes = pa.schema(fields).serialize().to_pybytes()
-    return base64.b64encode(schema_bytes).decode("ascii")
+    encoded = base64.b64encode(schema_bytes).decode("ascii")
+    return _MODELS_V2_PREFIX + encoded if has_selectors else encoded
 
 
 def apply_models_from_env(env: Mapping[str, str] | None = None) -> list[str]:
@@ -309,12 +517,48 @@ def apply_models_from_env(env: Mapping[str, str] | None = None) -> list[str]:
     if not spec:
         return []
 
-    schema_bytes = base64.b64decode(spec)
-    schema = pa.ipc.read_schema(pa.BufferReader(schema_bytes))
+    has_selectors = spec.startswith(_MODELS_V2_PREFIX)
+    if has_selectors:
+        spec = spec[len(_MODELS_V2_PREFIX) :]
+    elif ":" in spec:
+        raise ModelError("Unsupported model binding payload version")
+    try:
+        schema_bytes = base64.b64decode(spec, validate=True)
+        schema = pa.ipc.read_schema(pa.BufferReader(schema_bytes))
+        bindings: list[tuple[str, ModelBindingSpec]] = []
+        for field in schema:
+            metadata = field.metadata or {}
+            deployment = metadata.get(_DEPLOYMENT_METADATA)
+            version = metadata.get(_VERSION_METADATA)
+            if not has_selectors and (deployment is not None or version is not None):
+                raise ValueError("model binding selectors require a v2: payload")
+            if not field.name:
+                raise ValueError("model name must be non-empty")
+            bindings.append(
+                (
+                    field.name,
+                    ModelBindingSpec(
+                        output_type=field.type,
+                        deployment_name=deployment.decode("utf-8")
+                        if deployment is not None
+                        else None,
+                        version=int(version.decode("ascii"))
+                        if version is not None
+                        else None,
+                    ),
+                )
+            )
+    except (ValueError, TypeError, OSError, binascii.Error, pa.ArrowException) as exc:
+        raise ModelError(f"Invalid model binding payload: {exc}") from exc
     bound: list[str] = []
-    for field in schema:
-        bind_model(field.name, output_type=field.type)
-        bound.append(f"model.{field.name}")
+    for name, binding in bindings:
+        bind_model(
+            name,
+            output_type=binding.output_type,
+            deployment_name=binding.deployment_name,
+            version=binding.version,
+        )
+        bound.append(f"model.{name}")
     return bound
 
 
