@@ -14,7 +14,13 @@ def train_full_parameters(df, config):
     import time
     from pathlib import Path
 
+    cpu_threads = int(config["cpu_threads"])
+    assert 1 <= cpu_threads <= 16
+    os.environ["OMP_NUM_THREADS"] = str(cpu_threads)
+    os.environ["MKL_NUM_THREADS"] = str(cpu_threads)
     import torch
+
+    torch.set_num_threads(cpu_threads)
     from safetensors.torch import load_file
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -35,6 +41,7 @@ def train_full_parameters(df, config):
         "training_run_id": os.environ["CHALK_TRAINING_RUN_ID"],
         "model": config["model"],
         "seed_revision": config["revision"],
+        "cpu_threads": cpu_threads,
         "phases": [],
         "steps": [],
     }

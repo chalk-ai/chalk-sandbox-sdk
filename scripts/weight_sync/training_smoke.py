@@ -584,6 +584,7 @@ def main():
         "--execute", action="store_true", help="Claim two A100s after CPU preparation"
     )
     parser.add_argument("--steps", type=int, choices=(1, 2, 3), default=2)
+    parser.add_argument("--cpu-threads", type=int, choices=range(1, 17), default=4)
     parser.add_argument(
         "--seed-on-serving",
         action="store_true",
@@ -635,6 +636,9 @@ def main():
         {
             "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
             "PYTHONUNBUFFERED": "1",
+            # The guest sees host CPUs; cap libraries to an explicit process budget.
+            "OMP_NUM_THREADS": str(args.cpu_threads),
+            "MKL_NUM_THREADS": str(args.cpu_threads),
         }
     )
     client = ConnectClient()
@@ -920,6 +924,7 @@ def main():
             "revision": revision,
             "steps": args.steps,
             "learning_rate": 0.05,
+            "cpu_threads": args.cpu_threads,
         }
         guard.check_budget()
         handle = trainer.run_training(

@@ -109,3 +109,9 @@ ledger, exact group and replica names, Kubernetes context, and known external SS
 host. It verifies the live replica's group owner UID before running a fixed
 read-only probe. It reports seed/cache bytes, process stage, and published keyframe
 sizes without reading credentials or downloading model data to the workstation.
+
+Future executions cap OMP/MKL and Torch intra-op CPU threads to the explicit
+`--cpu-threads` budget (default four) before model loading. A HOST guest can see
+many more host CPUs than its quota; an earlier advancing run exposed hundreds of
+library threads during CPU-to-GPU model transfer. Record the chosen budget with
+training evidence, and retain the exact executed source when comparing runs.
