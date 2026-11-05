@@ -70,6 +70,9 @@ def main() -> None:
             versions=[m.version for m in stream.versions()],
             elapsed_seconds=time.monotonic() - started,
         )
+    except Exception as error:
+        report.update(status="failed", error_type=type(error).__name__)
+        raise
     finally:
         try:
             volume.delete()

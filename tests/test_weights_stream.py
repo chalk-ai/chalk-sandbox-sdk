@@ -217,3 +217,19 @@ def test_seed_refuses_oversized_snapshot_without_partial_publish(
     with pytest.raises(WeightStreamError, match="200-file"):
         stream.seed_from_hf("test/model", revision="pinned-test-revision")
     assert stream._volume.commits == []
+
+
+def test_reopened_stream_resume_infers_base_model(stream):
+    publisher(stream).publish({"w": torch.zeros(10)})
+    reopened = WeightStream("test", volume=stream.volume)
+    pub = reopened.publisher()
+    pub.resume({"w": torch.zeros(10)})
+    assert reopened.base_model == "test/model"
+    assert pub.publish({"w": torch.ones(10)}) == 1
+
+
+def test_reopened_stream_rejects_explicit_wrong_base_model(stream):
+    publisher(stream).publish({"w": torch.zeros(10)})
+    reopened = WeightStream("test", "wrong/model", volume=stream.volume)
+    with pytest.raises(WeightStreamError, match="base_model"):
+        reopened.publisher().resume({"w": torch.zeros(10)})
