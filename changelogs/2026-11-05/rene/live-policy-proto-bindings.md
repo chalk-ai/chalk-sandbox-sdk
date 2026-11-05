@@ -1,0 +1,1 @@
+- Regenerate standalone SDK contracts for serving runtime resolution, weight stream metadata/version control, scaling group weight stream associations, replica applied versions, and immutable model volume snapshots. These bindings introduce no backend handler or SDK feature behavior.
