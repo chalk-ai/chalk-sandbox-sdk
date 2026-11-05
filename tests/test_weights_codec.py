@@ -2,9 +2,6 @@ from dataclasses import replace
 
 import pytest
 
-torch = pytest.importorskip("torch")
-pytest.importorskip("zstandard")
-pytest.importorskip("xxhash")
 
 from chalkcompute._weights_codec import (
     apply_patch,
@@ -22,6 +19,11 @@ from chalkcompute._weights_format import (
     read_pointer,
     version_dir,
 )
+
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("zstandard")
+pytest.importorskip("xxhash")
 
 
 def entry_for(patch, payload):
