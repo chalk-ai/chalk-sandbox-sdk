@@ -5,6 +5,12 @@ from __future__ import annotations
 import time
 import uuid
 import posixpath
+import os
+import stat
+import struct
+from pathlib import Path
+
+import blake3
 from collections.abc import Sequence
 
 from connectrpc.code import Code
@@ -16,7 +22,8 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_pb,
 )
 from chalkcompute._image import Image
-from chalkcompute._volume import VolumeClient, VolumeMount
+from chalkcompute._volume import VolumeClient, VolumeMount, _default_upload_config
+from chalkcompute._gen.chalk.volume.v2 import volume_pb
 
 
 def _paths_overlap(left: str, right: str) -> bool:
@@ -61,22 +68,63 @@ def resolve_function_volumes(
     poll_interval: float,
     timeout: float,
 ) -> list[VolumeMount]:
-    """Resolve function source and merge it with referenced volumes."""
+    """Validate explicit mounts without allocating function storage."""
     source_paths = set(image.lazy_local_files_grouped_for_volume_mounts())
-    occupied_paths = {mount.mount_path for mount in referenced}
-    overlap = source_paths & occupied_paths
+    overlap = source_paths & {mount.mount_path for mount in referenced}
     if overlap:
-        path = min(overlap)
-        raise ValueError(f"Source mount overlaps a user volume at {path!r}")
-    if not source_paths:
-        return list(referenced)
-    sources = VolumeClient.from_connect(client)._resolve_lazy_files(
-        image,
-        volume_name=volume_name,
-        poll_interval=poll_interval,
-        timeout=timeout,
-    )
-    return [*referenced, *sources]
+        raise ValueError(f"Source mount overlaps a user volume at {min(overlap)!r}")
+    return list(referenced)
+
+
+def _source_manifests(
+    image: Image,
+) -> tuple[
+    list[service_pb.FunctionSourceMount],
+    dict[str, service_pb.FunctionSourceManifest],
+    dict[str, Path],
+]:
+    mounts = []
+    manifests = {}
+    paths = {}
+    for mount_path, files in image.lazy_local_files_grouped_for_volume_mounts().items():
+        entries = []
+        for file in files:
+            path = Path(file.src)
+            hasher = blake3.blake3()
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    hasher.update(chunk)
+            digest = hasher.hexdigest()
+            mode = (
+                file.mode
+                if file.mode is not None
+                else stat.S_IMODE(path.stat().st_mode)
+            )
+            entries.append(
+                service_pb.FunctionSourceFile(
+                    path=os.path.relpath(file.dest, mount_path).replace(os.sep, "/"),
+                    content_digest=digest,
+                    size=path.stat().st_size,
+                    mode=mode,
+                )
+            )
+            paths[digest] = path
+        entries.sort(key=lambda entry: entry.path)
+        tree = blake3.blake3(b"chalk.function-source.v1\0")
+        for entry in entries:
+            encoded = entry.path.encode()
+            tree.update(struct.pack(">I", len(encoded)))
+            tree.update(encoded)
+            tree.update(bytes.fromhex(entry.content_digest))
+            tree.update(struct.pack(">QI", entry.size, entry.mode))
+        digest = tree.hexdigest()
+        manifests[digest] = service_pb.FunctionSourceManifest(
+            tree_digest=digest, files=entries
+        )
+        mounts.append(
+            service_pb.FunctionSourceMount(tree_digest=digest, mount_path=mount_path)
+        )
+    return mounts, manifests, paths
 
 
 def ensure_external_function(
@@ -93,6 +141,7 @@ def ensure_external_function(
 ) -> service_pb.EnsuredExternalFunction:
     stub = client.stub(service_connect.ExternalFunctionCatalogServiceClientSync)
     deadline = time.monotonic() + timeout
+    sources, manifests, paths = _source_manifests(image)
     request = service_pb.EnsureExternalFunctionRequest(
         request_id=str(uuid.uuid4()),
         function_name=function_name,
@@ -100,6 +149,7 @@ def ensure_external_function(
             version_spec=version_spec,
             image=image.to_proto(),
             local_secrets=local_secrets,
+            sources=sources,
         ),
         force_new_version=force_new_version,
     )
@@ -121,6 +171,39 @@ def ensure_external_function(
             raise ConnectError("Ensure response omitted its result")
         if response.result.field == "complete":
             return response.result.value
+        if response.result.field == "missing_inputs":
+            missing = response.result.value
+            supplied = service_pb.FunctionDeploymentInputs(
+                manifests=[manifests[digest] for digest in missing.tree_digests],
+            )
+            if missing.file_digests:
+                if missing.upload_volume is None:
+                    raise ConnectError("Source upload response omitted its volume")
+                batch = missing.file_digests[:256]
+                source = [(digest, paths[digest]) for digest in batch]
+                volume_client = VolumeClient.from_connect(client)
+                prepared = volume_client._inner.prepare_files(source, "main")
+                staged = volume_client._inner.stage_prepared_files(
+                    missing.upload_volume.name, prepared, _default_upload_config()
+                )
+                intent = volume_pb.CommitIntent.from_binary(
+                    bytes(
+                        volume_client._inner.staged_intent(
+                            missing.upload_volume.name,
+                            staged,
+                            "main",
+                            [],
+                            "source_code",
+                        )
+                    )
+                )
+                if intent.deltas is None or intent.deltas.field != "path_deltas":
+                    raise ConnectError("Source upload did not produce file deltas")
+                supplied.files = intent.deltas.value.upserts
+                supplied.uploaded_objects = intent.uploaded_object_references
+                supplied.upload_volume = missing.upload_volume
+            request.supplied_inputs = supplied
+            continue
         if response.result.field == "pending_image_build":
             try:
                 wait_for_image_build(
