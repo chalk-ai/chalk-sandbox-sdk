@@ -11,7 +11,9 @@ are fixed to one; CUDA/HIP graphs are disabled. Quantized models, MoE, shared or
 derived weight caches, other model families, speculative decoding, and other
 parallel modes require separate adapters and validation. The only passthrough
 arguments are `--context-length` and `--mem-fraction-static`. `SGLANG_` environment
-overrides are rejected to keep these restrictions effective.
+overrides are rejected except the exact audited upstream build commit, build URL,
+image tag, and `SGLANG_RUST_BUILD_MODE=never`. This permits the pinned official
+CUDA runtime image's provenance while rejecting all runtime feature overrides.
 
 ```bash
 chalk-live-serve --engine sglang-experimental --weights /weights -- \

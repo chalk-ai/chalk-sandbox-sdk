@@ -198,6 +198,54 @@ def test_unreviewed_sglang_version_rejected(stream, monkeypatch):
         SGLangAdapter().launch_cmd(root / version_dir(0), 8001)
 
 
+def test_exact_upstream_provenance_and_no_rust_build_mode_allowed(stream, monkeypatch):
+    root, _ = stream
+    monkeypatch.setattr(
+        "chalkcompute.weights.serving.adapters.sglang.version", lambda _: "0.5.23"
+    )
+    for key, value in {
+        "SGLANG_BUILD_COMMIT": "297e54fd105e974cdf401e5b4d20253a22c16f90",
+        "SGLANG_BUILD_URL": "https://github.com/sgl-project/sglang/actions/runs/40978390925",
+        "SGLANG_IMAGE_TAG": "lmsysorg/sglang:v0.5.23-runtime",
+        "SGLANG_RUST_BUILD_MODE": "never",
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert "sglang.launch_server" in SGLangAdapter().launch_cmd(
+        root / version_dir(0), 8001
+    )
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("SGLANG_BUILD_COMMIT", "main"),
+        ("SGLANG_BUILD_COMMIT", "297e54fd105e974cdf401e5b4d20253a22c16f90\n"),
+        ("SGLANG_BUILD_URL", "https://example.com/build"),
+        (
+            "SGLANG_BUILD_URL",
+            "https://github.com/sgl-project/sglang/actions/runs/40978390925?override=1",
+        ),
+        ("SGLANG_IMAGE_TAG", "lmsysorg/sglang:latest"),
+        ("SGLANG_RUST_BUILD_MODE", "auto"),
+        ("SGLANG_RUST_BUILD_MODE", "never "),
+        ("SGLANG_BUILD_COMMIT_EXTRA", "anything"),
+        ("SGLANG_ENABLE_WEIGHT_CACHE", "1"),
+        ("SGLANG_ENABLE_WEIGHT_CACHE", "0"),
+        ("SGLANG_OPT_BF16_FP32_GEMM_ALGO", "hpc"),
+    ],
+)
+def test_provenance_allowlist_cannot_enable_runtime_overrides(
+    stream, monkeypatch, key, value
+):
+    root, _ = stream
+    monkeypatch.setattr(
+        "chalkcompute.weights.serving.adapters.sglang.version", lambda _: "0.5.23"
+    )
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match="environment"):
+        SGLangAdapter().launch_cmd(root / version_dir(0), 8001)
+
+
 class FakeDenseAdapter:
     def __init__(self, gate, *, fail=False):
         self.gate, self.fail = gate, fail
