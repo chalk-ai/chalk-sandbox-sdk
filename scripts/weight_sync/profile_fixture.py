@@ -81,3 +81,76 @@ def require_target_changed(base, target):
         raise ValueError("Require the exact reviewed native audit names")
     if any(base[name] == target[name] for name in AUDIT_NAMES):
         raise ValueError("Every audited native parameter must actually change")
+
+
+def sparse_memory_estimate(entries, *, batch_bytes=256 * 1024**2):
+    """Mirror existing worker batching, including full native NaN expansion."""
+    batches, current, staged = [], [], 0
+    largest = max((math.prod(e.shape) * 2 for e in entries), default=0)
+    for entry in entries:
+        if entry.encoding == "dense":
+            if current:
+                batches.append(current)
+            current, staged = [], 0
+            continue
+        size = entry.nnz * 10
+        if staged + size > batch_bytes and current:
+            batches.append(current)
+            current, staged = [], 0
+        current.append(entry)
+        staged += size
+    if current:
+        batches.append(current)
+    staged = max((sum(e.nnz * 10 for e in b) for b in batches), default=0)
+    expanded = max((sum(math.prod(e.shape) * 2 for e in b) for b in batches), default=0)
+    reserve = 8 * 1024**3
+    required = 40 * 1024**3 + 2 * 1024**3 + 2 * largest + expanded + staged + reserve
+    return {
+        "maximum_sparse_staged_bytes": staged,
+        "maximum_sparse_expanded_nan_bytes": expanded,
+        "largest_tensor_bytes": largest,
+        "sparse_batches": len(batches),
+        "minimum_free_reserve_bytes": reserve,
+        "assumed_engine_reservation_bytes": 40 * 1024**3,
+        "additional_workspace_bytes": 2 * 1024**3,
+        "estimated_gpu_bytes_including_reserve": required,
+        "fits_80gib_with_reserve": required <= 80 * 1024**3,
+        "estimate_is_not_a_measured_peak": True,
+    }
+
+
+def check_workspace(root, minimum_bytes):
+    """Verify guest capacity and actual fallocate/quota before HF or uploads."""
+    import os
+
+    before = os.statvfs(root)
+    free = before.f_bavail * before.f_frsize
+    if free < minimum_bytes:
+        raise RuntimeError("Guest workspace has insufficient available bytes")
+    path = root / "workspace-quota-probe"
+    try:
+        with path.open("xb") as handle:
+            # Unlike a sparse truncate, fallocate exercises filesystem/quota
+            # capacity. Unsupported/EDQUOT/ENOSPC is a hard pre-upload failure.
+            allocate = getattr(os, "posix_fallocate", None)
+            if allocate is None:
+                raise RuntimeError("Guest workspace fallocate is unsupported")
+            allocate(handle.fileno(), 0, minimum_bytes)
+            allocated = os.fstat(handle.fileno()).st_blocks * 512
+            if allocated < minimum_bytes:
+                raise RuntimeError("Guest workspace reservation is sparse/incomplete")
+    finally:
+        path.unlink(missing_ok=True)
+    after = os.statvfs(root)
+    remaining = after.f_bavail * after.f_frsize
+    if remaining < minimum_bytes:
+        raise RuntimeError("Guest workspace reservation release unconfirmed")
+    return {
+        "path": str(root),
+        "filesystem_total_bytes": before.f_blocks * before.f_frsize,
+        "available_bytes_before": free,
+        "available_bytes_after": remaining,
+        "quota_reservation_bytes_verified": allocated,
+        "minimum_required_bytes": minimum_bytes,
+        "quota_reservation_released": True,
+    }

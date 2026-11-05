@@ -1,0 +1,25 @@
+# Full-model one-percent serving profile
+
+This harness prepares deterministic finite BF16 changes on CPU, then measures a single native vLLM A100 receiver. It does not claim that a one-percent fixture represents real optimizer deltas or that the three native parameter hashes establish whole-native-model equivalence.
+
+`profile_plan.py` resolves a previously built image to a registry digest, freezes the controller SDK, execution and cleanup sources, and a small pure Python weight/serving overlay. `--preview` compiles the exact CPU/GPU entrypoint shapes and writes commands without creating authorization files or claiming resources. Run commands from the frozen `guard/` directory. CPU and GPU execution each require separate parent authorization binding the exact `plan.json` SHA; GPU approval additionally binds the completed CPU proof SHA. A separate proof-bound transfer is required while both detached guards are alive.
+
+CPU preparation uses at most 16 CPU/128GiB for a fixed 30-minute lease, zero GPUs, guest-only `/tmp/weight-profile-hf-cache`, and no host cache mounts. Before downloading or uploading, it verifies singleton Oracle HOST membership, host free disk of at least120GiB, guest available space of at least80GiB, and an actual non-sparse80GiB `posix_fallocate` quota reservation which it releases. Unsupported allocation, quota exhaustion or insufficient space stops preparation. Peak CPU memory/disk values in the proof are conservative estimates, not measurements. The two volume metadata records are created once by the controller before the remote writer; lost responses are reconciled through the30-second RPC deadline plus60-second grace after compute termination. Pre-existing-name collisions are never deleted.
+
+The fixture distributes exactly `floor(8,190,735,360 / 100) = 81,907,353` changed elements among all399 tensors by largest remainder. Deterministic index selection flips only BF16 mantissa bit zero. Each source and target tensor is finite and actual changes are counted. The CPU phase publishes version1, independently reconstructs and byte-compares every canonical tensor, creates a separate immutable target reference as local stream version0, then stops CPU compute and proves API/CR/pod/native runtime release. Data remains under the original CPU lease pending authorized transfer.
+
+GPU preparation requires those immutable CPU proofs, full sparse NaN expansion memory accounting with8GiB reserve, unchanged image/config/source identity and exact HOST placement. The fixed30-minute GPU lease starts before deployment; maximum allocation is one A10080GB and zero AMD GPUs. The live receiver starts pinned at base0. Before any mutation, it requires native/CPU byte-hash agreement for `model.embed_tokens.weight`, `model.norm.weight`, and `lm_head.weight`. It then applies1, audits target hashes, restores0, audits base hashes/output and unchanged native process identities, fully releases the live group, and starts a sequential fresh receiver from the independent target snapshot. Fresh target hashes and deterministic greedy output must agree. The fresh stream's local version0 intentionally represents the source stream's target1.
+
+The receiver requires finite per-worker, adapter and sync-gate profiles for target and restoration, plus a zero sync-failure counter. Current-stream CUDA elapsed intervals include native work and waits on that stream; they are not pure GPU busy-time measurements. Native helper-internal parameter mapping and sparse NaN preparation remain opaque.
+
+PIN writes use an inert subprocess. Its exact PID/process group/start time is durably recorded before authorization; parent and detached watchdog stop it before volume teardown. Scoped serving creates have no retry interceptor, one bounded attempt, a durable ambiguous-create deadline and no overlap until previous API/CR/pod/native runtime release is proven. Cleanup retains immutable owner/replica UIDs even after API associations disappear. Historical transient observation failures do not suppress later cleanup. `profile_verify.py` independently checks the two volume absences, group API/CR/pod/runsc/containerd absences, CPU CR/pod/native absence and owned local launcher/watchdog/writer/inhibitor exits.
+
+Example local preparation, using source-only integration roots and an existing image:
+
+```sh
+python scripts/weight_sync/profile_plan.py --out /absolute/image-provenance.json --image-json /absolute/prebuilt-image.json --resolve-image
+python scripts/weight_sync/profile_plan.py --out /absolute/frozen-plan --runtime-root /absolute/runtime-overlay-source --controller-root /absolute/controller-sdk-source --guard-root /absolute/scripts/weight_sync --image-json /absolute/prebuilt-image.json --image-provenance /absolute/image-provenance.json
+python /absolute/frozen-plan/guard/profile_plan.py --out /absolute/frozen-plan --preview
+```
+
+No full-model profile has been measured by this tooling PR. The previous real8B training experiment and its45.7s/21.9s pauses are documented separately in `TRAINING_8B_EVIDENCE.md`.
