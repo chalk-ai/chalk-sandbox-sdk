@@ -25,7 +25,7 @@ specific CUDA image used in the existing tiny A100 diagnostic is:
 lmsysorg/sglang@sha256:354700f4404ab0b8dcb493bc61d5d11e7c2a91f3a7babb4efe741cb75d4b51c0
 ```
 
-That image contains Python3.12.16/Torch2.14.1+cu130. Other versions, model families,
+That image contains Python 3.12.16 / Torch 2.14.1+cu130. Other versions, model families,
 quantization, parallelism, speculative decoding, shared caches and ROCm/MI355X need
 separate validation. Only `--context-length` and `--mem-fraction-static` pass through
 to SGLang. Runtime `SGLANG_` overrides are rejected; only the exact pinned image's
@@ -50,10 +50,10 @@ removing their output, after stopping GPU workers.
 
 ## Validation scope
 
-The earlier explicit deterministic-triton diagnostic (PR611/head8364ef18) passed all
-ten tiny one-A100 comparisons with maximum logprob error0.0 at the unchanged1e-3 gate:
+The earlier explicit deterministic-triton diagnostic (PR #611, head `8364ef18`) passed all
+ten tiny one-A100 comparisons with maximum logprob error 0.0 at the unchanged 1e-3 gate:
 streaming/disconnect drain, updates, no-op, backward PIN, corrupt-payload refusal,
-lost native ACK/fail-closed restart and fresh-native versions0/1/2. All resources were
+lost native ACK/fail-closed restart and fresh-native versions 0/1/2. All resources were
 independently released. It used guest-local copies of an immutable fixture, so it does
 not prove live ChalkFS publication, trainer durability, AMD behavior, full-model latency
 or general numerical determinism.
@@ -65,7 +65,7 @@ frozen run. The previous diagnostic is evidence for its exact source/profile, no
 pass for later code. Do not enable a backend catalog entry or FULL_WEIGHTS based on it.
 
 Use `PYTHON=/path/to/existing/python scripts/check_weight_serving.sh` for reusable CPU
-checks. The separate guarded native harness preserves raw samples, fixed1e-3 criteria,
+checks. The separate guarded native harness preserves raw samples, fixed 1e-3 criteria,
 immutable deadline and independent teardown; its sources and exact executed overlay
 must be frozen/reviewed before every resource claim. AMD tests additionally need a
 validated gfx950/ROCm image and an idle scale-down watchdog; none is claimed here.
