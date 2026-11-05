@@ -1,3 +1,6 @@
+from chalkcompute._weights import WeightStream as WeightStream
+from chalkcompute._weights import WeightPublisher as WeightPublisher
+from chalkcompute._weights_format import WeightStreamError as WeightStreamError
 from chalkcompute._usage_pool import UsagePool as UsagePool
 from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._router import Router as Router
@@ -206,6 +209,9 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "WeightStream",
+    "WeightPublisher",
+    "WeightStreamError",
     "Router",
     "RouterClient",
     "RouterError",
