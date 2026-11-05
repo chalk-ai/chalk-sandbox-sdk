@@ -3,11 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from connectrpc.client import ConnectClientSync
-from connectrpc.method import IdempotencyLevel, MethodInfo
-from connectrpc.protocol import ProtocolType
-from protobuf.wkt import Empty
-
 from chalkcompute import ComputeClass, Image, ReadinessProbe, ScalingGroup, StartupProbe
 from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import needs_staging
@@ -29,6 +24,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.end_headers()
         self.wfile.write(str(Handler.checks).encode())
+
+    def log_message(self, *_):
+        pass
+
+ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+"""
+
+SLOW_HEALTH_SERVER = """
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            time.sleep(1.5)
+        body = b"healthy"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, *_):
         pass
@@ -105,51 +120,23 @@ def test_grpc_startup_probe_reaches_routed_service(
 
 @needs_staging
 @pytest.mark.parametrize("compute_class", [ComputeClass.K8S, ComputeClass.HOST])
-@pytest.mark.parametrize("protocol", ["http", "grpc"])
-def test_automatic_startup_probe_serves_first_call_after_deploy(
-    compute_class: ComputeClass, protocol: str
+def test_http_route_check_preserves_longer_readiness_timeout(
+    compute_class: ComputeClass,
 ) -> None:
-    """Do not let SDK call retries hide a post-deploy gateway failure."""
-    image = (
-        Image.debian_slim("3.12")
-        .pip_install(["grpcio>=1.60,<2"])
-        .entrypoint(["python", "-u", "-c", GRPC_SERVER])
-        if protocol == "grpc"
-        else "python:3.12-slim"
-    )
+    """A valid health check taking over one second must still deploy."""
     group = ScalingGroup(
-        name=build_scoped_name(
-            f"ex-auto-startup-{compute_class.name.lower()}-{protocol}"
-        ),
-        image=image,
-        entrypoint=["python", "-u", "-c", HTTP_SERVER] if protocol == "http" else None,
+        name=build_scoped_name(f"ex-http-slow-health-{compute_class.name.lower()}"),
+        image="python:3.12-slim",
+        entrypoint=["python", "-u", "-c", SLOW_HEALTH_SERVER],
         compute_class=compute_class,
-        protocol=protocol,
         authenticated=True,
-        readiness_probe=ReadinessProbe.http("/health") if protocol == "http" else None,
+        readiness_probe=ReadinessProbe.http("/health", timeout_seconds=5),
     )
     try:
         group.deploy(ready_timeout=180)
-        if protocol == "http":
-            response = group.call("/checks", method="GET", cold_start_timeout=0)
-            assert response.status == 200, response.content
-        else:
-            assert group.web_url is not None
-            client = ConnectClientSync(
-                group.web_url, protocol=ProtocolType.GRPC, send_compression=None
-            )
-            client.execute_unary(
-                request=Empty(),
-                method=MethodInfo(
-                    name="Check",
-                    service_name="startup.test.Probe",
-                    input=Empty,
-                    output=Empty,
-                    idempotency_level=IdempotencyLevel.UNKNOWN,
-                ),
-                headers={"Authorization": f"Bearer {group._client._access_token}"},
-                timeout_ms=5_000,
-            )
+        response = group.call("/health", method="GET", timeout=5, cold_start_timeout=0)
+        assert response.status == 200, response.content
+        assert response.content == b"healthy"
     finally:
         if group.id is not None:
             group.delete()

@@ -90,11 +90,15 @@ def test_deploy_waits_for_route_then_allows_first_call(
         ConnectionError("offline"),
     ],
 )
+@pytest.mark.parametrize(
+    "readiness_probe", [None, ReadinessProbe.http("/health", timeout_seconds=5)]
+)
 def test_route_wait_warns_and_returns_at_deadline(
     clock: Clock,
     http_client: MagicMock,
     caplog: pytest.LogCaptureFixture,
     result: MagicMock | Exception,
+    readiness_probe: ReadinessProbe | None,
 ) -> None:
     requests: list[tuple[float, float]] = []
 
@@ -107,7 +111,9 @@ def test_route_wait_warns_and_returns_at_deadline(
         return result
 
     http_client.execute.side_effect = request
-    group = ScalingGroup(image="nginx:alpine", name="route-timeout")
+    group = ScalingGroup(
+        image="nginx:alpine", name="route-timeout", readiness_probe=readiness_probe
+    )
     group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
 
     assert group.deploy() is group
@@ -130,7 +136,6 @@ def test_route_wait_warns_and_returns_at_deadline(
         ({"port": None}, None),
         ({}, None),
         ({"startup_probe": StartupProbe.http("/health")}, "https://example.com"),
-        ({"readiness_probe": ReadinessProbe.http("/health")}, "https://example.com"),
     ],
 )
 def test_deploy_skips_unnecessary_route_wait(

@@ -6,7 +6,6 @@ from typing import Any, cast
 import pytest
 
 from chalkcompute import ReadinessProbe, ScalingGroup, StartupProbe
-from chalkcompute._function import _remote_function_startup_probe
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -165,34 +164,32 @@ def test_startup_probe_requires_port() -> None:
 
 @pytest.mark.parametrize("authenticated", [False, True])
 @pytest.mark.parametrize("path", ["/ready", None])
-def test_http_readiness_probe_also_gates_routed_startup(
+def test_http_readiness_probe_does_not_add_a_stricter_startup_probe(
     authenticated: bool, path: str | None
 ) -> None:
     sg = ScalingGroup(
         image="ubuntu:latest",
         authenticated=authenticated,
-        readiness_probe=ReadinessProbe.http(path),
+        readiness_probe=ReadinessProbe.http(path, timeout_seconds=5),
     )
     spec = _deployed_container_spec(sg)
-    assert spec.startup_probe == container_pb.StartupProbe.from_json(
-        json.dumps({"http": {"path": path} if path is not None else {}})
-    )
+    assert spec.startup_probe is None
+    assert spec.readiness_probe is not None
+    assert spec.readiness_probe.timeout_seconds == 5
 
 
 @pytest.mark.parametrize("authenticated", [False, True])
-def test_grpc_deploy_matches_function_startup_probe(
+def test_grpc_deploy_does_not_add_a_startup_requirement(
     authenticated: bool,
 ) -> None:
     sg = ScalingGroup(
         image="ubuntu:latest", protocol="grpc", authenticated=authenticated
     )
     spec = _deployed_container_spec(sg)
-    assert spec.startup_probe == container_pb.StartupProbe.from_json(
-        json.dumps(_remote_function_startup_probe())
-    )
+    assert spec.startup_probe is None
 
 
-def test_explicit_startup_probe_overrides_http_readiness_path() -> None:
+def test_explicit_startup_probe_preserves_its_http_path() -> None:
     sg = ScalingGroup(
         image="ubuntu:latest",
         readiness_probe=ReadinessProbe.http("/ready"),
@@ -206,7 +203,7 @@ def test_explicit_startup_probe_overrides_http_readiness_path() -> None:
 
 @pytest.mark.parametrize("protocol", ["http", "grpc"])
 @pytest.mark.parametrize("port,min_replicas", [(None, 1), (8080, 0)])
-def test_automatic_probe_does_not_require_a_route_or_wake_zero_replicas(
+def test_portless_and_scale_to_zero_groups_do_not_gain_startup_probes(
     protocol: str, port: int | None, min_replicas: int
 ) -> None:
     sg = ScalingGroup(

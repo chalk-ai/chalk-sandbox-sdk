@@ -203,9 +203,8 @@ class StartupProbe:
         """Create a gRPC startup probe.
 
         An explicit ``method`` must be fully qualified and return OK. An unset
-        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED.
-        Gateways can also return that status, so use an explicit health method
-        when backend readiness must be verified.
+        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED
+        to confirm that the routed endpoint speaks gRPC.
         """
         return cls(_kind="grpc", _value=method)
 
@@ -327,17 +326,16 @@ class ScalingGroup:
     ``readiness_probe`` checks each replica. ``startup_probe`` checks the public
     endpoint before ``deploy()`` returns.
 
-    With a port and ``min_replicas > 0``, deployment checks the public endpoint:
+    HTTP groups with ``min_replicas > 0`` and no startup probe also poll
+    ``GET /`` for up to 60 extra seconds to check routing. If the route check
+    times out, deployment logs a warning and returns normally.
 
-    * HTTP: reuse the readiness path, or poll ``GET /`` for up to 60 extra
-      seconds. The fallback checks routing, not app health. On timeout, it logs
-      a warning and returns.
-    * gRPC: use the same generic startup probe as function deployments.
+    This check adds no health requirements. Readiness settings and explicit
+    startup probes keep their existing behavior. gRPC and scale-to-zero groups
+    skip the extra check. Authenticated groups are supported.
 
-    Set ``startup_probe`` to override the default. Authenticated groups work too.
-    A known HTTP health path, e.g. ``StartupProbe.http("/health")``, avoids waiting
-    on an app's empty root 404. A known gRPC health RPC avoids false positives
-    from gateway responses. These checks do not verify the served revision.
+    An app returning an empty 404 at ``/`` makes the route check wait the full
+    timeout. The check does not verify which revision is serving traffic.
 
     ``network_policy`` configures host egress. Omit it for the server default;
     ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
@@ -429,14 +427,6 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
-        if startup_probe is None and port is not None and min_replicas > 0:
-            # Replica readiness can precede gateway propagation. Reuse the
-            # controller's routed probe rather than retrying callers' traffic.
-            # Do not guess an HTTP path: healthy API-only services may 404 at /.
-            if protocol == "grpc":
-                startup_probe = StartupProbe.grpc()
-            elif readiness_probe is not None and readiness_probe._kind == "http":
-                startup_probe = StartupProbe.http(readiness_probe._value)
         if startup_probe is not None:
             if port is None:
                 raise ValueError("startup_probe requires port")
