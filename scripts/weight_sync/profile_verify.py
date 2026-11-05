@@ -7,7 +7,7 @@ import json
 import time
 from pathlib import Path
 
-from profile_plan import write_json, validate, activate_controller_sdk
+from profile_plan import write_json, validate, activate_controller_sdk, sha
 from profile_gpu_guard import ProfileGuard
 from profile_rpc import lookup_group
 from profile_writers import process_identity
@@ -175,7 +175,14 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
     args = parser.parse_args()
-    validate(args.cpu_ledger.parent)
+    plan = validate(args.cpu_ledger.parent)
+    cpu_record = json.loads(args.cpu_ledger.read_bytes())
+    if (
+        cpu_record.get("plan_sha256") != sha(args.cpu_ledger.parent / "plan.json")
+        or cpu_record.get("cpu_deadline_epoch", 0) - cpu_record.get("cpu_started_at", 0)
+        != plan["cpu_seconds"]
+    ):
+        raise RuntimeError("CPU cleanup ledger differs from frozen plan/fixed lease")
     activate_controller_sdk(args.cpu_ledger.parent)
     load_env(args.env_file)
     print(json.dumps(verify(args.cpu_ledger, args.gpu_ledger, args.out), indent=2))

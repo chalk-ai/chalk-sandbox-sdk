@@ -134,6 +134,8 @@ def test_profile_create_rpc_deadline_leaves120_second_reserve_and_persists_lost_
     assert record["create_rpc_deadline_epoch"] == 110
     assert record["create_reconcile_until_epoch"] == 170
     assert record["submission_inflight"]
+    with pytest.raises(RuntimeError, match="replay refused"):
+        stub.create_sandbox(None)
 
 
 def test_recovered_uuid_uid_survive_cleanup_subdir_transient_and_canonical_reload(

@@ -28,6 +28,8 @@ class ProfileSandboxStub:
     def create_sandbox(self, request, **kwargs):
         from cpu_seed import CREATE_RPC_SECONDS, CREATE_RECONCILE_GRACE_SECONDS
 
+        if self.record.get("create_rpc_deadline_epoch") is not None:
+            raise RuntimeError("CPU profile create already attempted; replay refused")
         ready = json.loads(
             (self.ledger.parent / "cpu-watchdog-ready.json").read_bytes()
         )
