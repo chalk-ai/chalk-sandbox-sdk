@@ -450,6 +450,14 @@ dev = [
     { name = "python-dotenv" },
     { name = "rapidfuzz" },
 ]
+serving = [
+    { name = "aiohttp" },
+    { name = "numpy" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "xxhash" },
+    { name = "zstandard" },
+]
 sql = [
     { name = "pyarrow" },
 ]
@@ -467,6 +475,7 @@ workflows = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'serving'", specifier = ">=3.12.14,<4" },
     { name = "attrs", marker = "extra == 'dev'", specifier = ">=23.0.0" },
     { name = "chalk-remote-call-python", specifier = "==1.10.13" },
     { name = "chalkdf", marker = "extra == 'dev'", specifier = ">=3.31.87" },
@@ -474,6 +483,7 @@ requires-dist = [
     { name = "chalkpy", extras = ["workflows"], marker = "extra == 'workflows'", specifier = ">=2.154.27" },
     { name = "connectrpc", specifier = ">=0.12.1,<0.13.0" },
     { name = "huggingface-hub", marker = "extra == 'weights'", specifier = ">=0.28" },
+    { name = "numpy", marker = "extra == 'serving'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'weights'", specifier = ">=1.26" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20.0" },
@@ -486,12 +496,16 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "rapidfuzz", marker = "extra == 'dev'", specifier = ">=3.0.0" },
+    { name = "safetensors", marker = "extra == 'serving'", specifier = ">=0.5" },
     { name = "safetensors", marker = "extra == 'weights'", specifier = ">=0.5" },
+    { name = "torch", marker = "extra == 'serving'", specifier = ">=2.7" },
     { name = "torch", marker = "extra == 'weights'", specifier = ">=2.5" },
+    { name = "xxhash", marker = "extra == 'serving'", specifier = ">=3.5" },
     { name = "xxhash", marker = "extra == 'weights'", specifier = ">=3.5" },
+    { name = "zstandard", marker = "extra == 'serving'", specifier = ">=0.23" },
     { name = "zstandard", marker = "extra == 'weights'", specifier = ">=0.23" },
 ]
-provides-extras = ["weights", "sql", "workflows", "dev"]
+provides-extras = ["serving", "weights", "sql", "workflows", "dev"]
 
 [[package]]
 name = "chalkdf"
