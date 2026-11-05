@@ -15,6 +15,12 @@ from chalkcompute._volume_fingerprint import (
 )
 
 
+_ENV = "env-1"
+_UUID = "019a53f0-5f60-7000-8000-000000000001"
+_VOLUME = f"{_ENV}/{_UUID}"
+_OTHER_VOLUME = "env-1/019a53f0-5f60-7000-8000-000000000002"
+
+
 def _intent(content: pb.ContentRef | None = None) -> pb.CommitIntent:
     return pb.CommitIntent(
         volume=pb.VolumeRef(name="models"),
@@ -49,8 +55,8 @@ def _intent(content: pb.ContentRef | None = None) -> pb.CommitIntent:
 def _bytes(intent: pb.CommitIntent, **kwargs: str) -> bytes:
     return canonical_commit_request(
         intent,
-        environment_id=kwargs.get("environment_id", "env-1"),
-        volume_id=kwargs.get("volume_id", "vol-1"),
+        environment_id=kwargs.get("environment_id", _ENV),
+        volume_id=kwargs.get("volume_id", _VOLUME),
     )
 
 
@@ -95,13 +101,13 @@ def test_identity_aliases_are_canonical_and_inputs_unchanged() -> None:
     original = _intent()
     before = original.to_binary()
     alias = pb.CommitIntent.from_binary(before)
-    alias.volume = pb.VolumeRef(volume_id="vol-1")
+    alias.volume = pb.VolumeRef(volume_id=_VOLUME)
     alias.ref = "main"
     _upsert(alias).mode = pb.PathWriteMode.UPSERT
     assert _bytes(original) == _bytes(alias)
     assert original.to_binary() == before
     assert (
-        commit_request_fingerprint(original, environment_id="env-1", volume_id="vol-1")
+        commit_request_fingerprint(original, environment_id=_ENV, volume_id=_VOLUME)
         == hashlib.sha256(_bytes(original)).digest()
     )
 
@@ -119,8 +125,10 @@ def test_base_presence_zero_and_max_uint64_are_distinct(field: str) -> None:
 
 def test_environment_volume_author_and_order_bind_identity() -> None:
     first = _intent()
-    assert _bytes(first) != _bytes(first, environment_id="env-2")
-    assert _bytes(first) != _bytes(first, volume_id="vol-2")
+    assert _bytes(first) != _bytes(
+        first, environment_id="env-2", volume_id=f"env-2/{_UUID}"
+    )
+    assert _bytes(first) != _bytes(first, volume_id=_OTHER_VOLUME)
     other = pb.CommitIntent.from_binary(first.to_binary())
     other.author = "another trainer"
     assert _bytes(first) != _bytes(other)
@@ -221,7 +229,7 @@ def test_chunk_keys_normalize_and_all_ranges_bind_identity() -> None:
     )
     canonical = _bytes(intent)
     chunk = _upsert(intent).node.node.value.content.content.value.chunks[0]
-    chunk.object_key = "volumes/vol-1/chunks/object"
+    chunk.object_key = f"volumes/{_VOLUME}/chunks/object"
     intent.uploaded_object_references[0].object_key = chunk.object_key
     assert _bytes(intent) == canonical
     chunk.offset = 4
@@ -248,7 +256,7 @@ def test_packed_ranges_and_pack_identity_bind_request() -> None:
     )
     canonical = _bytes(intent)
     pack = _upsert(intent).node.node.value.content.content.value.pack
-    pack.object_key = "volumes/vol-1/packs/pack-object"
+    pack.object_key = f"volumes/{_VOLUME}/packs/pack-object"
     assert _bytes(intent) == canonical
     pack.pack_id = "pack-2"
     assert _bytes(intent) != canonical

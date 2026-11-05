@@ -8,6 +8,7 @@ module encodes identity only; it does not verify uploaded bytes/content hashes.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, TypeAlias
 
 from protobuf import Oneof
@@ -45,7 +46,8 @@ def canonical_commit_request(
     """Encode the complete supported identity, rejecting unknown semantics.
 
     ``volume_id`` must be the independently observed/resolved stable ID in the
-    authenticated ``environment_id``. Resolving those identities and validating
+    authenticated ``environment_id`` as ``environment_id/canonical-UUID``.
+    The full scoped ID is preserved exactly. Resolving identities and validating
     actual content are backend responsibilities, not established by this call.
     Path strings are preserved verbatim; callers must apply the backend's path
     validation before submission. A digest does not establish path validity.
@@ -56,15 +58,7 @@ def canonical_commit_request(
     )
     if len(intent.to_binary()) > _MAX_BYTES:
         raise ValueError("Commit request exceeds4MiB wire bound")
-    if (
-        not isinstance(environment_id, str)
-        or not isinstance(volume_id, str)
-        or not environment_id
-        or not volume_id
-        or "/" in volume_id
-        or volume_id in {".", ".."}
-    ):
-        raise ValueError("Require authenticated environment and stable volume identity")
+    _validate_identity(environment_id, volume_id)
     if intent.volume is None:
         raise ValueError("Commit intent requires a volume")
     _check(intent.volume, "volume_id name")
@@ -105,6 +99,34 @@ def commit_request_fingerprint(
             intent, environment_id=environment_id, volume_id=volume_id
         )
     ).digest()
+
+
+def _validate_identity(environment_id: str, volume_id: str) -> None:
+    # ObjectCatalogStore creates path.Join(authenticated environment, UUIDv7),
+    # and the v2 service returns that complete ID. Never strip/clean its scope.
+    if (
+        not isinstance(environment_id, str)
+        or not isinstance(volume_id, str)
+        or not environment_id
+        or environment_id in {".", ".."}
+        or "/" in environment_id
+        or any(
+            char.isspace() or ord(char) < 32 or ord(char) == 127
+            for char in environment_id
+        )
+    ):
+        raise ValueError("Require an authenticated environment identity")
+    parts = volume_id.split("/")
+    if (
+        len(parts) != 2
+        or parts[0] != environment_id
+        or re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            parts[1],
+        )
+        is None
+    ):
+        raise ValueError("Require environment/canonical-UUID stable volume identity")
 
 
 def _check(message: Any, slots: str) -> None:

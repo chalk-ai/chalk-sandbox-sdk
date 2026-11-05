@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	volume "github.com/chalk-ai/chalk-go/gen/chalk/volume/v2"
 	"github.com/fxamacker/cbor/v2"
@@ -18,6 +20,8 @@ import (
 )
 
 const maxBytes = 4 * 1024 * 1024
+
+var canonicalVolumeUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // Pin tag/name, kind, cardinality, presence, oneof and value type.
 var schemas = map[string]string{
@@ -259,8 +263,12 @@ func canonical(v vector) ([]byte, error) {
 	if len(wire) > maxBytes {
 		return nil, fmt.Errorf("wire bound")
 	}
-	if v.EnvironmentID == "" || v.VolumeID == "" || strings.Contains(v.VolumeID, "/") || v.VolumeID == "." || v.VolumeID == ".." {
-		return nil, fmt.Errorf("identity required")
+	if v.EnvironmentID == "" || v.EnvironmentID == "." || v.EnvironmentID == ".." || strings.Contains(v.EnvironmentID, "/") || strings.ContainsFunc(v.EnvironmentID, func(r rune) bool { return unicode.IsSpace(r) || r < 32 || r == 127 }) {
+		return nil, fmt.Errorf("authenticated environment required")
+	}
+	parts := strings.Split(v.VolumeID, "/")
+	if len(parts) != 2 || parts[0] != v.EnvironmentID || !canonicalVolumeUUID.MatchString(parts[1]) {
+		return nil, fmt.Errorf("environment/canonical-UUID volume identity required")
 	}
 	intent := new(volume.CommitIntent)
 	if err := proto.Unmarshal(wire, intent); err != nil {
