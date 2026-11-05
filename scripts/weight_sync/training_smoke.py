@@ -101,6 +101,48 @@ def overlay_members(path):
         }
 
 
+def retain_trainer_evidence(guard, *, timeout=15):
+    """Best-effort child process; native I/O cannot stall resource release."""
+    code = """
+import json, sys
+from pathlib import Path
+import chalkcompute as cc
+from chalkcompute._volume import VolumeFileNotFoundError, VolumeNotFoundError
+try:
+    data = cc.Volume(sys.argv[1], create_if_missing=False).read_file('evidence/trainer.json')
+except (VolumeFileNotFoundError, VolumeNotFoundError):
+    raise SystemExit(0)
+assert len(data) <= 1024 * 1024, 'Trainer evidence exceeds bounded report size'
+json.loads(data)
+Path(sys.argv[2]).write_bytes(data)
+"""
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                guard.name,
+                str(guard.out / "trainer-final.json"),
+            ],
+            timeout=timeout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        status = "finished" if result.returncode == 0 else "unavailable"
+    except subprocess.TimeoutExpired:
+        status = "timed_out"
+    except OSError:
+        status = "unavailable"
+    guard.record["evidence_retention"] = status
+    guard.save()
+
+
+def release_compute_then_retain(guard, *, timeout=15):
+    guard.cleanup_compute()
+    retain_trainer_evidence(guard, timeout=timeout)
+
+
 class ResourceGuard:
     """Persist IDs immediately, recover ambiguous submissions by unique name."""
 
@@ -1198,15 +1240,10 @@ def main():
         raise
     finally:
         cleanup_errors = []
-        # Preserve remote evidence before stopping compute or deleting volumes.
         try:
-            (args.out / "trainer-final.json").write_bytes(
-                guard.volume.read_file("evidence/trainer.json")
-            )
-        except Exception:
-            pass
-        try:
-            guard.cleanup_compute()
+            # Compute release precedes optional evidence I/O. The volume remains
+            # available until the following data-cleanup phase.
+            release_compute_then_retain(guard)
         except Exception as error:
             cleanup_errors.append(f"compute: {type(error).__name__}: {error}")
         finally:

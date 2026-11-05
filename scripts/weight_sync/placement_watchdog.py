@@ -15,7 +15,7 @@ def main():
     from connectrpc.code import Code
     from connectrpc.errors import ConnectError
 
-    from training_smoke import ResourceGuard, cleanup_data
+    from training_smoke import ResourceGuard, cleanup_data, retain_trainer_evidence
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, required=True)
@@ -79,14 +79,6 @@ def main():
             break
         time.sleep(2)
     guard = snapshot()
-    try:
-        (out / "trainer.json").write_bytes(
-            cc.Volume(guard.name, create_if_missing=False).read_file(
-                "evidence/trainer.json"
-            )
-        )
-    except Exception:
-        pass
     errors = []
     try:
         guard.stop_training()
@@ -118,6 +110,7 @@ def main():
         except Exception as error:
             errors.append(f"{name}: {type(error).__name__}: {error}")
     if not errors:
+        retain_trainer_evidence(guard)
         errors.extend(cleanup_data(guard))
     guard.record["cleanup_errors"] = errors
     guard.record["finished_at"] = time.time()

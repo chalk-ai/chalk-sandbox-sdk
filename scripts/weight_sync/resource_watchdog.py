@@ -20,7 +20,7 @@ def main():
     from connectrpc.code import Code
     from connectrpc.errors import ConnectError
 
-    from training_smoke import ResourceGuard, cleanup_data
+    from training_smoke import ResourceGuard, cleanup_data, retain_trainer_evidence
 
     record = json.loads(args.ledger.read_text())
     out = args.ledger.parent / "watchdog-cleanup"
@@ -88,13 +88,6 @@ def main():
             record["kube_context"],
             record["fallback_kube_context"],
         )
-        try:
-            volume = cc.Volume(record["name"], create_if_missing=False)
-            (out / "trainer.json").write_bytes(
-                volume.read_file("evidence/trainer.json")
-            )
-        except Exception:
-            pass
         for suffix in ("-serve", "-fresh"):
             name = record["name"] + suffix
             try:
@@ -122,6 +115,7 @@ def main():
         raise RuntimeError(
             "Watchdog cleanup had errors; inspect watchdog-cleanup evidence"
         )
+    retain_trainer_evidence(guard)
     data_errors = cleanup_data(guard)
     guard.record["cleanup_errors"] = data_errors
     guard.save()
