@@ -241,3 +241,12 @@ def test_reopened_stream_rejects_explicit_wrong_base_model(stream):
     reopened = WeightStream("test", "wrong/model", volume=stream.volume)
     with pytest.raises(WeightStreamError, match="base_model"):
         reopened.publisher().resume({"w": torch.zeros(10)})
+
+
+@pytest.mark.parametrize(
+    "changed", [lambda t: t.reshape(2, 5), lambda t: t.view(torch.int32)]
+)
+def test_resume_rejects_shape_or_dtype_even_when_storage_bytes_match(stream, changed):
+    publisher(stream).publish({"w": torch.zeros(10)})
+    with pytest.raises(WeightStreamError, match="does not match"):
+        publisher(stream).resume({"w": changed(torch.zeros(10))})
