@@ -29,11 +29,20 @@ def _listen(value: str) -> tuple[str, int]:
 async def serve(args: argparse.Namespace) -> None:
     engine = getattr(args, "engine", "vllm")
     if engine == "sglang-experimental":
-        adapter = SGLangAdapter(args.engine_port, args.engine_args)
+        adapter = SGLangAdapter(
+            args.engine_port,
+            args.engine_args,
+            diagnostic_profile=getattr(args, "sglang_profile", None)
+            or "deterministic-triton",
+        )
         syncer_class = FullCheckpointSyncer
-    else:
+    elif engine == "vllm":
+        if getattr(args, "sglang_profile", None) is not None:
+            raise ValueError("SGLang profile requires --engine sglang-experimental")
         adapter = VLLMAdapter(args.engine_port, args.engine_args)
         syncer_class = WeightSyncer
+    else:
+        raise ValueError(f"Unsupported serving engine: {engine}")
     gate = AdmissionGate()
     metrics = Metrics()
     syncer = syncer_class(
@@ -138,6 +147,11 @@ def main() -> None:
         "--engine",
         choices=["vllm", "sglang-experimental"],
         default=os.environ.get("CHALK_ENGINE", "vllm"),
+    )
+    parser.add_argument(
+        "--sglang-profile",
+        choices=["deterministic-triton"],
+        help="Pinned experimental SGLang profile (default: deterministic-triton)",
     )
     parser.add_argument("--weights", default=os.environ.get("CHALK_WEIGHT_STREAM_DIR"))
     parser.add_argument("--engine-port", type=int, default=8001)

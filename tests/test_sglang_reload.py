@@ -494,7 +494,7 @@ def test_shutdown_stops_native_group_before_joining_blocked_preparation(
         class Adapter:
             url = "http://127.0.0.1:8001"
 
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 pass
 
             def launch_cmd(self, *args):
@@ -542,7 +542,7 @@ def test_shutdown_stops_native_group_before_joining_blocked_preparation(
                 events.append("http-cleanup")
 
         class Site:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 pass
 
             async def start(self):
@@ -583,7 +583,18 @@ def test_shutdown_stops_native_group_before_joining_blocked_preparation(
 
 @pytest.mark.parametrize(
     "failure",
-    [None, "pause", "reload", "paused_requests", "flush", "resume", "non_json"],
+    [
+        None,
+        "pause",
+        "reload",
+        "paused_requests",
+        "flush",
+        "resume",
+        "non_json",
+        "version",
+        "model_path",
+        "world_size",
+    ],
 )
 def test_native_http_protocol_is_strict(stream, failure):
     root, manifests = stream
@@ -611,8 +622,25 @@ def test_native_http_protocol_is_strict(stream, failure):
             )
             return web.json_response({"status": "failed" if failed else "ok"})
 
+        async def native_identity(request):
+            if request.path == "/model_info":
+                return web.json_response(
+                    {
+                        "model_path": "wrong"
+                        if failure == "model_path"
+                        else str(root / version_dir(0)),
+                        "load_format": "safetensors",
+                        "weight_version": "1" if failure == "version" else "2",
+                    }
+                )
+            result = runtime_info()
+            if failure == "world_size":
+                result["internal_states"][0]["world_size"] = 2
+            return web.json_response(result)
+
         app = web.Application()
         app.router.add_post("/{path}", control)
+        app.router.add_get("/{path}", native_identity)
         async with TestServer(app) as server:
             adapter = SGLangAdapter()
             adapter.url = str(server.make_url("")).rstrip("/")
@@ -631,7 +659,194 @@ def test_native_http_protocol_is_strict(stream, failure):
                 assert calls[1][1]["flush_cache"] is True
                 assert calls[1][1]["keep_pause"] is True
                 assert calls[1][1]["weight_version"] == "2"
-            if failure in ("pause", "reload", "paused_requests", "flush", "non_json"):
+            if failure in (
+                "pause",
+                "reload",
+                "paused_requests",
+                "flush",
+                "non_json",
+                "version",
+                "model_path",
+                "world_size",
+            ):
                 assert "/continue_generation" not in [path for path, _ in calls]
 
     asyncio.run(run())
+
+
+def test_deterministic_triton_is_explicit_diagnostic_profile_only(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "model_type": "llama",
+                "dtype": "bfloat16",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "chalkcompute.weights.serving.adapters.sglang.version", lambda _: "0.5.23"
+    )
+    default = SGLangAdapter().launch_cmd(tmp_path, 8001)
+    assert "--enable-deterministic-inference" not in default
+    assert "--attention-backend" not in default
+    diagnostic = SGLangAdapter(diagnostic_profile="deterministic-triton").launch_cmd(
+        tmp_path, 8001
+    )
+    assert diagnostic.count("--enable-deterministic-inference") == 1
+    assert diagnostic[diagnostic.index("--attention-backend") + 1] == "triton"
+    assert "--disable-cuda-graph" in diagnostic
+    for profile in ("flashinfer", "deterministic", "DETERMINISTIC-TRITON", True):
+        with pytest.raises(ValueError, match="diagnostic profile"):
+            SGLangAdapter(diagnostic_profile=profile)  # ty: ignore[invalid-argument-type]
+    for options in (
+        ["--enable-deterministic-inference"],
+        ["--attention-backend", "triton"],
+        ["--sampling-backend", "pytorch"],
+    ):
+        for profile in (None, "deterministic-triton"):
+            with pytest.raises(ValueError, match="Unsupported"):
+                SGLangAdapter(engine_args=options, diagnostic_profile=profile)
+
+
+def runtime_info():
+    config = {
+        "dtype": "bfloat16",
+        "weight_cache_mode": "off",
+        "disable_cuda_graph": True,
+        "enable_deterministic_inference": True,
+        "attention_backend": "triton",
+        "sampling_backend": "pytorch",
+        "disable_radix_cache": False,
+    }
+    return {**config, "internal_states": [{**config, "world_size": 1}]}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "missing",
+        "conflict",
+        "parallel",
+        "bool_world",
+        "two_workers",
+        "model_path",
+        "format",
+        "oversize",
+    ],
+)
+def test_readiness_requires_actual_managed_native_contract(stream, failure):
+    root, _ = stream
+    model_dir = root / version_dir(0)
+
+    async def run():
+        async def get(request):
+            if request.path == "/health":
+                return web.Response()
+            if request.path == "/model_info":
+                return web.json_response(
+                    {
+                        "model_path": "wrong"
+                        if failure == "model_path"
+                        else str(model_dir),
+                        "load_format": "pt" if failure == "format" else "safetensors",
+                    }
+                )
+            info = runtime_info()
+            if failure == "missing":
+                for config in (info, info["internal_states"][0]):
+                    config.pop("attention_backend")
+            if failure == "conflict":
+                info["sampling_backend"] = "flashinfer"
+            if failure == "parallel":
+                info["internal_states"][0]["world_size"] = 2
+            if failure == "bool_world":
+                info["internal_states"][0]["world_size"] = True
+            if failure == "two_workers":
+                info["internal_states"] *= 2
+            if failure == "oversize":
+                return web.Response(body=b"x" * (256 * 1024 + 1))
+            # Actual chunked transport ensures bounded reads do not assume a
+            # single read returns the complete response.
+            body = json.dumps(info).encode()
+            response = web.StreamResponse(headers={"Content-Type": "application/json"})
+            await response.prepare(request)
+            await response.write(body[:20])
+            await asyncio.sleep(0)
+            await response.write(body[20:])
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_get("/{path}", get)
+        async with TestServer(app) as server:
+            adapter = SGLangAdapter(diagnostic_profile="deterministic-triton")
+            adapter._model_dir = model_dir
+            adapter.url = str(server.make_url("")).rstrip("/")
+            if failure:
+                with pytest.raises(RuntimeError):
+                    await adapter.ready()
+            else:
+                assert await adapter.ready()
+
+    asyncio.run(run())
+
+
+def test_cli_exposes_only_reviewed_sglang_profile(monkeypatch, stream):
+    import sys
+    from chalkcompute.weights.serving import __main__ as entrypoint
+
+    captured = []
+
+    async def fake_serve(args):
+        captured.append(args)
+
+    monkeypatch.setattr(entrypoint, "serve", fake_serve)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chalk-live-serve",
+            "--engine",
+            "sglang-experimental",
+            "--sglang-profile",
+            "deterministic-triton",
+            "--weights",
+            str(stream[0]),
+        ],
+    )
+    entrypoint.main()
+    assert captured[0].engine == "sglang-experimental"
+    assert captured[0].sglang_profile == "deterministic-triton"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chalk-live-serve",
+            "--engine",
+            "sglang-experimental",
+            "--sglang-profile",
+            "flashinfer",
+            "--weights",
+            str(stream[0]),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        entrypoint.main()
+
+
+def test_unknown_engine_and_misplaced_profile_refused_before_native_launch(stream):
+    from chalkcompute.weights.serving import __main__ as entrypoint
+
+    for values in (
+        {"engine": "unknown"},
+        {"engine": "vllm", "sglang_profile": "deterministic-triton"},
+    ):
+        args = argparse.Namespace(
+            engine_port=8001, engine_args=[], weights=str(stream[0]), **values
+        )
+        with pytest.raises(ValueError):
+            asyncio.run(entrypoint.serve(args))

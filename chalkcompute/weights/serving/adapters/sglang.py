@@ -6,6 +6,7 @@ actual image/device combination passes the documented compatibility checks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -45,9 +46,19 @@ def validate_config(config: bytes) -> None:
 
 
 class SGLangAdapter:
-    def __init__(self, port: int = 8001, engine_args: list[str] | None = None):
+    def __init__(
+        self,
+        port: int = 8001,
+        engine_args: list[str] | None = None,
+        *,
+        diagnostic_profile: str | None = None,
+    ):
         self.url = f"http://127.0.0.1:{port}"
-        self.engine_args = engine_args or []
+        self._model_dir: Path | None = None
+        if diagnostic_profile not in (None, "deterministic-triton"):
+            raise ValueError("Unsupported experimental SGLang diagnostic profile")
+        self.diagnostic_profile = diagnostic_profile
+        self.engine_args = list(engine_args or [])
         # A narrow allowlist also rejects argparse abbreviations, parallelism,
         # quantization, remote code, shared/derived caches and environment files.
         index = 0
@@ -78,6 +89,7 @@ class SGLangAdapter:
             raise ValueError(
                 "Experimental SGLang rejects unreviewed SGLANG_ environment overrides"
             )
+        self._model_dir = model_dir
         return [
             sys.executable,
             "-m",
@@ -103,6 +115,11 @@ class SGLangAdapter:
             "--weight-cache-mode",
             "off",
             "--disable-cuda-graph",
+            *(
+                ["--enable-deterministic-inference", "--attention-backend", "triton"]
+                if self.diagnostic_profile == "deterministic-triton"
+                else []
+            ),
             *self.engine_args,
         ]
 
@@ -155,6 +172,10 @@ class SGLangAdapter:
                 "SGLang did not acknowledge a drained, successful disk reload"
             )
         await self._post("/flush_cache", {}, json_result=False)
+        # The TP1 scheduler response is only accepted with matching manager
+        # identity. Never reopen admission on an old path/version acknowledgement.
+        await self._verify_runtime()
+        await self._verify_model(version_dir, str(manifest.version))
         result = await self._post("/continue_generation", {"torch_empty_cache": True})
         if result.get("status") != "ok":
             raise RuntimeError("SGLang did not acknowledge native resume")
@@ -163,10 +184,90 @@ class SGLangAdapter:
         # apply() flushes while native generation remains paused.
         return None
 
+    async def _get(self, path: str) -> dict:
+        async with ClientSession(timeout=ClientTimeout(total=5)) as client:
+            async with client.get(self.url + path) as response:
+                if response.status != 200:
+                    raise RuntimeError("SGLang readiness identity was not acknowledged")
+                # server_info is about38KiB in the pinned image. Keep the
+                # complete read bounded before decoding and inspect selected keys.
+                try:
+                    await response.content.readexactly(256 * 1024 + 1)
+                except asyncio.IncompleteReadError as exc:
+                    data = exc.partial
+                else:
+                    raise RuntimeError("SGLang readiness response exceeds256KiB")
+                value = json.loads(data)
+                if not isinstance(value, dict):
+                    raise RuntimeError("Invalid SGLang readiness response")
+                return value
+
+    async def _verify_model(self, model_dir: Path, weight_version: str | None) -> None:
+        info = await self._get("/model_info")
+        if (
+            info.get("model_path") != str(model_dir)
+            or info.get("load_format") != "safetensors"
+        ):
+            raise RuntimeError("SGLang model path/format acknowledgement differs")
+        if weight_version is not None and (
+            type(info.get("weight_version")) is not str
+            or info["weight_version"] != weight_version
+        ):
+            raise RuntimeError("SGLang applied version acknowledgement differs")
+
+    async def _verify_runtime(self) -> None:
+        info = await self._get("/server_info")
+        states = info.get("internal_states")
+        if (
+            not isinstance(states, list)
+            or len(states) != 1
+            or not isinstance(states[0], dict)
+        ):
+            raise RuntimeError(
+                "SGLang requires exactly one native scheduler acknowledgement"
+            )
+        if type(states[0].get("world_size")) is not int or states[0]["world_size"] != 1:
+            raise RuntimeError("SGLang requires native TP/PP/DP/EP1")
+        expected = {
+            "dtype": "bfloat16",
+            "weight_cache_mode": "off",
+            "disable_cuda_graph": True,
+        }
+        if self.diagnostic_profile == "deterministic-triton":
+            expected.update(
+                {
+                    "enable_deterministic_inference": True,
+                    "attention_backend": "triton",
+                    "sampling_backend": "pytorch",
+                    "disable_radix_cache": False,
+                }
+            )
+        configs = [info, states[0]]
+        if not any(
+            all(
+                config.get(k) == v and type(config.get(k)) is type(v)
+                for k, v in expected.items()
+            )
+            for config in configs
+        ):
+            raise RuntimeError("SGLang resolved runtime profile differs")
+        if any(
+            k in config and (config[k] != v or type(config[k]) is not type(v))
+            for config in configs
+            for k, v in expected.items()
+        ):
+            raise RuntimeError("SGLang resolved runtime reports conflicting settings")
+
     async def ready(self) -> bool:
         try:
             async with ClientSession(timeout=ClientTimeout(total=5)) as client:
                 async with client.get(self.url + "/health") as response:
-                    return response.status == 200
+                    if response.status != 200:
+                        return False
+            if self._model_dir is None:
+                raise RuntimeError("SGLang readiness requires a managed model launch")
+            await self._verify_runtime()
+            await self._verify_model(self._model_dir, None)
+            return True
         except (ClientError, OSError, TimeoutError):
             return False
