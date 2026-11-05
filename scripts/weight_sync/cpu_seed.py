@@ -300,6 +300,12 @@ for entry in manifest.tensors:
     assert previous==(entry.length,entry.checksum)
 proof_files={}
 for filename,(length,checksum) in files.items():
+    source=folder/filename
+    source_digest=xxhash.xxh3_128()
+    with source.open('rb') as handle:
+        while chunk:=handle.read(4*1024*1024):
+            source_digest.update(chunk)
+    assert source.stat().st_size==length and source_digest.hexdigest()==checksum
     payload=snapshot.read_file(version_dir(0)+'/'+filename)
     assert len(payload)==length
     assert xxhash.xxh3_128_hexdigest(payload)==checksum
