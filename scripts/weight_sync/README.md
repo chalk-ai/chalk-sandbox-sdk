@@ -118,11 +118,21 @@ The final full state is reconstructed and compared byte-for-byte with every
 canonical trained tensor. The trainer and live group stop before a fresh group
 loads that independent checkpoint for exact greedy-output comparison.
 
-Before training, the launcher closes an actual SSE completion after its first
-chunk. Twenty readiness samples, a healthy follow-up completion, zero failure
+Before training, the frozen launcher closes an actual SSE completion after its
+first `data:` line. This gate alone does not prove nonempty generated text.
+Twenty readiness samples, a healthy follow-up completion, zero failure
 metrics, and identical SG owner/replica UIDs and native API/worker PID start times
 are required. The external SSH check executes only a fixed process identity probe
 inside the exact owned replica. Failure stops the run and releases resources.
+
+`token_disconnect_probe.py` supplies a separate read-only supplementary gate:
+it skips comments and empty text events, waits for nonempty `choices[].text`,
+and closes without reading the remaining stream. It records the actual policy
+version, generated text and a token-count lower bound (chunks are not exact token
+counts), then checks twenty health samples, failure metrics, follow-up inference,
+and unchanged replica/native process identities. It does not mutate the launcher's
+ledger, deadline, or ownership. A short completion may already be buffered before
+the client closes; this probe alone does not prove native work was still running.
 
 The launcher records all resource IDs immediately. A detached `resource_watchdog.py`
 shares the immutable deadline, survives launcher death, inhibits workstation idle
