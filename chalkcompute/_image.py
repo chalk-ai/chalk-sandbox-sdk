@@ -298,7 +298,7 @@ class Image:
                         and (type(mount.version_id) is not int or mount.version_id < 0)
                     )
                     or (
-                        mount.type == VolumeMountType.EMPTY_DIR
+                        mount.type != VolumeMountType.CHALKFS
                         and mount.version_id is not None
                     )
                     or (

@@ -113,6 +113,7 @@ class VolumeMountType(Enum):
 
     CHALKFS = "versioned_chalkfs"
     EMPTY_DIR = "empty_dir"
+    SHARED_MEMORY = "shared_memory"
 
 
 @dataclass(frozen=True)
@@ -130,9 +131,11 @@ class VolumeMount:
     ref_name
         Optional mutable fork to mount.
     type
-        Mount type: ``VolumeMountType.CHALKFS`` (default) or ``EMPTY_DIR``.
+        Mount type: ``VolumeMountType.CHALKFS`` (default), ``EMPTY_DIR``, or
+        ``SHARED_MEMORY`` (memory-backed).
     size_limit
-        Optional empty-dir size, such as ``10Gi``. Omit for the platform default.
+        Optional empty-dir or shared-memory size, such as ``10Gi``.
+        Omit for the platform default.
     """
 
     name: str

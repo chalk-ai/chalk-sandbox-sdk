@@ -101,8 +101,11 @@ def test_normalize_volume_handle_requires_string_mount_path() -> None:
         normalize_volume_refs([(volume, None)])  # type: ignore[arg-type]
 
 
-def test_empty_dir_mount_skips_persistent_volume_operations() -> None:
-    mount = VolumeMount("scratch", "/tmp", type=VolumeMountType.EMPTY_DIR)
+@pytest.mark.parametrize(
+    "volume_type", [VolumeMountType.EMPTY_DIR, VolumeMountType.SHARED_MEMORY]
+)
+def test_ephemeral_mount_skips_persistent_volume_operations(volume_type) -> None:
+    mount = VolumeMount("scratch", "/tmp", type=volume_type)
     client = MagicMock()
     assert vv.normalize_volume_refs([mount]) == [mount]
     assert vv.referenced_volume_mount(client, mount) is mount
@@ -139,6 +142,20 @@ def test_empty_dir_mount_skips_persistent_volume_operations() -> None:
             "empty_dir",
             "64Mi",
             id="empty-dir-explicit-size",
+        ),
+        pytest.param(
+            VolumeMount("shm", "/dev/shm", type=VolumeMountType.SHARED_MEMORY),
+            "shared_memory",
+            None,
+            id="shared-memory-default-size",
+        ),
+        pytest.param(
+            VolumeMount(
+                "shm", "/dev/shm", type=VolumeMountType.SHARED_MEMORY, size_limit="64Gi"
+            ),
+            "shared_memory",
+            "64Gi",
+            id="shared-memory-explicit-size",
         ),
     ],
 )
