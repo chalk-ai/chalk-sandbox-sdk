@@ -61,6 +61,7 @@ def membership() -> dict:
         or not 0 <= age(hosts[0].get("last_heartbeat_at")) < 60
     ):
         raise ValueError("Oracle external pool identity/membership/freshness changed")
+    free = require_free_placement(capacity, hosts[0])
     return {
         "host_id": HOST,
         "pool_id": POOL,
@@ -68,7 +69,26 @@ def membership() -> dict:
         "observed_at": capacity["observed_at"],
         "heartbeat_at": hosts[0]["last_heartbeat_at"],
         "singleton_pool": True,
+        "free_placement": free,
     }
+
+
+def require_free_placement(capacity, actual_host):
+    result = {}
+    for name, resources in (
+        ("pool", capacity.get("resources", {})),
+        ("host", actual_host.get("resources", {})),
+    ):
+        free = resources.get("free", {})
+        if (
+            type(free.get("cpu_millicores")) is not int
+            or free["cpu_millicores"] < 16000
+            or type(free.get("memory_bytes")) is not int
+            or free["memory_bytes"] < 128 * 1024**3
+        ):
+            raise RuntimeError("Fresh placement CPU/memory capacity below16CPU/128GiB")
+        result[name] = {k: free[k] for k in ("cpu_millicores", "memory_bytes")}
+    return result
 
 
 def ssh(args):
@@ -190,26 +210,98 @@ def runtime_absence(container_id: str | None) -> dict:
     }
 
 
-def install_release_check(guard):
+def merge_retained_identity(record, retained):
+    for field in ("name", "cpu_phase_id", "environment_id", "cpu_deadline_epoch"):
+        if retained.get(field) != record.get(field):
+            raise RuntimeError("Canonical CPU ownership/lease changed")
+    old, new = retained.get("seed_sandbox_id"), record.get("seed_sandbox_id")
+    if old and new and old != new:
+        raise RuntimeError("Canonical CPU sandbox UUID changed")
+    if old:
+        record["seed_sandbox_id"] = old
+    resources = {
+        (v["context"], v["name"]): v for v in retained.get("seed_resources", [])
+    }
+    for value in record.get("seed_resources", []):
+        key = (value["context"], value["name"])
+        if key in resources and resources[key]["uid"] != value["uid"]:
+            raise RuntimeError("Canonical retained CPU owner UID changed")
+        resources[key] = value
+    if resources:
+        record["seed_resources"] = list(resources.values())
+    return record
+
+
+def install_release_check(guard, canonical_ledger=None):
     original = guard.release_cpu
 
+    def persist(record):
+        if canonical_ledger is not None:
+            from profile_plan import write_json
+
+            if canonical_ledger.exists():
+                merge_retained_identity(
+                    record, json.loads(canonical_ledger.read_bytes())
+                )
+            write_json(canonical_ledger, record)
+
     def release(record, out):
-        original(record, out)
-        # No disarm is permitted between API/CR cleanup and native HOST proof.
-        record["cpu_compute_released"] = False
-        guard.write_json(out / "launcher.json", record)
-        if record.get("observed_host_id") not in (None, HOST):
-            raise RuntimeError(
-                "Unexpected HOST native cleanup requires its own host proof"
+        # Recover and retain exact identities canonically BEFORE API teardown.
+        # Generic watchdog uses a child evidence directory and reloads the
+        # canonical ledger each retry; child-only writes could otherwise lose
+        # a recovered ID/UID after its API association disappears.
+        if canonical_ledger is not None:
+            if canonical_ledger.exists():
+                merge_retained_identity(
+                    record, json.loads(canonical_ledger.read_bytes())
+                )
+            if not record.get("seed_sandbox_id") and record.get("submission_inflight"):
+                guard.recover_seed(record)
+            persist(record)
+            if record.get("seed_sandbox_id"):
+                capture = guard.ResourceGuard(
+                    record["name"],
+                    canonical_ledger.parent,
+                    record,
+                    record["kube_context"],
+                    record["fallback_kube_context"],
+                )
+                capture.capture_container_resource(
+                    record["seed_sandbox_id"], "seed_resources"
+                )
+                persist(record)
+        try:
+            attempted = bool(
+                record.get("seed_sandbox_id")
+                or record.get("create_rpc_deadline_epoch")
+                or record.get("submission_inflight")
             )
-        if record.get("seed_sandbox_id"):
-            proof = runtime_absence(record["seed_sandbox_id"])
-            guard.write_json(out / "host-runtime-absence.json", proof)
-        elif record.get("submission_inflight"):
-            raise RuntimeError("Ambiguous HOST submission must remain guarded")
-        record["host_runtime_verified_absent"] = True
-        record["cpu_compute_released"] = True
-        guard.write_json(out / "launcher.json", record)
+            if not attempted:
+                record.update(
+                    cpu_compute_released=True,
+                    host_runtime_verified_absent=True,
+                    compute_never_submitted=True,
+                )
+                guard.write_json(out / "launcher.json", record)
+                return
+            original(record, out)
+            record["cpu_compute_released"] = False
+            persist(record)
+            guard.write_json(out / "launcher.json", record)
+            if record.get("observed_host_id") not in (None, HOST):
+                raise RuntimeError(
+                    "Unexpected HOST native cleanup requires its own host proof"
+                )
+            if record.get("seed_sandbox_id"):
+                proof = runtime_absence(record["seed_sandbox_id"])
+                guard.write_json(out / "host-runtime-absence.json", proof)
+            elif record.get("submission_inflight"):
+                raise RuntimeError("Ambiguous HOST submission must remain guarded")
+            record["host_runtime_verified_absent"] = True
+            record["cpu_compute_released"] = True
+            guard.write_json(out / "launcher.json", record)
+        finally:
+            persist(record)
 
     guard.release_cpu = release
 
@@ -250,7 +342,10 @@ def arm_watchdog(guard, record, ledger):
 
 
 def run_watchdog(guard, ledger):
-    install_release_check(guard)
+    from profile_cpu_lifecycle import install as install_lifecycle
+
+    install_lifecycle(guard, ledger)
+    install_release_check(guard, ledger)
     from profile_volumes import install_cpu_cleanup
 
     install_cpu_cleanup(guard, ledger.parent)

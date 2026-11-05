@@ -21,7 +21,7 @@ def marker_path(out, name):
 
 
 def require_cpu_guard(record, out):
-    if remaining(record) < 120:
+    if remaining(record) < 120 + RPC_SECONDS:
         raise TimeoutError("CPU cleanup reserve reached")
     ready = json.loads((out / "cpu-watchdog-ready.json").read_bytes())
     if (

@@ -89,8 +89,17 @@ def execute(out, authorization_path, env_file):
     guard = importlib.import_module("cpu_seed")
     host = importlib.import_module("profile_host_guard")
     guard.load_env(env_file)
-    host.install_release_check(guard)
+    from profile_cpu_lifecycle import install as install_lifecycle
+
+    install_lifecycle(guard, out / "launcher.json")
+    host.install_release_check(guard, out / "launcher.json")
     from profile_volumes import create_volumes, install_cpu_cleanup
+    from profile_cpu_lifecycle import (
+        guarded_client,
+        poll as poll_profile,
+        work_remaining,
+    )
+    import profile_capacity
 
     install_cpu_cleanup(guard, out)
     import chalkcompute as cc
@@ -160,18 +169,9 @@ def execute(out, authorization_path, env_file):
     signal.signal(signal.SIGTERM, interrupted)
     try:
         write_json(out / "host-membership-before-create.json", host.membership())
-        disk = json.loads(
-            host.ssh(
-                [
-                    "python3",
-                    "-c",
-                    "import json,os; s=os.statvfs('/var/lib/docker'); print(json.dumps({'path':'/var/lib/docker','free_bytes':s.f_bavail*s.f_frsize}))",
-                ]
-            )
-        )
-        if disk["free_bytes"] < plan["minimum_host_free_disk_bytes"]:
-            raise RuntimeError("Insufficient Oracle disk before CPU claim")
-        write_json(out / "host-disk-before-create.json", disk)
+        capacity = profile_capacity.collect_raw()
+        write_json(out / "host-live-capacity-before-create.json", capacity)
+        profile_capacity.validate_capacity(capacity)
         create_volumes(record, out)
         env = {
             key: value
@@ -208,8 +208,12 @@ def execute(out, authorization_path, env_file):
             chalk_identity=False,
             env=env,
         )
-        guard.guarded_sandbox_client(record, ledger).run(
-            sandbox, timeout=min(600, guard.remaining(record) - 120)
+        write_json(out / "host-membership-before-sandbox.json", host.membership())
+        capacity = profile_capacity.collect_raw()
+        write_json(out / "host-live-capacity-before-sandbox.json", capacity)
+        profile_capacity.validate_capacity(capacity)
+        guarded_client(guard, record, ledger).run(
+            sandbox, timeout=min(600, work_remaining(record))
         )
         from training_smoke import ResourceGuard
 
@@ -229,7 +233,7 @@ def execute(out, authorization_path, env_file):
         write_json(
             out / "host-runtime-identity.json", host.runtime_identity(sandbox.id)
         )
-        progress = guard.poll_guest_until_complete(sandbox, record, ledger, poll)
+        progress = poll_profile(sandbox, record, ledger, poll)
         proof = progress["proof"]
         write_json(out / "cpu-proof.json", proof)
         record.update(
@@ -240,7 +244,7 @@ def execute(out, authorization_path, env_file):
         guard.release_cpu(record, out)
         record["status"] = "paused_proof"
         guard.write_json(ledger, record)
-        while guard.remaining(record) > 0:
+        while work_remaining(record) > 0:
             auth_path = out / "cpu-authorization.json"
             if auth_path.exists():
                 transfer = json.loads(auth_path.read_bytes())

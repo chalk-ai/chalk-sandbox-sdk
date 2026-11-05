@@ -38,6 +38,8 @@ OWN_SOURCES = (
     "profile_rpc.py",
     "profile_writers.py",
     "profile_verify.py",
+    "profile_capacity.py",
+    "profile_cpu_lifecycle.py",
 )
 
 
@@ -163,6 +165,7 @@ def prepare(
         "model": MODEL,
         "revision": REVISION,
         "cpu_seconds": CPU_SECONDS,
+        "cpu_cleanup_reserve_seconds": 120,
         "gpu_seconds": GPU_SECONDS,
         "cpu": "16",
         "memory": "128Gi",
@@ -201,6 +204,7 @@ def validate(out):
         "model": MODEL,
         "revision": REVISION,
         "cpu_seconds": CPU_SECONDS,
+        "cpu_cleanup_reserve_seconds": 120,
         "gpu_seconds": GPU_SECONDS,
         "cpu": "16",
         "memory": "128Gi",
@@ -327,6 +331,16 @@ def preview(out):
             str(out),
             "--authorization",
             str(out / "cpu-execution-authorization.json"),
+            "--env-file",
+            "<FTQA_ENV_FILE>",
+        ],
+        "cpu_cleanup_proof": [
+            sys.executable,
+            str(out / "guard/profile_verify.py"),
+            "--cpu-ledger",
+            str(out / "launcher.json"),
+            "--out",
+            str(out / "independent-cpu-cleanup-proof"),
             "--env-file",
             "<FTQA_ENV_FILE>",
         ],
