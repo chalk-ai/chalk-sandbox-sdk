@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import ClearWeightStreamPinRequest, ClearWeightStreamPinResponse, CreateWeightStreamRequest, CreateWeightStreamResponse, GetWeightStreamRequest, GetWeightStreamResponse, ListWeightStreamVersionsRequest, ListWeightStreamVersionsResponse, ListWeightStreamsRequest, ListWeightStreamsResponse, PromoteWeightStreamVersionRequest, PromoteWeightStreamVersionResponse, RecordWeightStreamVersionRequest, RecordWeightStreamVersionResponse, SetWeightStreamPinRequest, SetWeightStreamPinResponse
+from .service_pb import CancelWeightStreamPromotionRequest, CancelWeightStreamPromotionResponse, ClearWeightStreamPinRequest, ClearWeightStreamPinResponse, CreateWeightStreamRequest, CreateWeightStreamResponse, GetWeightStreamPromotionRequest, GetWeightStreamPromotionResponse, GetWeightStreamRequest, GetWeightStreamResponse, ListWeightStreamVersionsRequest, ListWeightStreamVersionsResponse, ListWeightStreamsRequest, ListWeightStreamsResponse, PromoteWeightStreamVersionRequest, PromoteWeightStreamVersionResponse, RecordWeightStreamVersionRequest, RecordWeightStreamVersionResponse, SetWeightStreamPinRequest, SetWeightStreamPinResponse, StartWeightStreamPromotionRequest, StartWeightStreamPromotionResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -162,6 +162,10 @@ class WeightStreamServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> PromoteWeightStreamVersionResponse:
+        """
+        Compatibility facade. Servers without the durable async implementation
+        return UNIMPLEMENTED; successful responses require completed registration.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -169,6 +173,63 @@ class WeightStreamServiceClientSync(ConnectClientSync):
                 service_name="chalk.weightstream.v1.WeightStreamService",
                 input=PromoteWeightStreamVersionRequest,
                 output=PromoteWeightStreamVersionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def start_weight_stream_promotion(
+        self,
+        request: StartWeightStreamPromotionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> StartWeightStreamPromotionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="StartWeightStreamPromotion",
+                service_name="chalk.weightstream.v1.WeightStreamService",
+                input=StartWeightStreamPromotionRequest,
+                output=StartWeightStreamPromotionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_weight_stream_promotion(
+        self,
+        request: GetWeightStreamPromotionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> GetWeightStreamPromotionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetWeightStreamPromotion",
+                service_name="chalk.weightstream.v1.WeightStreamService",
+                input=GetWeightStreamPromotionRequest,
+                output=GetWeightStreamPromotionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def cancel_weight_stream_promotion(
+        self,
+        request: CancelWeightStreamPromotionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CancelWeightStreamPromotionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CancelWeightStreamPromotion",
+                service_name="chalk.weightstream.v1.WeightStreamService",
+                input=CancelWeightStreamPromotionRequest,
+                output=CancelWeightStreamPromotionResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
