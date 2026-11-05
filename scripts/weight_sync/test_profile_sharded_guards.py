@@ -1,0 +1,386 @@
+"""Small-plan cleanup retries, absolute deadline, and measured resource gates."""
+
+import json
+from types import SimpleNamespace as NS
+
+import pytest
+
+import profile_sharded_guard as guard
+from profile_sharded_plan import runtime_capacity_code, validate_runtime_limits
+
+
+def record(tmp_path, monkeypatch, *, deadline=1100):
+    value = {
+        "cpu_phase_id": "a" * 32,
+        "cpu_deadline_epoch": deadline,
+        "launcher_pid": 101,
+        "launcher_identity": {"pid": 101, "group": 101, "started": "known"},
+        "environment_id": "test",
+        "name": "weight-profile-test",
+        "kube_context": "test-context",
+        "fallback_kube_context": "test-context",
+        "submission_inflight": True,
+    }
+    ledger = tmp_path / "launcher.json"
+    guard.write_json(ledger, value)
+    import profile_sharded_plan as plan
+
+    monkeypatch.setattr(plan, "validate_ledger", lambda p: json.loads(p.read_bytes()))
+    clock = [1000.0]
+    monkeypatch.setattr(
+        guard,
+        "time",
+        NS(time=lambda: clock[0], sleep=lambda v: clock.__setitem__(0, clock[0] + v)),
+    )
+    return ledger, clock
+
+
+def test_cleanup_retries_timeout_late_id_native_failure_and_volume_failure(
+    tmp_path, monkeypatch
+):
+    ledger, _ = record(tmp_path, monkeypatch)
+    observed = []
+
+    def attempt(path, value, number, **kwargs):
+        observed.append((number, value.get("seed_sandbox_id")))
+        if number == 0:
+            raise TimeoutError("first API timeout")
+        if number == 1:
+            value.update(
+                seed_sandbox_id="late-owned-id",
+                seed_resources=[{"uid": "retained-owner"}],
+            )
+            guard.write_json(path, value)
+            raise RuntimeError("transient native absence failure")
+        if number == 2:
+            assert value["seed_resources"] == [{"uid": "retained-owner"}]
+            raise RuntimeError("transient volume delete failure")
+        value.update(
+            status="released", cpu_compute_released=True, volume_verified_absent=True
+        )
+        guard.write_json(path, value)
+
+    monkeypatch.setattr(guard, "run_attempt", attempt)
+    result = guard.cleanup(ledger)
+    assert result["released"] is True and len(result["errors"]) == 3
+    assert observed == [
+        (0, None),
+        (1, None),
+        (2, "late-owned-id"),
+        (3, "late-owned-id"),
+    ]
+    assert all(v["phase_id"] == "a" * 32 for v in result["errors"])
+    assert json.loads(ledger.read_bytes())["seed_resources"] == [
+        {"uid": "retained-owner"}
+    ]
+
+
+def test_unknown_uuid_deadline_never_claims_release_and_retains_history(
+    tmp_path, monkeypatch
+):
+    ledger, clock = record(tmp_path, monkeypatch, deadline=1006)
+    attempts = []
+
+    def attempt(path, value, number, **kwargs):
+        attempts.append(number)
+        clock[0] += 1
+        raise RuntimeError("unknown UUID remains unproved")
+
+    monkeypatch.setattr(guard, "run_attempt", attempt)
+    with pytest.raises(RuntimeError, match="Absolute600-second cleanup deadline"):
+        guard.cleanup(ledger)
+    value = json.loads(ledger.read_bytes())
+    assert value["status"] == "cleanup_unconfirmed"
+    assert value["cpu_deadline_epoch"] == 1006
+    assert "cpu_compute_released" not in value and "volume_verified_absent" not in value
+    history = json.loads((tmp_path / "cleanup-history.json").read_bytes())
+    assert history["released"] is False and len(history["errors"]) == len(attempts) >= 2
+
+
+def test_launcher_death_with_inflight_create_still_enters_guarded_cleanup(
+    tmp_path, monkeypatch
+):
+    import chalkcompute._connect as connect
+    import profile_host_guard as host
+
+    ledger, _ = record(tmp_path, monkeypatch, deadline=1300)
+    monkeypatch.setattr(
+        guard, "install", lambda p: NS(ResourceGuard=lambda *args: NS(kube_contexts=[]))
+    )
+    monkeypatch.setattr(
+        connect, "ConnectClient", lambda: NS(_ensure_auth=lambda: None, _env_id="test")
+    )
+    monkeypatch.setattr(host, "runtime_absence", lambda _: {})
+    monkeypatch.setattr(guard, "process_identity", lambda pid: None)
+    calls = []
+
+    def stop(value):
+        assert (tmp_path / "cpu-expired").exists()
+        assert value["submission_inflight"] is True
+        calls.append("stop-original-writer")
+
+    def cleanup(path):
+        calls.append("reconcile-compute-and-data")
+        value = json.loads(path.read_bytes())
+        value.update(
+            status="released", cpu_compute_released=True, volume_verified_absent=True
+        )
+        guard.write_json(path, value)
+
+    monkeypatch.setattr(guard, "stop_launcher", stop)
+    monkeypatch.setattr(guard, "cleanup", cleanup)
+    guard.run_watchdog(ledger)
+    assert calls == ["stop-original-writer", "reconcile-compute-and-data"]
+    assert (tmp_path / "cpu-watchdog-exited.json").exists()
+
+
+def test_stop_launcher_refuses_reused_pid(tmp_path, monkeypatch):
+    import profile_sharded_processes as processes
+
+    ledger, _ = record(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        processes, "identity", lambda pid: {"pid": pid, "started": "different"}
+    )
+    monkeypatch.setattr(
+        processes.os, "killpg", lambda *args: pytest.fail("unrelated process signal")
+    )
+    with pytest.raises(RuntimeError, match="identity reused"):
+        guard.stop_launcher(json.loads(ledger.read_bytes()))
+
+
+def test_controller_normal_finally_waits_for_sole_watchdog_cleanup_owner(
+    tmp_path, monkeypatch
+):
+    import chalkcompute._connect as connect
+    import profile_host_guard as host
+
+    ledger, _ = record(tmp_path, monkeypatch, deadline=1300)
+    guard.write_json(
+        tmp_path / "cpu-cleanup-request.json",
+        {
+            "phase_id": "a" * 32,
+            "controller_work_stopped": True,
+            "execution_passed": True,
+        },
+    )
+    monkeypatch.setattr(
+        guard, "install", lambda p: NS(ResourceGuard=lambda *args: NS(kube_contexts=[]))
+    )
+    monkeypatch.setattr(
+        connect, "ConnectClient", lambda: NS(_ensure_auth=lambda: None, _env_id="test")
+    )
+    monkeypatch.setattr(host, "runtime_absence", lambda _: {})
+    monkeypatch.setattr(
+        guard,
+        "stop_launcher",
+        lambda value: pytest.fail("normal waiting controller must not be stopped"),
+    )
+    calls = []
+
+    def cleanup(path):
+        calls.append("sole-cleanup-owner")
+        assert json.loads(path.read_bytes())["execution_passed"] is True
+
+    monkeypatch.setattr(guard, "cleanup", cleanup)
+    guard.run_watchdog(ledger)
+    assert calls == ["sole-cleanup-owner"]
+
+
+@pytest.mark.parametrize("fault", ["ps_timeout", "ledger_read", "ready_publish"])
+def test_postready_monitor_failure_still_releases_and_preserves_late_identity(
+    tmp_path, monkeypatch, fault
+):
+    from pathlib import Path
+    import subprocess
+    import chalkcompute._connect as connect
+    import profile_host_guard as host
+
+    ledger, _ = record(tmp_path, monkeypatch, deadline=1300)
+    monkeypatch.setattr(
+        guard, "install", lambda p: NS(ResourceGuard=lambda *args: NS(kube_contexts=[]))
+    )
+    monkeypatch.setattr(
+        connect, "ConnectClient", lambda: NS(_ensure_auth=lambda: None, _env_id="test")
+    )
+    monkeypatch.setattr(host, "runtime_absence", lambda _: {})
+    original_read, original_write = Path.read_bytes, guard.write_json
+    failed = []
+
+    def fail_once():
+        value = json.loads(original_read(ledger))
+        value.update(
+            seed_sandbox_id="late-acknowledged-id",
+            create_rpc_deadline_epoch=1001,
+            seed_resources=[{"uid": "late-retained-owner"}],
+        )
+        original_write(ledger, value)
+        failed.append(fault)
+
+    def probe(pid):
+        if fault == "ps_timeout" and not failed:
+            fail_once()
+            raise subprocess.TimeoutExpired("ps", 0.25)
+        return None
+
+    def read(path):
+        if (
+            path == ledger
+            and fault == "ledger_read"
+            and (tmp_path / "cpu-watchdog-ready.json").exists()
+            and not failed
+        ):
+            fail_once()
+            raise OSError("transient postready read failure")
+        return original_read(path)
+
+    def write(path, value):
+        original_write(path, value)
+        if (
+            path.name == "cpu-watchdog-ready.json"
+            and fault == "ready_publish"
+            and not failed
+        ):
+            fail_once()
+            raise OSError("readiness became visible before reporting failure")
+
+    monkeypatch.setattr(guard, "process_identity", probe)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(guard, "write_json", write)
+    calls = []
+    monkeypatch.setattr(
+        guard, "stop_launcher", lambda value: calls.append("stop-owned-writer")
+    )
+
+    def release(path):
+        value = json.loads(original_read(path))
+        assert value["seed_sandbox_id"] == "late-acknowledged-id"
+        assert value["create_rpc_deadline_epoch"] == 1001
+        assert value["seed_resources"] == [{"uid": "late-retained-owner"}]
+        value.update(
+            cpu_compute_released=True, volume_verified_absent=True, status="released"
+        )
+        original_write(path, value)
+        calls.append("release-compute-and-data")
+
+    monkeypatch.setattr(guard, "cleanup", release)
+    guard.run_watchdog(ledger)
+    result = json.loads(original_read(tmp_path / "cpu-watchdog-result.json"))
+    assert calls == ["stop-owned-writer", "release-compute-and-data"]
+    assert result["released"] is True and result["execution_passed"] is False
+    assert result["monitor_errors"] and result["record"]["execution_failed"] is True
+
+
+def test_expired_phase_release_only_recovery_attempts_and_never_passes_execution(
+    tmp_path, monkeypatch
+):
+    ledger, _ = record(tmp_path, monkeypatch, deadline=900)
+    observed = []
+
+    def attempt(path, value, number, **kwargs):
+        observed.append(kwargs["cleanup_deadline"])
+        assert value["cpu_deadline_epoch"] == 900
+        assert value["execution_passed"] is False
+        value.update(
+            status="released", cpu_compute_released=True, volume_verified_absent=True
+        )
+        guard.write_json(path, value)
+
+    monkeypatch.setattr(guard, "run_attempt", attempt)
+    result = guard.cleanup(ledger, recovery=True)
+    value = json.loads(ledger.read_bytes())
+    assert observed == [1120.0]
+    assert value["cpu_deadline_epoch"] == 900 and value["status"] == "failed_recovered"
+    assert value["execution_failed"] is True and value["execution_passed"] is False
+    assert result["released"] is True and result["execution_passed"] is False
+
+
+def test_release_only_recovery_preserves_ambiguous_metadata_horizon(
+    tmp_path, monkeypatch
+):
+    import chalkcompute._connect as connect
+    import profile_volumes as volumes
+
+    ledger, clock = record(tmp_path, monkeypatch, deadline=900)
+    value = json.loads(ledger.read_bytes())
+    value.update(
+        submission_inflight=False,
+        cpu_compute_released=True,
+        host_runtime_verified_absent=True,
+        owned_volume_names=[value["name"]],
+    )
+    guard.write_json(ledger, value)
+    marker = {
+        "phase_id": value["cpu_phase_id"],
+        "name": value["name"],
+        "status": "inflight",
+        "started_at": 950,
+        "rpc_deadline_epoch": 980,
+        "reconcile_until_epoch": 1040,
+    }
+    guard.write_json(volumes.marker_path(tmp_path, value["name"]), marker)
+    monkeypatch.setattr(volumes, "time", guard.time)
+    monkeypatch.setattr(
+        connect, "ConnectClient", lambda: NS(_ensure_auth=lambda: None, _env_id="test")
+    )
+    deleted_at = []
+
+    def delete_owned(record):
+        deleted_at.append(clock[0])
+        record["volume_verified_absent"] = True
+
+    fake = NS(
+        release_cpu=lambda record, out: None,
+        release_data=lambda record: volumes.release_created(
+            record, tmp_path, delete_owned
+        ),
+    )
+    monkeypatch.setattr(guard, "install", lambda path: fake)
+    monkeypatch.setattr(
+        guard,
+        "run_attempt",
+        lambda path, record, number, **kwargs: guard.cleanup_attempt(path),
+    )
+    result = guard.cleanup(ledger, recovery=True)
+    value = json.loads(ledger.read_bytes())
+    assert deleted_at[0] == 1000 and deleted_at[-1] == 1040
+    assert value["volume_creates_reconciled_at"] == 1040
+    assert value["cpu_deadline_epoch"] == 900 and value["execution_passed"] is False
+    assert result["released"] is True and clock[0] < 1120
+
+
+def test_kernel_lock_prevents_overlapping_cleanup_api_owners(tmp_path, monkeypatch):
+    import fcntl
+
+    ledger, _ = record(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        guard,
+        "run_attempt",
+        lambda *args, **kwargs: pytest.fail("overlapping cleanup API"),
+    )
+    with (tmp_path / "cleanup-owner.lock").open("a") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="Another cleanup supervisor"):
+            guard.cleanup(ledger)
+
+
+def test_real_runtime_limits_require_bounded_memory_cpu_and_peak_counters():
+    value = {
+        "cpu_affinity_count": 255,
+        "cgroup_v2": [
+            {
+                "memory.max": str(8 * 1024**3),
+                "memory.current": "100",
+                "memory.peak": "200",
+                "cpu.max": "400000 100000",
+            }
+        ],
+    }
+    assert validate_runtime_limits(value) is value
+    del value["cgroup_v2"][0]["memory.peak"]
+    with pytest.raises(RuntimeError, match="peak counters"):
+        validate_runtime_limits(value)
+    value["cgroup_v2"][0]["memory.peak"] = "200"
+    value["cgroup_v2"][0]["memory.max"] = "max"
+    with pytest.raises(RuntimeError, match="memory limit"):
+        validate_runtime_limits(value)
+    assert "'memory.peak'" in runtime_capacity_code()
