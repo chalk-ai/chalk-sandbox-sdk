@@ -141,3 +141,15 @@ def test_manifest_and_pointers_roundtrip():
     ]:
         with pytest.raises(WeightStreamError):
             read_pointer(invalid)
+
+
+@pytest.mark.parametrize("changed", [2, 40])
+def test_diff_counts_actual_elements_before_dense_fallback(changed):
+    old = torch.zeros(100)
+    new = old.clone()
+    new[:changed] = 1
+    patch = diff(old, new, name="w")
+    assert patch.changed_elements == changed
+    decoded = decode_patch(entry_for(patch, encode_patch(patch)), encode_patch(patch))
+    # The patch payload format does not store the old state or actual density.
+    assert decoded.changed_elements is None

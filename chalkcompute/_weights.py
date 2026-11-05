@@ -7,6 +7,8 @@ import math
 import os
 import tempfile
 import threading
+import time
+from copy import deepcopy
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -376,7 +378,14 @@ class WeightStream:
             self._record_committed(0, snapshot_id)
             return 0
 
-    def _commit(self, manifest: WeightManifest, files: list[tuple[str, Path]]) -> int:
+    def _commit(
+        self,
+        manifest: WeightManifest,
+        files: list[tuple[str, Path]],
+        *,
+        timings: dict[str, float] | None = None,
+        commit_stats: dict[str, Any] | None = None,
+    ) -> int:
         if len(files) + 2 > 200:
             raise WeightStreamError("Publication exceeds atomic 200-file volume commit")
         # Stale-parent rejection; one active publishing process is a contract.
@@ -387,6 +396,7 @@ class WeightStream:
             )
         prefix = version_dir(manifest.version)
         # Reserve space for manifest and CURRENT, avoiding batch auto-flush splits.
+        started = time.perf_counter()
         with self._volume.batch_upload(max_files_per_commit=200) as batch:
             for name, path in files:
                 safe_path(Path("/weight-publication"), name)
@@ -396,8 +406,21 @@ class WeightStream:
         # Batch upload retains the server-returned immutable commit version.
         # Capture it before reloading main, which may already include a PIN write.
         committed_snapshot_id = self._volume.version.id
-        if self.current() != manifest.version:
-            raise WeightStreamError("Concurrent publisher detected after commit")
+        if commit_stats is not None:
+            commit_stats.update(
+                volume_version_id=committed_snapshot_id, status="refresh_failed"
+            )
+        if timings is not None:
+            timings["upload_commit"] = time.perf_counter() - started
+        started = time.perf_counter()
+        try:
+            if self.current() != manifest.version:
+                raise WeightStreamError("Concurrent publisher detected after commit")
+        finally:
+            if timings is not None:
+                timings["post_commit_refresh"] = time.perf_counter() - started
+        if commit_stats is not None:
+            commit_stats["status"] = "committed_unindexed"
         return committed_snapshot_id
 
 
@@ -439,6 +462,16 @@ class WeightPublisher:
         self._previous: dict[str, torch.Tensor] | None = None
         self._version: int | None = None
         self._architecture: str | None = None
+        self._last_publish_stats: dict[str, Any] | None = None
+
+    @property
+    def last_publish_stats(self) -> dict[str, Any] | None:
+        """JSON-serializable metrics for the latest publication attempt.
+
+        Timings measure host wall time without adding GPU synchronization.
+        Native upload and commit run together and are reported as one phase.
+        """
+        return deepcopy(self._last_publish_stats)
 
     def resume(
         self,
@@ -509,9 +542,50 @@ class WeightPublisher:
         return self._publish(state_dict, step=step, force_keyframe=True)
 
     def _publish(self, state_dict, *, step, force_keyframe):
+        import torch
+
+        from chalkcompute._weight_stream_metadata import WeightMetadataPending
+
+        started = time.perf_counter()
+        stats: dict[str, Any] = {
+            "status": "failed",
+            "version": None,
+            "volume_version_id": None,
+            "torch_num_threads": torch.get_num_threads(),
+            "torch_num_interop_threads": torch.get_num_interop_threads(),
+            "phases_seconds": {
+                name: 0.0
+                for name in (
+                    "validation",
+                    "freeze",
+                    "diff",
+                    "encode",
+                    "keyframe_write",
+                    "upload_commit",
+                    "post_commit_refresh",
+                    "metadata",
+                )
+            },
+        }
+        self._last_publish_stats = stats
+        try:
+            result = self._publish_profiled(
+                state_dict, step=step, force_keyframe=force_keyframe, stats=stats
+            )
+            stats["status"] = "published"
+            return result
+        except WeightMetadataPending:
+            stats["status"] = "metadata_pending"
+            raise
+        finally:
+            stats["total_seconds"] = time.perf_counter() - started
+
+    def _publish_profiled(self, state_dict, *, step, force_keyframe, stats):
         from safetensors.torch import save_file
 
         with self.stream._lock:
+            started = time.perf_counter()
+            phases = stats["phases_seconds"]
             state = _state(state_dict)
             current = self.stream.current()
             if current != self._version:
@@ -536,9 +610,24 @@ class WeightPublisher:
                 or version % self.keyframe_every == 0
             )
             previous = self._previous
+            total_elements = sum(t.numel() for t in state.values())
+            stats.update(
+                version=version,
+                kind="keyframe" if keyframe else "patch",
+                input_devices=sorted({str(t.device) for t in state.values()}),
+                total_elements=total_elements,
+                changed_elements=total_elements
+                if previous is None
+                else (None if keyframe else 0),
+                transmitted_elements=0,
+                payload_bytes=0,
+            )
+            phases["validation"] = time.perf_counter() - started
+            started = time.perf_counter()
             # Freeze every tensor before encoding: training must synchronize its
             # optimizer while publishing. Clone prevents later caller mutation.
             frozen = {name: tensor.detach().clone() for name, tensor in state.items()}
+            phases["freeze"] = time.perf_counter() - started
             with tempfile.TemporaryDirectory(
                 prefix="chalk-weight-publish-"
             ) as directory:
@@ -546,6 +635,7 @@ class WeightPublisher:
                 entries = []
                 files = []
                 if keyframe:
+                    started = time.perf_counter()
                     path = folder / "model.safetensors"
                     save_file(
                         {n: t.cpu().contiguous() for n, t in frozen.items()}, str(path)
@@ -591,20 +681,33 @@ class WeightPublisher:
                             path.parent.mkdir(parents=True, exist_ok=True)
                             path.write_bytes(snapshot.read_file(f.path))
                             files.append((name, path))
+                    phases["keyframe_write"] = time.perf_counter() - started
+                    stats["transmitted_elements"] = total_elements
+                    stats["payload_bytes"] = (
+                        (folder / "model.safetensors").stat().st_size
+                    )
                 else:
                     path = folder / "patches.bin"
                     with path.open("wb") as writer:
                         assert previous is not None
                         for name, tensor in frozen.items():
+                            started = time.perf_counter()
                             patch = diff(
                                 previous[name],
                                 tensor,
                                 name=name,
                                 density_threshold=self.density_threshold,
                             )
+                            phases["diff"] += time.perf_counter() - started
                             if patch is None:
                                 continue
+                            started = time.perf_counter()
                             payload = encode_patch(patch)
+                            phases["encode"] += time.perf_counter() - started
+                            assert patch.changed_elements is not None
+                            stats["changed_elements"] += patch.changed_elements
+                            stats["transmitted_elements"] += patch.nnz
+                            stats["payload_bytes"] += len(payload)
                             offset = writer.tell()
                             writer.write(payload)
                             entries.append(
@@ -631,11 +734,18 @@ class WeightPublisher:
                     trainer_step=step,
                     training_run_id=self.training_run_id,
                 )
-                snapshot_id = self.stream._commit(manifest, files)
+                snapshot_id = self.stream._commit(
+                    manifest, files, timings=phases, commit_stats=stats
+                )
+                stats["volume_version_id"] = snapshot_id
             self._previous, self._version, self._architecture = frozen, version, arch
             # Retained state advances with the committed volume even when the
             # independent metadata index is temporarily unavailable.
-            self.stream._record_committed(version, snapshot_id)
+            started = time.perf_counter()
+            try:
+                self.stream._record_committed(version, snapshot_id)
+            finally:
+                phases["metadata"] = time.perf_counter() - started
             return version
 
 

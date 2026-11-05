@@ -70,6 +70,10 @@ def test_metadata_outage_after_commit_advances_state_and_reconciles():
     client.fail_record = True
     with pytest.raises(WeightMetadataPending) as caught:
         pub.publish({"w": torch.zeros(10)})
+    assert pub.last_publish_stats["status"] == "metadata_pending"
+    assert pub.last_publish_stats["volume_version_id"] == 1
+    assert pub.last_publish_stats["version"] == 0
+    assert pub.last_publish_stats["phases_seconds"]["metadata"] >= 0
     assert caught.value.version == 0
     assert caught.value.volume_version_id == 1
     assert "publication succeeded" in str(caught.value).lower()

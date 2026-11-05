@@ -135,3 +135,28 @@ unknown because CreateScalingGroup may upsert by name. Failed deployments never
 automatically delete a pre-existing or ambiguously created group. Explicit
 `error.policy.delete()` can recover a lost create response by name, verifies the
 stream association, and then deletes the group.
+
+
+Publication profiling is available as `publisher.last_publish_stats`, a detached,
+JSON-serializable dictionary for the latest attempt. It includes status, logical
+version, immutable volume commit ID, tensor devices, PyTorch thread counts,
+stored weight payload bytes, and total/changed/transmitted element counts.
+Dense fallback can transmit more elements than actually changed; the diff reports
+the exact changed count using indices it already computes. Later forced or periodic
+keyframes report `changed_elements=None` because no diff is needed for publication.
+
+`phases_seconds` reports validation, freeze, diff, encode, keyframe writing,
+`upload_commit`, post-commit refresh, and metadata indexing separately. The native
+volume API combines upload and commit, so those share one measurement. Host wall
+timings add no CUDA/ROCm synchronization; asynchronous GPU work may be charged to
+a later phase that waits for it. `total_seconds` also includes other work and lock
+waiting. `metadata_pending` records a committed publication whose metadata still
+needs reconciliation. The smoke script saves all publication profiles in its JSON
+report without allocating compute.
+
+`refresh_failed` still includes the immutable committed snapshot: publication
+committed but refreshing CURRENT failed (or detected a competing publisher).
+Check CURRENT, resume from its exact checkpoint, and reconcile metadata before
+continuing; do not reuse the recorded logical version. `committed_unindexed`
+means an error after commit but before successful metadata indexing that was not
+a known metadata outage. These states preserve the original exception.
