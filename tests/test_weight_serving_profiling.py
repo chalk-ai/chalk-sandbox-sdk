@@ -239,3 +239,14 @@ def test_worker_profiles_real_cpu_dense_and_sparse_decode(
         assert p["stream_elapsed_ms"] == {}
     else:
         assert result == {"ok": True, "version": 7}
+
+
+def test_profile_request_rejects_old_ack_without_telemetry(tmp_path):
+    class OldController(VLLMAdapter):
+        async def _post(self, path, body):
+            return {"results": [{"ok": True, "version": 7}]}
+
+    adapter = OldController(profile=True)
+    with pytest.raises(ValueError, match="schema"):
+        asyncio.run(adapter.apply(tmp_path, SimpleNamespace(version=7)))
+    assert adapter.last_profile is None
