@@ -17,6 +17,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
+import hashlib
 import time
 
 PROMPTS = ([4, 5, 6], [6, 5, 4], [4], [5], [6], [4, 4, 4], [7, 8, 9], [127, 126, 125])
@@ -31,6 +33,46 @@ def write_json(path, value):
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(value, indent=2))
     temp.replace(path)
+
+
+def bundle_diagnostics(out):
+    paths = []
+    for pattern in (
+        "samples/**/*.json",
+        "comparisons/**/*.json",
+        "cache-state-*.json",
+        "native-flush-ack.json",
+        "native-*/*.json",
+        "native-*/native.log",
+    ):
+        paths.extend(out.glob(pattern))
+    paths = sorted(set(path for path in paths if path.is_file()))
+    if (
+        any(path.is_symlink() for path in paths)
+        or sum(path.stat().st_size for path in paths) > 4 * 1024 * 1024
+    ):
+        raise ValueError("Native diagnostics exceed4MiB ordinary-file bound")
+    target = out / "diagnostics.tar.gz"
+    with tarfile.open(target, "w:gz") as archive:
+        for path in paths:
+            archive.add(path, arcname=path.relative_to(out), recursive=False)
+    data = target.read_bytes()
+    if len(data) > 2 * 1024 * 1024:
+        raise ValueError("Native diagnostic bundle exceeds2MiB export bound")
+    return {
+        "file": target.name,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def meaningful_log_lines(text):
+    return [
+        line
+        for line in text.splitlines()
+        if line.strip()
+        and not any(route in line for route in ("GET /health ", "GET /chalk/health "))
+    ]
 
 
 def identity(pid):
@@ -213,16 +255,22 @@ class Native:
             write_json(self.directory / "native-group.json", identity(self.process.pid))
         health_path = HEALTH_ROUTE if managed else "/health"
         until = time.time() + startup
-        last_progress, previous_bytes = time.time(), 0
+        last_progress, previous_message = time.time(), None
         import aiohttp
 
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=3)
         ) as client:
             while time.time() < until:
-                current_bytes = (self.directory / "native.log").stat().st_size
-                if current_bytes > previous_bytes:
-                    last_progress, previous_bytes = time.time(), current_bytes
+                with (self.directory / "native.log").open("rb") as handle:
+                    handle.seek(
+                        max(0, (self.directory / "native.log").stat().st_size - 8192)
+                    )
+                    meaningful = meaningful_log_lines(
+                        handle.read(8192).decode(errors="replace")
+                    )
+                if meaningful and meaningful[-1] != previous_message:
+                    last_progress, previous_message = time.time(), meaningful[-1]
                 if time.time() - last_progress > 180:
                     raise TimeoutError(
                         "Native startup made no log progress for180seconds"
@@ -295,11 +343,13 @@ def completion(prompt, *, model, stream=False):
     }
 
 
-async def samples(client, *, port=8000, version=None):
+async def samples(client, *, port=8000, version=None, out=None, label="samples"):
     models, _ = await request(client, "/v1/models", port=port)
     model = models["data"][0]["id"]
     result = []
-    for prompt in PROMPTS:
+    if out is not None:
+        (out / "samples" / label).mkdir(parents=True, exist_ok=False)
+    for prompt_index, prompt in enumerate(PROMPTS):
         value, headers = await request(
             client,
             "/v1/completions",
@@ -308,33 +358,84 @@ async def samples(client, *, port=8000, version=None):
         )
         if version is not None and headers.get(POLICY_HEADER) != str(version):
             raise AssertionError("Inference policy header differs from applied version")
+        if out is not None:
+            write_json(
+                out / "samples" / label / f"prompt-{prompt_index:02d}.json",
+                {
+                    "prompt": prompt,
+                    "response": value,
+                    "policy_header": headers.get(POLICY_HEADER),
+                    "observed_at": time.time(),
+                },
+            )
         choice = value["choices"][0]
         result.append({"text": choice["text"], "logprobs": choice["logprobs"]})
     return result
 
 
-def compare(actual, expected):
-    maximum = 0.0
+class NativeComparisonError(AssertionError):
+    def __init__(self, message, details):
+        self.details = details
+        super().__init__(message + "; " + json.dumps(details, sort_keys=True))
+
+
+def compare(actual, expected, *, out=None, label="comparison"):
+    """Scan all values and save per-prompt evidence before rejecting a result."""
+    maximum, location, errors = 0.0, None, []
+    directory = out / "comparisons" / label if out is not None else None
+    if directory is not None:
+        directory.mkdir(parents=True, exist_ok=False)
     if len(actual) != len(expected):
-        raise AssertionError("Oracle prompt count differs")
-    for observed, reference in zip(actual, expected, strict=True):
+        errors.append("Oracle prompt count differs")
+    for prompt_index, (observed, reference) in enumerate(zip(actual, expected)):
+        if directory is not None:
+            write_json(
+                directory / f"prompt-{prompt_index:02d}.json",
+                {
+                    "prompt": PROMPTS[prompt_index],
+                    "observed": observed,
+                    "reference": reference,
+                },
+            )
         if observed["text"] != reference["text"]:
-            raise AssertionError("Greedy native output differs from fresh oracle")
-        a, b = observed["logprobs"], reference["logprobs"]
-        if a["tokens"] != b["tokens"] or len(a["top_logprobs"]) != len(
-            b["top_logprobs"]
+            errors.append("Greedy native output differs from fresh oracle")
+        left, right = observed["logprobs"], reference["logprobs"]
+        if left["tokens"] != right["tokens"] or len(left["top_logprobs"]) != len(
+            right["top_logprobs"]
         ):
-            raise AssertionError("Native token sequence differs from oracle")
-        for left, right in zip(a["top_logprobs"], b["top_logprobs"], strict=True):
-            if left.keys() != right.keys():
-                raise AssertionError("Native top-five token set differs from oracle")
-            for key in left:
-                delta = abs(left[key] - right[key])
-                if not math.isfinite(delta) or delta > TOLERANCE:
-                    raise AssertionError(
-                        "Native top-five logprob differs beyond fixed tolerance"
-                    )
-                maximum = max(maximum, delta)
+            errors.append("Native token sequence differs from oracle")
+        for token_index, (x, y) in enumerate(
+            zip(left["top_logprobs"], right["top_logprobs"])
+        ):
+            if x.keys() != y.keys():
+                errors.append("Native top-five token set differs from oracle")
+            for token in x.keys() & y.keys():
+                delta = abs(x[token] - y[token])
+                if not math.isfinite(delta):
+                    errors.append("Native top-five logprob is nonfinite")
+                elif delta > maximum:
+                    maximum = delta
+                    location = {
+                        "prompt_index": prompt_index,
+                        "generated_token_index": token_index,
+                        "token": token,
+                        "observed": x[token],
+                        "reference": y[token],
+                        "absolute_error": delta,
+                    }
+    if maximum > TOLERANCE:
+        errors.append("Native top-five logprob differs beyond fixed tolerance")
+    details = {
+        "maximum_logprob_error": maximum,
+        "maximum_error_location": location,
+        "tolerance": TOLERANCE,
+        "errors": list(dict.fromkeys(errors)),
+        "label": label,
+    }
+    if directory is not None:
+        write_json(directory / "summary.json", details)
+    if errors:
+        raise NativeComparisonError(errors[0], details)
     return maximum
 
 
@@ -397,7 +498,9 @@ async def run(args):
             timeout=aiohttp.ClientTimeout(total=30)
         ) as client:
             await native.start(stream, cold=True)
-            captured = {0: await samples(client, version=0)}
+            captured = {
+                0: await samples(client, version=0, out=args.output, label="cold-v0")
+            }
             models, _ = await request(client, "/v1/models")
             model = models["data"][0]["id"]
             mark("cold_v0", "passed")
@@ -418,7 +521,9 @@ async def run(args):
                 if b"[DONE]" not in first + body:
                     raise AssertionError("Drain stream did not complete")
             await wait_version(client, native, 1)
-            captured[1] = await samples(client, version=1)
+            captured[1] = await samples(
+                client, version=1, out=args.output, label="updated-v1"
+            )
             observed = json.loads(
                 (native.directory / "gate-updates.json").read_bytes()
             )[-1]
@@ -441,7 +546,9 @@ async def run(args):
             response.close()
             pointer(stream, "CURRENT", 2)
             await wait_version(client, native, 2)
-            captured[2] = await samples(client, version=2)
+            captured[2] = await samples(
+                client, version=2, out=args.output, label="updated-v2"
+            )
             observed = json.loads(
                 (native.directory / "gate-updates.json").read_bytes()
             )[-1]
@@ -480,7 +587,12 @@ async def run(args):
             mark("noop_v2", "passed")
             pointer(stream, "PIN", 0)
             await wait_version(client, native, 0)
-            compare(await samples(client, version=0), captured[0])
+            compare(
+                await samples(client, version=0, out=args.output, label="rollback-v0"),
+                captured[0],
+                out=args.output,
+                label="rollback-vs-cold-v0",
+            )
             mark("pin_rollback_v0", "passed")
             # Corrupt one existing payload; keep old native policy healthy.
             async with client.get("http://127.0.0.1:8000" + METRICS_ROUTE) as response:
@@ -519,7 +631,14 @@ async def run(args):
                     "Corrupt fixture did not reach verification failure"
                 )
             await wait_version(client, native, 0)
-            compare(await samples(client, version=0), captured[0])
+            compare(
+                await samples(
+                    client, version=0, out=args.output, label="corruption-v0"
+                ),
+                captured[0],
+                out=args.output,
+                label="corruption-vs-cold-v0",
+            )
             mark("corrupt_payload_before_mutation", "passed")
             pointer(stream, "CURRENT", 0)
             patch.write_bytes(original)
@@ -539,13 +658,25 @@ async def run(args):
             await native.stop()
             mark("lost_reload_ack_after_native_mutation", "passed")
             await native.start(stream)
-            compare(await samples(client, version=1), captured[1])
+            compare(
+                await samples(client, version=1, out=args.output, label="restart-v1"),
+                captured[1],
+                out=args.output,
+                label="restart-vs-updated-v1",
+            )
             mark("restart_after_lost_ack", "passed")
             await native.stop()
             for version in (0, 1, 2):
                 await native.start(args.fixture / f"oracle-v{version}", managed=False)
-                reference = await samples(client, port=8001)
-                error = compare(captured[version], reference)
+                reference = await samples(
+                    client, port=8001, out=args.output, label=f"fresh-v{version}"
+                )
+                error = compare(
+                    captured[version],
+                    reference,
+                    out=args.output,
+                    label=f"updated-vs-fresh-v{version}",
+                )
                 mark(
                     f"fresh_native_oracle_v{version}", {"maximum_logprob_error": error}
                 )
@@ -555,17 +686,167 @@ async def run(args):
         proof.update(
             status="failed", error_type=type(error).__name__, error=str(error)[:2048]
         )
+        if isinstance(error, NativeComparisonError):
+            proof["error_context"] = error.details
         raise
     finally:
         await native.stop()
         proof["native_groups_stopped"] = True
         proof["finished_at"] = time.time()
+        proof["diagnostic_bundle"] = bundle_diagnostics(args.output)
+        write_json(args.output / "gpu-proof.json", proof)
+
+
+async def cache_state(client, out, label):
+    server, _ = await request(client, "/server_info", port=8001)
+    model, _ = await request(client, "/model_info", port=8001)
+    allowed = {
+        "disable_radix_cache",
+        "weight_cache_mode",
+        "disable_cuda_graph",
+        "attention_backend",
+        "sampling_backend",
+        "dtype",
+        "enable_deterministic_inference",
+        "context_length",
+        "mem_fraction_static",
+        "cuda_graph_backend_decode",
+        "cuda_graph_backend_prefill",
+    }
+
+    def selected(value):
+        result = {}
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in allowed and isinstance(
+                    item, (str, int, float, bool, type(None))
+                ):
+                    result[key] = item
+                elif isinstance(item, dict):
+                    nested = selected(item)
+                    if nested:
+                        result[key] = nested
+        return result
+
+    state = {
+        "observed_at": time.time(),
+        "config": selected(server),
+        "internal_states": server.get("internal_states"),
+        "model": {
+            key: model.get(key)
+            for key in ("model_path", "load_format", "weight_version", "dtype")
+        },
+    }
+    if len(json.dumps(state).encode()) > 16384:
+        raise ValueError("Native cache-state diagnostic exceeds16KiB bound")
+    write_json(out / ("cache-state-" + label + ".json"), state)
+    return {
+        "file": "cache-state-" + label + ".json",
+        "sha256": hashlib.sha256(
+            (out / ("cache-state-" + label + ".json")).read_bytes()
+        ).hexdigest(),
+        "config": state["config"],
+    }
+
+
+async def run_cache_diagnostic(args):
+    """Isolate cache-dependent drift with unchanged weights and fixed tolerance."""
+    import aiohttp
+
+    args.output.mkdir(parents=True, exist_ok=False)
+    native = Native(args.output, args.deadline)
+    proof = {
+        "status": "running",
+        "scope": "same native v0: warm-prefix repeat vs explicit flush cold vs fresh process; no weight updates",
+        "tolerance": TOLERANCE,
+        "comparisons": {},
+        "scenarios": {},
+    }
+
+    def mark(label, value):
+        proof["scenarios"][label] = value
+        write_json(args.output / "gpu-proof.json", proof)
+
+    def evaluate(label, observed, reference):
+        try:
+            maximum = compare(observed, reference, out=args.output, label=label)
+            result = {"passed": True, "maximum_logprob_error": maximum}
+        except NativeComparisonError as error:
+            result = {"passed": False, **error.details}
+        proof["comparisons"][label] = result
+        write_json(args.output / "gpu-proof.json", proof)
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as client:
+            await native.start(args.fixture / "oracle-v0", managed=False, cold=True)
+            mark(
+                "cold_native_ready",
+                await cache_state(client, args.output, "cold-ready"),
+            )
+            cold = await samples(client, port=8001, out=args.output, label="cold-v0")
+            mark("cold_v0_samples", "captured")
+            for repeat in (1, 2):
+                warm = await samples(
+                    client, port=8001, out=args.output, label=f"warm-v0-{repeat}"
+                )
+                mark(
+                    f"warm_v0_{repeat}",
+                    await cache_state(client, args.output, f"warm-{repeat}"),
+                )
+                evaluate(f"warm-{repeat}-vs-cold", warm, cold)
+            async with client.post(
+                "http://127.0.0.1:8001/flush_cache", json={}
+            ) as response:
+                body = await response.text()
+                acknowledgement = {
+                    "status": response.status,
+                    "body": body[:4096],
+                    "acknowledged_at": time.time(),
+                }
+                write_json(args.output / "native-flush-ack.json", acknowledgement)
+                if response.status != 200:
+                    raise RuntimeError("Explicit native cache flush not acknowledged")
+            mark("explicit_flush", acknowledgement)
+            flushed = await samples(
+                client, port=8001, out=args.output, label="flushed-cold-v0"
+            )
+            mark("flushed_cold_v0", await cache_state(client, args.output, "flushed"))
+            evaluate("flushed-vs-cold", flushed, cold)
+            await native.stop()
+            await native.start(args.fixture / "oracle-v0", managed=False)
+            fresh = await samples(
+                client, port=8001, out=args.output, label="fresh-process-v0"
+            )
+            mark("fresh_process_v0", await cache_state(client, args.output, "fresh"))
+            evaluate("fresh-process-vs-cold", fresh, cold)
+        proof["diagnostic_complete"] = True
+        proof["status"] = (
+            "passed"
+            if all(item["passed"] for item in proof["comparisons"].values())
+            else "failed"
+        )
+        if proof["status"] != "passed":
+            raise AssertionError(
+                "Native cache diagnostic retained comparisons exceeding fixed1e-3"
+            )
+    except BaseException as error:
+        proof.update(
+            status="failed", error_type=type(error).__name__, error=str(error)[:2048]
+        )
+        raise
+    finally:
+        await native.stop()
+        proof.update(native_groups_stopped=True, finished_at=time.time())
+        proof["diagnostic_bundle"] = bundle_diagnostics(args.output)
         write_json(args.output / "gpu-proof.json", proof)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--managed", action="store_true")
+    parser.add_argument("--cache-diagnostic", action="store_true")
     parser.add_argument("--lost-ack", action="store_true")
     parser.add_argument("--stream", type=Path)
     parser.add_argument("--fixture", type=Path)
@@ -575,5 +856,7 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     if arguments.managed:
         managed_child(arguments)
+    elif arguments.cache_diagnostic:
+        asyncio.run(run_cache_diagnostic(arguments))
     else:
         asyncio.run(run(arguments))

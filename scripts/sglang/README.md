@@ -171,3 +171,23 @@ After release, `verify_host_release.py --out /path/to/frozen/plan` performs fres
 read-only exact CR/owner-UID pod/native/process checks and, for GPU plans, confirms
 the unique fixture volume and upload writer are absent. It writes a new independent
 proof without replacing a prior proof.
+
+### Fixed cache diagnostic after a numerical failure
+
+Prepare a separate `--cache-diagnostic` plan to isolate the same-model native cache
+baseline. Its fixed lease is600seconds including upload/startup/export, with the
+same one-A100/8CPU32Gi contract and120seconds reserved for cleanup. It loads only
+oracle-v0 and compares its initial prompt sequence against two warm-prefix repeats,
+an explicitly acknowledged native cache flush followed by the cold sequence, and
+a separately started fresh native process. No weight reload occurs in this mode.
+The1e-3 threshold stays fixed. All four comparison results are retained even when
+a warm repeat fails; this diagnostic cannot imply that native weight sync passed.
+
+Every comparison saves raw observed/reference values per prompt before raising,
+plus the exact maximum logprob error and prompt/generated-token/token location.
+Native response usage/cache fields, bounded cache configuration/state and the
+flush acknowledgment are retained separately. The <=2MiB compressed diagnostic
+bundle is hash-bound in the proof and exported with the same bounded reads before
+compute teardown, even after a numerical failure. Health-poll access-log growth
+does not count as meaningful progress. No new lease is claimed until its separate
+frozen diagnostic plan has been reviewed after previous cleanup.

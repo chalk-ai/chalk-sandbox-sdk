@@ -412,3 +412,177 @@ def test_absent_create_marker_never_deletes_preexisting_collision(tmp_path):
         lambda current: observed.append(current["owned_volume_names"]),
     )
     assert observed == [[]]
+
+
+def test_short_cache_diagnostic_plan_is_fixed_and_distinct(prepared):
+    out, _ = prepared
+    root = out.parent
+    target = root / "diagnostic-plan"
+    plan = gpu.prepare(
+        target,
+        root / "sdk",
+        root / "guards",
+        root / "upstream",
+        root / "cpu",
+        cache_diagnostic=True,
+    )
+    assert gpu.validate(target) == plan
+    assert plan["kind"] == "sglang_cache_diagnostic_plan"
+    assert plan["lease_seconds"] == 600 and plan["cleanup_reserve_seconds"] == 120
+    assert plan["scenario"] == "native_cache_diagnostic"
+    assert plan["gpu"] == "nvidia-a100-80gb:1" and plan["tolerance"] == 1e-3
+
+
+def test_comparison_saves_all_raw_prompts_and_max_location_before_raising(tmp_path):
+    actual = sample(0.01) + sample(0.02)
+    reference = sample() + sample()
+    with pytest.raises(scenario.NativeComparisonError) as raised:
+        scenario.compare(actual, reference, out=tmp_path, label="failed-case")
+    report = raised.value.details
+    assert report["maximum_logprob_error"] == pytest.approx(0.02)
+    assert report["maximum_error_location"]["prompt_index"] == 1
+    assert report["maximum_error_location"]["generated_token_index"] == 0
+    assert report["maximum_error_location"]["observed"] == 0.02
+    directory = tmp_path / "comparisons" / "failed-case"
+    assert len(list(directory.glob("prompt-*.json"))) == 2
+    assert (
+        json.loads((directory / "prompt-00.json").read_text())["observed"] == actual[0]
+    )
+    assert (
+        json.loads((directory / "prompt-01.json").read_text())["reference"]
+        == reference[1]
+    )
+    assert json.loads((directory / "summary.json").read_text()) == report
+
+
+def test_diagnostic_bundle_retains_raw_cache_and_ack_without_fixture(tmp_path):
+    import tarfile
+
+    samples = tmp_path / "samples" / "cold"
+    samples.mkdir(parents=True)
+    (samples / "prompt-00.json").write_text('{"observed":1}')
+    native = tmp_path / "native-01"
+    native.mkdir()
+    (native / "native.log").write_text("native log")
+    (native / "gate-updates.json").write_text("[]")
+    (tmp_path / "native-flush-ack.json").write_text('{"status":200}')
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    (stream / "model.safetensors").write_text("fixture")
+    proof = scenario.bundle_diagnostics(tmp_path)
+    data = (tmp_path / proof["file"]).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == proof["sha256"]
+    with tarfile.open(tmp_path / proof["file"]) as archive:
+        assert set(archive.getnames()) == {
+            "samples/cold/prompt-00.json",
+            "native-01/native.log",
+            "native-01/gate-updates.json",
+            "native-flush-ack.json",
+        }
+
+
+def test_independent_volume_verifier_rejects_other_environment_before_read(monkeypatch):
+    verifier = importlib.import_module("verify_host_release")
+    import chalkcompute._connect as connection
+    import chalkcompute as cc
+
+    monkeypatch.setattr(
+        connection,
+        "ConnectClient",
+        lambda: SimpleNamespace(_ensure_auth=lambda: None, _env_id="wrong-environment"),
+    )
+    monkeypatch.setattr(
+        cc,
+        "Volume",
+        lambda *args, **kwargs: pytest.fail("wrong environment must not be queried"),
+    )
+    with pytest.raises(RuntimeError, match="environment differs"):
+        verifier.verify_volumes(
+            {
+                "environment_id": "correct-environment",
+                "owned_volume_names": ["owned-fixture"],
+            }
+        )
+
+
+def test_cache_diagnostic_finishes_flush_and_fresh_cases_after_warm_failure(
+    tmp_path, monkeypatch
+):
+    import asyncio
+    import aiohttp
+
+    events = []
+
+    class Native:
+        def __init__(self, *args):
+            pass
+
+        async def start(self, model, **kwargs):
+            events.append(("start", kwargs))
+
+        async def stop(self):
+            events.append(("stop", {}))
+
+    class Response:
+        status = 200
+
+        async def text(self):
+            return "Cache flushed"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def post(self, url, **kwargs):
+            assert url.endswith("/flush_cache")
+            events.append(("flush", {}))
+            return Response()
+
+    values = iter([0.0, 0.02, 0.03, 0.0, 0.0])
+
+    async def samples(*args, **kwargs):
+        events.append(("samples", kwargs["label"]))
+        return sample(next(values))
+
+    async def state(*args):
+        return {"config": {"disable_radix_cache": False}}
+
+    monkeypatch.setattr(scenario, "Native", Native)
+    monkeypatch.setattr(scenario, "samples", samples)
+    monkeypatch.setattr(scenario, "cache_state", state)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda **kwargs: Client())
+    args = SimpleNamespace(
+        output=tmp_path / "output",
+        fixture=tmp_path / "fixture",
+        deadline=time.time() + 600,
+    )
+    with pytest.raises(AssertionError, match="retained comparisons"):
+        asyncio.run(scenario.run_cache_diagnostic(args))
+    proof = json.loads((args.output / "gpu-proof.json").read_text())
+    assert proof["diagnostic_complete"] is True and proof["status"] == "failed"
+    assert set(proof["comparisons"]) == {
+        "warm-1-vs-cold",
+        "warm-2-vs-cold",
+        "flushed-vs-cold",
+        "fresh-process-vs-cold",
+    }
+    assert proof["comparisons"]["warm-1-vs-cold"]["passed"] is False
+    assert proof["comparisons"]["flushed-vs-cold"]["passed"] is True
+    assert proof["comparisons"]["fresh-process-vs-cold"]["passed"] is True
+    assert sum(event[0] == "start" for event in events) == 2
+    assert sum(event[0] == "flush" for event in events) == 1
+    assert (args.output / "diagnostics.tar.gz").exists()
+
+
+def test_health_access_logs_do_not_count_as_native_progress():
+    text = "[time] Load weight end\n[time] INFO GET /health HTTP/1.1 503\n[time] INFO GET /chalk/health HTTP/1.1 503\n"
+    assert scenario.meaningful_log_lines(text) == ["[time] Load weight end"]

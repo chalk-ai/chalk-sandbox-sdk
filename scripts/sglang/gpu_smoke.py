@@ -34,7 +34,15 @@ LOCAL_FILES = (
 )
 
 
-def prepare(out, source_root, guard_root, audited_source_root, cpu_proof_root):
+def prepare(
+    out,
+    source_root,
+    guard_root,
+    audited_source_root,
+    cpu_proof_root,
+    *,
+    cache_diagnostic=False,
+):
     previous = base.read_json(cpu_proof_root / "launcher.json")
     if (
         previous.get("status") != "released"
@@ -96,7 +104,11 @@ def prepare(out, source_root, guard_root, audited_source_root, cpu_proof_root):
     ):
         (out / name).write_bytes((cpu_proof_root / name).read_bytes())
     plan.update(
-        kind="sglang_gpu_smoke_plan",
+        kind="sglang_cache_diagnostic_plan"
+        if cache_diagnostic
+        else "sglang_gpu_smoke_plan",
+        lease_seconds=600 if cache_diagnostic else 900,
+        scenario="native_cache_diagnostic" if cache_diagnostic else "full_smoke",
         cpu="8",
         memory="32Gi",
         gpu="nvidia-a100-80gb:1",
@@ -130,10 +142,14 @@ def prepare(out, source_root, guard_root, audited_source_root, cpu_proof_root):
 
 def validate(out):
     plan = base.read_json(out / "plan.json")
+    diagnostic = plan["kind"] == "sglang_cache_diagnostic_plan"
+    if plan["kind"] not in {"sglang_gpu_smoke_plan", "sglang_cache_diagnostic_plan"}:
+        raise ValueError("Unknown fixed GPU test kind")
     exact = dict(
-        kind="sglang_gpu_smoke_plan",
+        kind="sglang_cache_diagnostic_plan" if diagnostic else "sglang_gpu_smoke_plan",
         image=payload.IMAGE,
-        lease_seconds=900,
+        lease_seconds=600 if diagnostic else 900,
+        scenario="native_cache_diagnostic" if diagnostic else "full_smoke",
         cpu="8",
         memory="32Gi",
         gpu="nvidia-a100-80gb:1",
@@ -374,7 +390,7 @@ import importlib.util
 spec=importlib.util.spec_from_file_location('native_gpu_payload',script); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 from argparse import Namespace
 args=Namespace(output=root/'output',fixture=fixture,deadline=CONFIG['deadline'])
-try: asyncio.run(module.run(args))
+try: asyncio.run(module.run_cache_diagnostic(args) if CONFIG['cache_diagnostic'] else module.run(args))
 finally:
  if (root/'output'/'gpu-proof.json').exists(): print((root/'output'/'gpu-proof.json').read_text(),flush=True)
 proof=json.loads((root/'output'/'gpu-proof.json').read_bytes())
@@ -391,6 +407,8 @@ if logs:
  progress['native_log_bytes']=logs[-1].stat().st_size
  progress['native_log_name']=logs[-1].parent.name
  progress['native_log_tail']=tail(logs[-1],8192)
+ meaningful=[line for line in progress['native_log_tail'].splitlines() if line.strip() and 'GET /health ' not in line and 'GET /chalk/health ' not in line]
+ if meaningful: progress['native_meaningful_log']=meaningful[-1]
 print(json.dumps(progress))
 """
     return code
@@ -480,7 +498,7 @@ def execute(out, env_file):
         fallback_kube_context=contexts[-1],
         kube_contexts=contexts,
         cpu_started_at=now,
-        cpu_deadline_epoch=now + LEASE_SECONDS,
+        cpu_deadline_epoch=now + plan["lease_seconds"],
         status="preparing",
         compute_class="HOST",
         cpu="8",
@@ -517,6 +535,7 @@ def execute(out, env_file):
             fixture_bytes=plan["fixture_bytes"],
             fixture_sha256=plan["fixture_sha256"],
             deadline=record["cpu_deadline_epoch"],
+            cache_diagnostic=plan["scenario"] == "native_cache_diagnostic",
         )
         # Include CPU audit module in the runtime overlay without importing GPU kernels locally.
         program, _, progress_root = guard.make_guest_program(
@@ -573,9 +592,15 @@ def execute(out, env_file):
             native_proof = progress.get("native_proof")
             if native_proof:
                 base.write_json(out / "gpu-proof.json", native_proof)
+            if (
+                not progress.get("native_meaningful_log")
+                and previous_fingerprint
+                and progress.get("native_log_name") == previous_fingerprint[0]
+            ):
+                progress["native_meaningful_log"] = previous_fingerprint[1]
             fingerprint = (
                 progress.get("native_log_name"),
-                progress.get("native_log_bytes"),
+                progress.get("native_meaningful_log"),
                 json.dumps(native_proof, sort_keys=True),
             )
             if fingerprint != previous_fingerprint:
@@ -587,6 +612,30 @@ def execute(out, env_file):
             if progress.get("completed"):
                 if progress["completed"]["phase_id"] != phase:
                     raise RuntimeError("Guest phase mismatch")
+                native_proof = progress.get("native_proof", {})
+                diagnostic_bundle = native_proof.get("diagnostic_bundle")
+                if diagnostic_bundle:
+                    if (
+                        diagnostic_bundle["file"] != "diagnostics.tar.gz"
+                        or not 0 <= diagnostic_bundle["bytes"] <= 2 * 1024 * 1024
+                    ):
+                        raise ValueError("Native diagnostic bundle contract differs")
+                    exported = base.export_guest_file(
+                        sandbox,
+                        root + "/output/diagnostics.tar.gz",
+                        max_bytes=2 * 1024 * 1024,
+                        record=record,
+                        out=out,
+                    )
+                    if (
+                        len(exported) != diagnostic_bundle["bytes"]
+                        or hashlib.sha256(exported).hexdigest()
+                        != diagnostic_bundle["sha256"]
+                    ):
+                        raise RuntimeError(
+                            "Exported native diagnostics differ from exact guest proof"
+                        )
+                    (out / "diagnostics.tar.gz").write_bytes(exported)
                 if progress["completed"]["status"] != "passed":
                     raise RuntimeError(
                         "Native smoke failed; see retained guest progress"
@@ -625,6 +674,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--cache-diagnostic", action="store_true")
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--env-file", type=Path)
     for option in (
@@ -657,4 +707,5 @@ if __name__ == "__main__":
             args.guard_root,
             args.audited_source_root,
             args.cpu_proof_root,
+            cache_diagnostic=args.cache_diagnostic,
         )

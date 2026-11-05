@@ -37,6 +37,28 @@ def check_kubernetes(context, kind, container_id, owner_uids):
     return {"context": context, "resource": kind, "owned_count": 0}
 
 
+def verify_volumes(record):
+    import chalkcompute as cc
+    from chalkcompute._volume import VolumeNotFoundError
+    from chalkcompute._connect import ConnectClient
+
+    client = ConnectClient()
+    client._ensure_auth()
+    if client._env_id != record["environment_id"]:
+        raise RuntimeError(
+            "Independent volume verifier authenticated environment differs"
+        )
+    volume_client = cc.VolumeClient.from_connect(client)
+
+    for name in record["owned_volume_names"]:
+        try:
+            cc.Volume(name, client=volume_client, create_if_missing=False).reload()
+        except VolumeNotFoundError:
+            continue
+        raise RuntimeError("Owned fixture volume remains")
+    return client._env_id
+
+
 def verify(out):
     record = json.loads((out / "launcher.json").read_bytes())
     if (
@@ -79,15 +101,7 @@ def verify(out):
         "watchdog_exited": exited,
     }
     if proof["owned_volume_names"]:
-        import chalkcompute as cc
-        from chalkcompute._volume import VolumeNotFoundError
-
-        for name in proof["owned_volume_names"]:
-            try:
-                cc.Volume(name, create_if_missing=False).reload()
-            except VolumeNotFoundError:
-                continue
-            raise RuntimeError("Owned fixture volume remains")
+        proof["authenticated_environment_id"] = verify_volumes(record)
         proof["owned_volumes_verified_absent"] = True
     if record.get("upload_writer"):
         import gpu_guard
@@ -95,7 +109,11 @@ def verify(out):
         if gpu_guard.process_identity(record["upload_writer"]["pid"]) is not None:
             raise RuntimeError("Upload writer remains after controller cleanup")
         proof["upload_writer_verified_absent"] = True
-    target = out / "independent-cleanup-proof.json"
+    target = out / (
+        "independent-gpu-cleanup-proof.json"
+        if record.get("gpu_claimed")
+        else "independent-cleanup-proof.json"
+    )
     with target.open("x") as handle:
         json.dump(proof, handle, indent=2)
     return proof
@@ -104,4 +122,13 @@ def verify(out):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
-    print(json.dumps(verify(parser.parse_args().out), indent=2))
+    parser.add_argument("--env-file", type=Path)
+    args = parser.parse_args()
+    if args.env_file:
+        import sys
+
+        sys.path.insert(0, str(args.out / "guard"))
+        from ftqa_smoke import load_env
+
+        load_env(args.env_file)
+    print(json.dumps(verify(args.out), indent=2))
