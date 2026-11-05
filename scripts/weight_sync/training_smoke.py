@@ -546,6 +546,61 @@ def sample(group):
     }
 
 
+def serving_replica_identities(group, guard):
+    result = []
+    for context in guard.kube_contexts:
+        groups = guard.kube_items(
+            "chalkscalinggroups", name="sg-" + group.id, context=context
+        )
+        for item in groups:
+            owner = item["metadata"]["uid"]
+            children = guard.kube_items("chalkcontainers", owner=owner, context=context)
+            result.extend(
+                (
+                    context,
+                    owner,
+                    child["metadata"]["name"],
+                    child["metadata"]["uid"],
+                )
+                for child in children
+            )
+    assert len(result) == 1, f"Expected one owned serving replica: {result!r}"
+    return result
+
+
+def native_processes(replica, ssh_host):
+    code = "\nimport json\nfrom pathlib import Path\nresult = []\nfor path in Path('/proc').glob('[0-9]*'):\n    try:\n        command = (path / 'cmdline').read_bytes()\n        api = b'-m\\0vllm.entrypoints.openai.api_server\\0' in command\n        worker = command.startswith((b'VLLM::EngineCore', b'VLLM::Worker'))\n        if api or worker:\n            started = (path / 'stat').read_text().rpartition(')')[2].split()[19]\n            result.append({'pid': int(path.name), 'start_ticks': started, 'kind': 'api' if api else 'worker'})\n    except (FileNotFoundError, ProcessLookupError):\n        pass\nassert any(item['kind'] == 'api' for item in result), 'No native API process found'\nassert any(item['kind'] == 'worker' for item in result), 'No native EngineCore/worker process found'\nprint(json.dumps(sorted(result, key=lambda item: item['pid'])))\n"
+    command = [
+        "sudo",
+        "docker",
+        "exec",
+        "chalk-external-hypervisor",
+        "runsc",
+        "--root=/var/lib/chalk-hypervisor/runsc",
+        "exec",
+        replica,
+        "python3",
+        "-c",
+        code,
+    ]
+    response = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            ssh_host,
+            shlex.join(command),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return json.loads(response.stdout)
+
+
 def disconnect_probe(group, guard, ssh_host):
     """Close a real routed SSE request, then require the same healthy replica."""
     evidence = {"started_at": time.time(), "phase": "checking_identity"}
@@ -560,81 +615,9 @@ def disconnect_probe(group, guard, ssh_host):
 
     save()
 
-    def identities():
-        result = []
-        for context in guard.kube_contexts:
-            groups = guard.kube_items(
-                "chalkscalinggroups", name="sg-" + group.id, context=context
-            )
-            for item in groups:
-                owner = item["metadata"]["uid"]
-                children = guard.kube_items(
-                    "chalkcontainers", owner=owner, context=context
-                )
-                result.extend(
-                    (
-                        context,
-                        owner,
-                        child["metadata"]["name"],
-                        child["metadata"]["uid"],
-                    )
-                    for child in children
-                )
-        assert len(result) == 1, f"Expected one owned serving replica: {result!r}"
-        return result
+    before = serving_replica_identities(group, guard)
 
-    before = identities()
-
-    def native_processes(replica):
-        code = """
-import json
-from pathlib import Path
-result = []
-for path in Path('/proc').glob('[0-9]*'):
-    try:
-        command = (path / 'cmdline').read_bytes()
-        api = b'-m\\0vllm.entrypoints.openai.api_server\\0' in command
-        worker = command.startswith((b'VLLM::EngineCore', b'VLLM::Worker'))
-        if api or worker:
-            started = (path / 'stat').read_text().rpartition(')')[2].split()[19]
-            result.append({'pid': int(path.name), 'start_ticks': started, 'kind': 'api' if api else 'worker'})
-    except (FileNotFoundError, ProcessLookupError):
-        pass
-assert any(item['kind'] == 'api' for item in result), 'No native API process found'
-assert any(item['kind'] == 'worker' for item in result), 'No native EngineCore/worker process found'
-print(json.dumps(sorted(result, key=lambda item: item['pid'])))
-"""
-        command = [
-            "sudo",
-            "docker",
-            "exec",
-            "chalk-external-hypervisor",
-            "runsc",
-            "--root=/var/lib/chalk-hypervisor/runsc",
-            "exec",
-            replica,
-            "python3",
-            "-c",
-            code,
-        ]
-        response = subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                ssh_host,
-                shlex.join(command),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return json.loads(response.stdout)
-
-    processes_before = native_processes(before[0][2])
+    processes_before = native_processes(before[0][2], ssh_host)
     save(
         replicas_before=before,
         native_processes_before=processes_before,
@@ -683,9 +666,9 @@ print(json.dumps(sorted(result, key=lambda item: item['pid'])))
         assert response.headers["x-chalk-weight-version"] == "0"
         health.append(payload)
         time.sleep(0.5)
-    after = identities()
+    after = serving_replica_identities(group, guard)
     assert before == after, "Serving replica restarted after client disconnect"
-    processes_after = native_processes(after[0][2])
+    processes_after = native_processes(after[0][2], ssh_host)
     assert processes_before == processes_after, (
         "Native processes restarted after client disconnect"
     )
@@ -1186,6 +1169,21 @@ def main():
         else:
             raise TimeoutError("Serving did not observe trained policy")
         record["live_trained"] = live
+        final_identity = serving_replica_identities(serving, guard)
+        final_processes = native_processes(final_identity[0][2], args.external_ssh_host)
+        assert final_identity == [
+            tuple(item) for item in record["client_disconnect"]["replicas_before"]
+        ], "Serving replica restarted during publication"
+        assert (
+            final_processes == record["client_disconnect"]["native_processes_before"]
+        ), "Native engine restarted during publication"
+        record["in_place_identity"] = {
+            "version": version,
+            "replicas": final_identity,
+            "native_processes": final_processes,
+            "verified_at": time.time(),
+        }
+        guard.save()
         response = serving.call("/chalk/metrics", method="GET")
         (args.out / "trained-metrics.prom").write_bytes(response.content)
         guard.stop_group(name + "-serve", serving)
