@@ -51,11 +51,17 @@ fetches. A second execution of the same plan fails its exclusive execution lock.
 
 The payload records actual dependency versions, requires SGLang0.5.23,
 Torch2.14.1/CUDA13 and Transformers5.19.0 matching the audited source pins, checks
-five native control/loader source hashes, and never initializes CUDA. A different
+six native control/loader/OpenAI source hashes, and never initializes CUDA.
+Static AST checks verify disk reload/pause/resume fields and
+`CompletionRequest.ignore_eos` without native imports; native CLI help and request
+parsing remain explicitly unexecuted. A different
 installed stack is a compatibility blocker for review; the script does not loosen
 requirements. It generates a1,246,464parameter BF16 Llama/WordLevel-tokenizer
 fixture with no HF download, keyframe plus two absolute patches, independent full
-oracles and bitwise materialization checks. The <=20MiB bundle is exported with
+oracles and bitwise materialization checks. The v1 patch changes one output-head
+row; v2 changes an attention row and doubles the final norm (covering sparse and
+dense patches). Both consecutive CPU logit changes must exceed0.01 before device
+testing with the fixed1e-3 fresh-reference tolerance. The <=20MiB bundle is exported with
 short read-only64KiB reads and verified against the durable guest proof.
 
 Finally, the launcher stops/verifies the exact CPU sandbox/container CR/pods,

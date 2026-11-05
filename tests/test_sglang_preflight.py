@@ -100,6 +100,79 @@ def test_source_symlink_escape_rejected(tmp_path):
         payload.verify_sources(package, {key: "a" * 64 for key in payload.SOURCE_FILES})
 
 
+@pytest.fixture
+def native_schemas(tmp_path):
+    io = tmp_path / "srt/managers/io_struct.py"
+    io.parent.mkdir(parents=True)
+    io.write_text("""
+class PauseGenerationReqInput(BaseReq, kw_only=True):
+    mode: Literal["abort", "retract", "in_place"] = "abort"
+class ContinueGenerationReqInput(BaseReq, kw_only=True):
+    torch_empty_cache: bool = True
+class UpdateWeightFromDiskReqInput(BaseReq, kw_only=True):
+    model_path: str
+    load_format: Optional[str] = None
+    abort_all_requests: bool = False
+    weight_version: Optional[str] = None
+    is_async: bool = False
+    torch_empty_cache: bool = False
+    keep_pause: bool = False
+    recapture_cuda_graph: bool = False
+    token_step: int = 0
+    flush_cache: bool = True
+    manifest: Optional[Dict[str, Any]] = None
+""")
+    protocol = tmp_path / "srt/entrypoints/openai/protocol.py"
+    protocol.parent.mkdir(parents=True)
+    protocol.write_text("""
+class CompletionRequest(PDRoutingFields):
+    ignore_eos: bool = False
+""")
+    return tmp_path, io, protocol
+
+
+def test_native_schema_proof_requires_no_native_imports(native_schemas):
+    root, _, _ = native_schemas
+    proof = payload.verify_native_schemas(root)
+    assert proof["fields"]["CompletionRequest.ignore_eos"] == {
+        "annotation": "bool",
+        "default": "False",
+    }
+    assert proof["native_cli_help_executed"] is False
+    assert proof["native_request_parsing_executed"] is False
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ('"in_place"', '"unsupported"'),
+        ("keep_pause: bool = False", "keep_pause: bool = True"),
+        ("is_async: bool = False", "is_async: str = False"),
+        ("model_path: str", "other_path: str"),
+        ("flush_cache: bool = True", "flush_cache: bool = False"),
+    ],
+)
+def test_incompatible_native_control_schema_rejected(native_schemas, before, after):
+    root, io, _ = native_schemas
+    io.write_text(io.read_text().replace(before, after))
+    with pytest.raises(ValueError, match="Native request schema differs"):
+        payload.verify_native_schemas(root)
+
+
+@pytest.mark.parametrize(
+    "declaration", ["pass", "ignore_eos: str = False", "ignore_eos: bool = True"]
+)
+def test_openai_ignore_eos_must_have_audited_type_and_default(
+    native_schemas, declaration
+):
+    root, _, protocol = native_schemas
+    protocol.write_text(
+        "class CompletionRequest(PDRoutingFields):\n    " + declaration + "\n"
+    )
+    with pytest.raises(ValueError, match="CompletionRequest.ignore_eos"):
+        payload.verify_native_schemas(root)
+
+
 def test_bundle_is_small_self_contained_and_hash_bound(tmp_path):
     root = tmp_path / "fixture"
     root.mkdir()
@@ -130,6 +203,15 @@ def test_bundle_rejects_symlinks_and_oversize(tmp_path, monkeypatch):
 def test_bundle_cannot_include_itself(tmp_path):
     with pytest.raises(ValueError, match="outside"):
         payload.bundle_fixture(tmp_path, tmp_path / "bundle.tar.gz")
+
+
+@pytest.mark.parametrize(
+    "changes", [[0.1, 0.01], [0.0, 0.2], [0.1, float("nan")], [0.1]]
+)
+def test_both_fixture_updates_must_exceed_native_tolerance(changes):
+    with pytest.raises(ValueError, match="Every fixture update"):
+        payload.validate_fixture_changes(changes)
+    payload.validate_fixture_changes([0.02, 0.2])
 
 
 @pytest.fixture

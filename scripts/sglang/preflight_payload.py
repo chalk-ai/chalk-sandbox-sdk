@@ -7,8 +7,10 @@ initializes CUDA. The caller owns the output directory and remote lifecycle.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import math
 import shutil
 import tarfile
 from importlib import metadata, util
@@ -19,6 +21,7 @@ COMMIT = "297e54fd105e974cdf401e5b4d20253a22c16f90"
 MAX_BUNDLE_BYTES = 20 * 1024 * 1024
 SOURCE_FILES = {
     "srt/entrypoints/http_server.py": "http_server.py",
+    "srt/entrypoints/openai/protocol.py": "openai_protocol.py",
     "srt/managers/io_struct.py": "io_struct.py",
     "srt/managers/tokenizer_manager.py": "tokenizer_manager.py",
     "srt/managers/tokenizer_control_mixin.py": "tokenizer_control_mixin.py",
@@ -61,6 +64,80 @@ def validate_versions(
         raise ValueError("Require the audited CUDA13 build; ROCm evidence is separate")
 
 
+def verify_native_schemas(package: Path) -> dict:
+    """Check audited request declarations without importing native/GPU modules.
+
+    This is source schema evidence only. Native CLI help/import and actual
+    request parsing remain unexecuted until the separately budgeted device run.
+    """
+    expected = {
+        "srt/managers/io_struct.py": {
+            "PauseGenerationReqInput": {
+                "mode": ('Literal["abort", "retract", "in_place"]', '"abort"'),
+            },
+            "ContinueGenerationReqInput": {"torch_empty_cache": ("bool", "True")},
+            "UpdateWeightFromDiskReqInput": {
+                "model_path": ("str", None),
+                "load_format": ("Optional[str]", "None"),
+                "abort_all_requests": ("bool", "False"),
+                "weight_version": ("Optional[str]", "None"),
+                "is_async": ("bool", "False"),
+                "torch_empty_cache": ("bool", "False"),
+                "keep_pause": ("bool", "False"),
+                "recapture_cuda_graph": ("bool", "False"),
+                "token_step": ("int", "0"),
+                "flush_cache": ("bool", "True"),
+                "manifest": ("Optional[Dict[str, Any]]", "None"),
+            },
+        },
+        "srt/entrypoints/openai/protocol.py": {
+            "CompletionRequest": {"ignore_eos": ("bool", "False")},
+        },
+    }
+    checked = {}
+    for relative, classes in expected.items():
+        tree = ast.parse((package / relative).read_text())
+        declarations = {
+            node.name: {
+                field.target.id: field
+                for field in node.body
+                if isinstance(field, ast.AnnAssign)
+                and isinstance(field.target, ast.Name)
+            }
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+        for name, fields in classes.items():
+            for field_name, (annotation, default) in fields.items():
+                field = declarations.get(name, {}).get(field_name)
+                if (
+                    field is None
+                    or ast.dump(field.annotation)
+                    != ast.dump(ast.parse(annotation).body[0].value)
+                    or (ast.dump(field.value) if field.value is not None else None)
+                    != (
+                        ast.dump(ast.parse(default).body[0].value)
+                        if default is not None
+                        else None
+                    )
+                ):
+                    raise ValueError(
+                        f"Native request schema differs: {name}.{field_name}"
+                    )
+                checked[f"{name}.{field_name}"] = {
+                    "annotation": ast.unparse(field.annotation),
+                    "default": ast.unparse(field.value)
+                    if field.value is not None
+                    else None,
+                }
+    return {
+        "method": "static_ast_without_native_imports",
+        "fields": checked,
+        "native_cli_help_executed": False,
+        "native_request_parsing_executed": False,
+    }
+
+
 def bundle_fixture(root: Path, destination: Path) -> dict:
     if destination.exists() or destination.is_relative_to(root):
         raise ValueError("Bundle must be a new file outside its source tree")
@@ -79,6 +156,13 @@ def bundle_fixture(root: Path, destination: Path) -> dict:
         "bytes": destination.stat().st_size,
         "sha256": digest(destination),
     }
+
+
+def validate_fixture_changes(changes: list[float]) -> None:
+    if len(changes) != 2 or any(
+        not math.isfinite(change) or change <= 0.01 for change in changes
+    ):
+        raise ValueError("Every fixture update must change CPU logits by >0.01")
 
 
 def make_fixture(root: Path) -> dict:
@@ -190,6 +274,7 @@ def make_fixture(root: Path) -> dict:
             state["lm_head.weight"][4].add_(0.5)
         if version == 2:
             state["model.layers.0.self_attn.q_proj.weight"][0].add_(0.1)
+            state["model.norm.weight"].mul_(2)
         oracle = root / f"oracle-v{version}"
         oracle.mkdir()
         for asset in keyframe.iterdir():
@@ -272,8 +357,7 @@ def make_fixture(root: Path) -> dict:
         float((cpu_logits[index] - cpu_logits[index - 1]).abs().max())
         for index in (1, 2)
     ]
-    if changes[0] <= 0.01:
-        raise ValueError("Fixture update is not measurably different on CPU")
+    validate_fixture_changes(changes)
     return {
         "parameters": 1_246_464,
         "seed": 20261105,
@@ -318,7 +402,9 @@ def run_preflight(root: str | Path, source_hashes: dict[str, str]) -> dict:
     spec = util.find_spec("sglang")
     if spec is None or spec.origin is None:
         raise ValueError("Cannot locate installed SGLang source")
-    source = verify_sources(Path(spec.origin).parent, source_hashes)
+    package = Path(spec.origin).parent
+    source = verify_sources(package, source_hashes)
+    schemas = verify_native_schemas(package)
     from chalkcompute.weights.serving.adapters.sglang import SGLangAdapter
 
     fixture = make_fixture(root / "fixture")
@@ -339,6 +425,7 @@ def run_preflight(root: str | Path, source_hashes: dict[str, str]) -> dict:
         "torch_hip": torch.version.hip,
         "cuda_initialized": False,
         "source_sha256": source,
+        "native_request_schema": schemas,
         "managed_command": command,
         "fixture": fixture,
         "bundle": bundle,
