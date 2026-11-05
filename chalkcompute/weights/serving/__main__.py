@@ -83,7 +83,11 @@ async def serve(args: argparse.Namespace) -> None:
         for task in done:
             task.result()
         if not stopped.is_set():
-            raise RuntimeError("Live serving worker stopped or became unhealthy")
+            completed = ", ".join(sorted(task.get_name() for task in done))
+            raise RuntimeError(
+                "Live serving worker stopped or became unhealthy: "
+                f"completed={completed}; reason={gate.failure_reason or 'unknown'}"
+            )
     finally:
         await gate.fail()
         for task in tasks:
