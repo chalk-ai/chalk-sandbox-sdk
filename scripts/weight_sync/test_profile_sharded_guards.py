@@ -186,6 +186,90 @@ def test_controller_normal_finally_waits_for_sole_watchdog_cleanup_owner(
     assert calls == ["sole-cleanup-owner"]
 
 
+@pytest.mark.parametrize("fault", ["ps_timeout", "ledger_read", "ready_publish"])
+def test_postready_monitor_failure_still_releases_and_preserves_late_identity(
+    tmp_path, monkeypatch, fault
+):
+    from pathlib import Path
+    import subprocess
+    import chalkcompute._connect as connect
+    import profile_host_guard as host
+
+    ledger, _ = record(tmp_path, monkeypatch, deadline=1300)
+    monkeypatch.setattr(
+        guard, "install", lambda p: NS(ResourceGuard=lambda *args: NS(kube_contexts=[]))
+    )
+    monkeypatch.setattr(
+        connect, "ConnectClient", lambda: NS(_ensure_auth=lambda: None, _env_id="test")
+    )
+    monkeypatch.setattr(host, "runtime_absence", lambda _: {})
+    original_read, original_write = Path.read_bytes, guard.write_json
+    failed = []
+
+    def fail_once():
+        value = json.loads(original_read(ledger))
+        value.update(
+            seed_sandbox_id="late-acknowledged-id",
+            create_rpc_deadline_epoch=1001,
+            seed_resources=[{"uid": "late-retained-owner"}],
+        )
+        original_write(ledger, value)
+        failed.append(fault)
+
+    def probe(pid):
+        if fault == "ps_timeout" and not failed:
+            fail_once()
+            raise subprocess.TimeoutExpired("ps", 0.25)
+        return None
+
+    def read(path):
+        if (
+            path == ledger
+            and fault == "ledger_read"
+            and (tmp_path / "cpu-watchdog-ready.json").exists()
+            and not failed
+        ):
+            fail_once()
+            raise OSError("transient postready read failure")
+        return original_read(path)
+
+    def write(path, value):
+        original_write(path, value)
+        if (
+            path.name == "cpu-watchdog-ready.json"
+            and fault == "ready_publish"
+            and not failed
+        ):
+            fail_once()
+            raise OSError("readiness became visible before reporting failure")
+
+    monkeypatch.setattr(guard, "process_identity", probe)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(guard, "write_json", write)
+    calls = []
+    monkeypatch.setattr(
+        guard, "stop_launcher", lambda value: calls.append("stop-owned-writer")
+    )
+
+    def release(path):
+        value = json.loads(original_read(path))
+        assert value["seed_sandbox_id"] == "late-acknowledged-id"
+        assert value["create_rpc_deadline_epoch"] == 1001
+        assert value["seed_resources"] == [{"uid": "late-retained-owner"}]
+        value.update(
+            cpu_compute_released=True, volume_verified_absent=True, status="released"
+        )
+        original_write(path, value)
+        calls.append("release-compute-and-data")
+
+    monkeypatch.setattr(guard, "cleanup", release)
+    guard.run_watchdog(ledger)
+    result = json.loads(original_read(tmp_path / "cpu-watchdog-result.json"))
+    assert calls == ["stop-owned-writer", "release-compute-and-data"]
+    assert result["released"] is True and result["execution_passed"] is False
+    assert result["monitor_errors"] and result["record"]["execution_failed"] is True
+
+
 def test_expired_phase_release_only_recovery_attempts_and_never_passes_execution(
     tmp_path, monkeypatch
 ):

@@ -137,28 +137,62 @@ def start_fuse(root, request):
     raise TimeoutError("Independent monitor readiness deadline")
 
 
-def registered_groups(ledger):
+def registered_groups(ledger, *, permit_inert_unproved=False):
     record = json.loads(ledger.read_bytes())
     result = []
     for root in sorted(ledger.parent.glob("cleanup-attempt-*")):
         request = json.loads((root / "request.json").read_bytes())
-        if request.get("phase_id") != record["cpu_phase_id"] or request.get(
-            "ledger"
-        ) != str(ledger):
+        phase = record["cpu_phase_id"]
+        if request.get("phase_id") != phase or request.get("ledger") != str(ledger):
             raise RuntimeError("Cleanup registry phase/ledger differs")
+        state_path = root / "spawn-state.json"
+        state = json.loads(state_path.read_bytes()) if state_path.exists() else {}
+        if state and state.get("phase_id") != phase:
+            raise RuntimeError("Cleanup spawn-state phase differs")
         ready_path = root / "ready.json"
-        if not ready_path.exists():
-            raise RuntimeError("Inert worker registration remains unresolved")
-        ready = json.loads(ready_path.read_bytes())
-        if ready.get("phase_id") != record["cpu_phase_id"]:
-            raise RuntimeError("Cleanup registry identity phase differs")
         authorization = root / "authorization.json"
+        if not ready_path.exists():
+            if authorization.exists():
+                raise RuntimeError("Authorized cleanup worker lacks ready identity")
+            if state.get("state") == "never_started":
+                if state.get("authorization_created") is not False:
+                    raise RuntimeError(
+                        "Never-started attempt authorization state differs"
+                    )
+                continue  # Popen failed before target execution; no API authorization.
+            if state.get("identity") is not None:
+                result.append(state["identity"])
+                continue  # Inert early exit still has a Popen-owned full identity.
+            if permit_inert_unproved:
+                # This cannot be an API writer: authorization requires ready+fuse
+                # identity. Permit resource release, never claim local absence.
+                from profile_plan import write_json
+
+                write_json(
+                    root / "inert-resolution.json",
+                    {
+                        "phase_id": phase,
+                        "authorization_absent": True,
+                        "local_identity_proved": False,
+                        "inert_deadline": request["deadline"],
+                        "resource_release_permitted": True,
+                    },
+                )
+                continue
+            raise RuntimeError(
+                "Never-authorized local worker identity remains unproved"
+            )
+        ready = json.loads(ready_path.read_bytes())
+        if ready.get("phase_id") != phase:
+            raise RuntimeError("Cleanup registry identity phase differs")
+        if state.get("identity") is not None and state["identity"] != ready["identity"]:
+            raise RuntimeError("Cleanup spawn/ready identity differs")
         if authorization.exists():
             if json.loads(authorization.read_bytes()) != ready:
                 raise RuntimeError("Cleanup registry authorization differs")
             fuse = json.loads((root / "fuse-ready.json").read_bytes())
             if (
-                fuse.get("phase_id") != record["cpu_phase_id"]
+                fuse.get("phase_id") != phase
                 or fuse.get("worker_identity") != ready["identity"]
                 or fuse.get("identity", {}).get("group") != ready["identity"]["group"]
             ):
@@ -168,7 +202,10 @@ def registered_groups(ledger):
 
 
 def stop_registered(ledger):
-    return [stop_group(known) for known in registered_groups(ledger)]
+    return [
+        stop_group(known)
+        for known in registered_groups(ledger, permit_inert_unproved=True)
+    ]
 
 
 def prove_registered_absent(ledger):

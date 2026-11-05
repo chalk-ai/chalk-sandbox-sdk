@@ -16,6 +16,99 @@ from profile_sharded_processes import (
     stop_group,
 )
 
+
+@pytest.mark.parametrize("fault", ["popen_failure", "exit_before_ready"])
+def test_real_inert_spawn_failure_does_not_block_later_resource_release(
+    tmp_path, monkeypatch, fault
+):
+    import profile_sharded_guard as guard
+    import profile_sharded_plan as plan
+
+    ledger = tmp_path / "launcher.json"
+    record = {"cpu_phase_id": "test-phase", "cpu_deadline_epoch": time.time() + 10}
+    ledger.write_text(json.dumps(record))
+    monkeypatch.setattr(
+        plan, "validate_ledger", lambda path: json.loads(path.read_bytes())
+    )
+    original_popen = subprocess.Popen
+
+    def spawn(command, *args, **kwargs):
+        if "--attempt" in command:
+            if fault == "popen_failure":
+                raise OSError("controlled spawn failure before execution")
+            return original_popen(
+                [sys.executable, "-c", "raise SystemExit(3)"], *args, **kwargs
+            )
+        return original_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "Popen", spawn)
+    with pytest.raises((OSError, RuntimeError)):
+        guard.run_attempt(ledger, record, 0)
+    root = tmp_path / "cleanup-attempt-0"
+    state = json.loads((root / "spawn-state.json").read_bytes())
+    assert state["state"] == (
+        "never_started" if fault == "popen_failure" else "stopped"
+    )
+    assert (
+        not (root / "ready.json").exists()
+        and not (root / "authorization.json").exists()
+    )
+    calls = []
+
+    def release(path, record, number, **kwargs):
+        calls.append(number)
+        record.update(
+            status="released", cpu_compute_released=True, volume_verified_absent=True
+        )
+        guard.write_json(path, record)
+
+    monkeypatch.setattr(guard, "run_attempt", release)
+    assert guard.cleanup(ledger)["released"] is True and calls == [1]
+    prove_registered_absent(ledger)
+
+
+def test_unknown_never_authorized_inert_attempt_permits_release_but_not_local_proof(
+    tmp_path, monkeypatch
+):
+    import profile_sharded_guard as guard
+    import profile_sharded_plan as plan
+
+    ledger = tmp_path / "launcher.json"
+    record = {"cpu_phase_id": "test-phase", "cpu_deadline_epoch": time.time() + 10}
+    ledger.write_text(json.dumps(record))
+    root = tmp_path / "cleanup-attempt-0"
+    root.mkdir()
+    (root / "request.json").write_text(
+        json.dumps(
+            {
+                "phase_id": "test-phase",
+                "ledger": str(ledger),
+                "deadline": time.time() - 1,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        plan, "validate_ledger", lambda path: json.loads(path.read_bytes())
+    )
+
+    def release(path, record, number, **kwargs):
+        assert number == 1
+        record.update(
+            status="released", cpu_compute_released=True, volume_verified_absent=True
+        )
+        guard.write_json(path, record)
+
+    monkeypatch.setattr(guard, "run_attempt", release)
+    assert guard.cleanup(ledger)["released"] is True
+    resolution = json.loads((root / "inert-resolution.json").read_bytes())
+    assert (
+        resolution["authorization_absent"] is True
+        and resolution["local_identity_proved"] is False
+    )
+    with pytest.raises(RuntimeError, match="local worker identity remains unproved"):
+        prove_registered_absent(ledger)
+
+
 WORKER = r"""
 import json,subprocess,sys,time
 from pathlib import Path

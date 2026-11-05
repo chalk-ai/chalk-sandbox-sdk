@@ -116,16 +116,39 @@ def run_attempt(ledger, record, number, *, cleanup_deadline=None):
         "deadline": deadline,
     }
     write_json(root / "request.json", request)
-    with (root / "worker.log").open("ab", buffering=0) as log:
-        child = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--attempt", str(root)],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
+    try:
+        with (root / "worker.log").open("ab", buffering=0) as log:
+            child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "--attempt", str(root)],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+    except Exception as error:
+        write_json(
+            root / "spawn-state.json",
+            {
+                "phase_id": record["cpu_phase_id"],
+                "state": "never_started",
+                "authorization_created": False,
+                "error_type": type(error).__name__,
+            },
         )
+        raise
     known = None
     try:
+        # Capture even a zombie before poll()/wait() can reap this owned PID.
+        known = process_identity(child.pid)
+        write_json(
+            root / "spawn-state.json",
+            {
+                "phase_id": record["cpu_phase_id"],
+                "state": "spawned",
+                "identity": known,
+                "authorization_created": False,
+            },
+        )
         while time.time() < deadline:
             ready_path = root / "ready.json"
             if ready_path.exists():
@@ -135,9 +158,10 @@ def run_attempt(ledger, record, number, *, cleanup_deadline=None):
                     time.sleep(0.01)
                     continue
                 ready = json.loads(ready_path.read_bytes())
-                known = process_identity(child.pid)
+                current_identity = process_identity(child.pid)
                 if (
                     known is None
+                    or current_identity != known
                     or known["group"] != child.pid
                     or ready != {"phase_id": record["cpu_phase_id"], "identity": known}
                 ):
@@ -162,15 +186,30 @@ def run_attempt(ledger, record, number, *, cleanup_deadline=None):
         raise TimeoutError("Cleanup attempt registration expired")
     finally:
         if known is None:
-            # Popen still owns an unregistered inert child; no API was allowed.
-            from profile_sharded_processes import identity, stop_group
-
-            inert = identity(child.pid)
-            if inert is not None:
-                stop_group(inert)
+            # No authorization is possible without a durable full identity.
+            if child.poll() is None:
+                child.kill()  # Popen-owned inert PID; no API authorization existed.
             child.wait(timeout=2)
+            write_json(
+                root / "spawn-state.json",
+                {
+                    "phase_id": record["cpu_phase_id"],
+                    "state": "local_identity_unproved",
+                    "authorization_created": False,
+                },
+            )
         else:
             stop_attempt(child, known)
+            write_json(
+                root / "spawn-state.json",
+                {
+                    "phase_id": record["cpu_phase_id"],
+                    "state": "stopped",
+                    "identity": known,
+                    "authorization_created": (root / "authorization.json").exists(),
+                    "nonzombie_group_absent": True,
+                },
+            )
 
 
 def cleanup(ledger, *, recovery=False):
@@ -303,65 +342,124 @@ def run_watchdog(ledger):
     for context in probe.kube_contexts:
         for kind in ("chalkcontainers", "pods"):
             probe.kube_items(kind, name="synthetic-preflight-" + phase, context=context)
-    write_json(
-        ledger.parent / "cpu-watchdog-ready.json",
-        {"phase_id": phase, "pid": os.getpid(), "ready_at": time.time()},
-    )
     normal_request = False
-    while time.time() < record["cpu_deadline_epoch"] - 120:
-        record = json.loads(ledger.read_bytes())
-        request = ledger.parent / "cpu-cleanup-request.json"
-        if request.exists():
-            value = json.loads(request.read_bytes())
-            if (
-                value.get("phase_id") != phase
-                or value.get("controller_work_stopped") is not True
-                or type(value.get("execution_passed")) is not bool
-                or set(value)
-                != {"phase_id", "controller_work_stopped", "execution_passed"}
-            ):
-                raise RuntimeError("Controller cleanup request phase differs")
-            record.update(
-                execution_passed=value["execution_passed"],
-                execution_failed=not value["execution_passed"],
-            )
-            write_json(ledger, record)
-            normal_request = True
-            break
-        if process_identity(record["launcher_pid"]) is None:
-            break
-        time.sleep(1)
-    (ledger.parent / "cpu-expired").write_text(str(time.time()))
-    if not normal_request:
-        record.update(execution_failed=True, execution_passed=False)
-        write_json(ledger, record)
-        stop_launcher(record)
+    normal_passed = False
+    monitor_errors = []
+    cleanup_succeeded = False
     try:
-        cleanup(ledger)
+        write_json(
+            ledger.parent / "cpu-watchdog-ready.json",
+            {"phase_id": phase, "pid": os.getpid(), "ready_at": time.time()},
+        )
+        while time.time() < record["cpu_deadline_epoch"] - 120:
+            record = json.loads(ledger.read_bytes())
+            request = ledger.parent / "cpu-cleanup-request.json"
+            if request.exists():
+                value = json.loads(request.read_bytes())
+                if (
+                    value.get("phase_id") != phase
+                    or value.get("controller_work_stopped") is not True
+                    or type(value.get("execution_passed")) is not bool
+                    or set(value)
+                    != {"phase_id", "controller_work_stopped", "execution_passed"}
+                ):
+                    raise RuntimeError("Controller cleanup request phase differs")
+                normal_passed = value["execution_passed"]
+                normal_request = True
+                break
+            if process_identity(record["launcher_pid"]) is None:
+                break
+            time.sleep(1)
     except Exception as error:
+        monitor_errors.append(
+            {"phase_id": phase, "error_type": type(error).__name__, "at": time.time()}
+        )
+    finally:
+        # Do not overwrite canonical in-flight UUID/create markers from an old
+        # monitor snapshot. Stop the writer first, then reload and retain them.
+        try:
+            (ledger.parent / "cpu-expired").write_text(str(time.time()))
+        except Exception as error:
+            monitor_errors.append(
+                {
+                    "phase_id": phase,
+                    "stage": "expire_marker",
+                    "error_type": type(error).__name__,
+                    "at": time.time(),
+                }
+            )
+        stopped = normal_request
+        if not normal_request:
+            while time.time() < record["cpu_deadline_epoch"] - 3:
+                try:
+                    stop_launcher(record)
+                    stopped = True
+                    break
+                except Exception as error:
+                    monitor_errors.append(
+                        {
+                            "phase_id": phase,
+                            "stage": "stop_controller",
+                            "error_type": type(error).__name__,
+                            "at": time.time(),
+                        }
+                    )
+                    time.sleep(
+                        min(1, max(0, record["cpu_deadline_epoch"] - 3 - time.time()))
+                    )
+        while stopped and time.time() < record["cpu_deadline_epoch"] - 3:
+            try:
+                retained = json.loads(ledger.read_bytes())
+                for field in (
+                    "cpu_phase_id",
+                    "name",
+                    "environment_id",
+                    "cpu_deadline_epoch",
+                ):
+                    if retained.get(field) != record.get(field):
+                        raise RuntimeError("Canonical cleanup phase/ownership changed")
+                retained.update(
+                    execution_passed=normal_passed and not monitor_errors,
+                    execution_failed=not normal_passed or bool(monitor_errors),
+                )
+                write_json(ledger, retained)
+                cleanup(ledger)
+                cleanup_succeeded = True
+                break
+            except Exception as error:
+                monitor_errors.append(
+                    {
+                        "phase_id": phase,
+                        "stage": "cleanup",
+                        "error_type": type(error).__name__,
+                        "at": time.time(),
+                    }
+                )
+                if time.time() < record["cpu_deadline_epoch"] - 3:
+                    time.sleep(
+                        min(1, max(0, record["cpu_deadline_epoch"] - 3 - time.time()))
+                    )
+        try:
+            final_record = json.loads(ledger.read_bytes())
+        except Exception:
+            final_record = {"cpu_phase_id": phase, "record_unavailable": True}
         write_json(
             ledger.parent / "cpu-watchdog-result.json",
             {
                 "phase_id": phase,
-                "released": False,
-                "error_type": type(error).__name__,
+                "record": final_record,
+                "released": cleanup_succeeded,
+                "execution_passed": normal_passed and not monitor_errors,
+                "monitor_errors": monitor_errors,
                 "finished_at": time.time(),
             },
         )
-        raise
-    write_json(
-        ledger.parent / "cpu-watchdog-result.json",
-        {
-            "phase_id": phase,
-            "record": json.loads(ledger.read_bytes()),
-            "errors": [],
-            "finished_at": time.time(),
-        },
-    )
-    write_json(
-        ledger.parent / "cpu-watchdog-exited.json",
-        {"phase_id": phase, "exited_at": time.time(), "transferred": False},
-    )
+        if not cleanup_succeeded:
+            raise RuntimeError("Watchdog cleanup remains unconfirmed; errors retained")
+        write_json(
+            ledger.parent / "cpu-watchdog-exited.json",
+            {"phase_id": phase, "exited_at": time.time(), "transferred": False},
+        )
 
 
 def arm_watchdog(guard, record, ledger):

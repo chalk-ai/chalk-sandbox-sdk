@@ -22,11 +22,11 @@ staging; arbitrary nested metadata directories are not supported.
 
 ## Separate frozen remote candidate — unexecuted
 
-`sharded-synthetic-frozen-v2` is separate from the unchanged full-8B frozen v4.
+`sharded-synthetic-frozen-v3` is separate from the unchanged full-8B frozen v4.
 Its plan SHA-256 is
-`3b30b3291b1ebf43b65519edf02fc2526dc6be5bfcf4b9999c57e7cce60c322a`.
+`0fd52fc6ba4335906e9647f84cabe8232ccb8115b40ff5c56ac70db0bde7d684`.
 The local artifact is under
-`chalk-private/.artifacts/weight-sync-p0/sharded-synthetic-frozen-v2/`.
+`chalk-private/.artifacts/weight-sync-p0/sharded-synthetic-frozen-v3/`.
 It contains 28 frozen helper sources, 239 controller SDK sources, the reviewed
 runtime overlay and pinned prebuilt image, and a compiled 91,439-byte entrypoint.
 `preview.json` contains exact validation, execution, cleanup and verification
@@ -54,8 +54,13 @@ A separate `recover_release_only` preview command allows at most 120 seconds of
 release-only recovery after expiry. It stops exact owned groups and retries
 compute/data release while respecting ambiguous-create horizons, without new
 creates or changes to the original lease. Execution failure is permanent even
-when release recovery succeeds. Frozen v1 remains immutable, superseded, and
-unexecuted.
+when release recovery succeeds. Frozen v1 and v2 remain immutable, superseded, and
+unexecuted. Before-ready spawn failures retain durable inert resolution so later
+release attempts can proceed. An unknown never-authorized bootstrap permits
+resource release but remains explicitly unproved for strict local-process
+verification; no guessed PID is signaled. Post-readiness monitor failures stop
+the controller and enter release cleanup while retaining canonical late UUIDs
+and create markers.
 
 Before creating metadata and again before sandbox submission, the launcher
 checks live host capacity. The existing membership helper retains its stronger
@@ -88,7 +93,7 @@ resource change.
 
 ## Local validation and remaining work
 
-All **176 weight-sync harness tests** pass, including 25 focused sharded tests.
+All **182 weight-sync harness tests** pass, including 31 focused sharded tests.
 They cover actual SDK batch staging, atomic pointer visibility, both sides of
 lost patch/reference responses, baseline/patch corruption, wrong index mappings,
 changing source bytes, transient cleanup retries and late identity recovery,
@@ -98,6 +103,11 @@ post-authorization blocked work during supervisor death, deadline expiry, inert
 startup death, worker success/failure with inherited children, and descendants
 after leader exit. Recovery tests preserve execution failure and metadata
 reconciliation horizons; a kernel-lock test rejects a second cleanup API owner.
+Additional fault regressions exercise actual Popen failure and child exit before
+readiness, a never-authorized identity gap, and post-ready ps/readiness/ledger
+errors. The latter prove sole-owner cleanup and preserve late canonical
+UUID/owner/create markers. Fresh read-only checks of 16 retained test ledgers
+prove all 14 registered groups have no nonzombie members.
 Added Python sources pass Ruff and ty.
 
 Actual remote SDK cache/upload/cgroup/disk measurements remain **unmeasured**.
