@@ -99,3 +99,39 @@ bound is exceeded. Raise the bound deliberately for longer histories. Inspect
 Dense fallback does not retain the exact changed-element count: indexed density is
 the transmitted-element fraction, an upper bound on actual changed elements.
 CURRENT/PIN in the volume remain authoritative even when the index is unavailable.
+
+## Live policy client
+
+`LivePolicy` resolves the runtime catalog's immutable image, registers an
+unregistered seeded stream, mounts mutable `main`, and passes its immutable stream
+ID on CreateScalingGroup. The scaling group's response must retain that ID. The
+currently implemented runtime is vLLM/CUDA; unsupported engine/accelerator pairs
+fail before claiming a scaling group. Runtime image publication and the metadata,
+resolver, and scaling-group linkage backends must be available in the environment.
+
+```python
+from chalkcompute import LivePolicy
+
+policy = LivePolicy.deploy("policy-qwen3", stream, gpu="nvidia-a100-80gb:1")
+try:
+    for result in policy.generate(["Hello", "Explain delta weights"], max_tokens=32):
+        print(result.prompt_index, result.choice_index, result.text, result.policy_version)
+    print(policy.replicas())  # applied_weight_version distinguishes zero from unknown
+finally:
+    policy.delete()  # Releases serving resources; preserves the weight volume.
+```
+
+Responses must include a valid uint64 `x-chalk-policy-version`; missing/invalid
+headers are errors. Completion results retain input prompt and choice indices;
+chat results preserve the native message, including null/structured content and
+tool calls. Both APIs use buffered responses. `publisher()`, `pin()` and `unpin()`
+operate on the associated stream; `promote()` surfaces the service's explicit
+Unimplemented response until complete-checkpoint promotion is available.
+
+If deployment fails, `LivePolicyDeploymentError.policy` retains the handle needed
+to inspect or explicitly delete the group. `prior_group_id` identifies a known
+pre-existing group; `created_new_group` is false for such a group and otherwise
+unknown because CreateScalingGroup may upsert by name. Failed deployments never
+automatically delete a pre-existing or ambiguously created group. Explicit
+`error.policy.delete()` can recover a lost create response by name, verifies the
+stream association, and then deletes the group.
