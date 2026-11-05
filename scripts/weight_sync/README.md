@@ -115,3 +115,22 @@ Future executions cap OMP/MKL and Torch intra-op CPU threads to the explicit
 many more host CPUs than its quota; an earlier advancing run exposed hundreds of
 library threads during CPU-to-GPU model transfer. Record the chosen budget with
 training evidence, and retain the exact executed source when comparing runs.
+
+After cleanup, `fetch_logs.py` retrieves bounded retained application or access
+logs through protobuf gRPC using the backend repository's authoritative schema.
+It requires `grpcio`, `protobuf`, `protoc`, and the SDK authentication dependencies.
+Pass the actual cluster ID from `CloudComponentsService.ListServerlessClusters`;
+a Kubernetes cluster slug is not an API cluster ID. For example:
+
+```bash
+python scripts/weight_sync/fetch_logs.py \
+  --env-file /path/to/ftqa.env --proto-root /path/to/chalk-private/protos/protos \
+  --cluster-id ACTUAL_CLUSTER_ID --start 2026-11-05T06:59:30Z \
+  --end 2026-11-05T07:01:30Z --query 'scaling_group:EXACT_OWNED_GROUP_ID' \
+  --out /path/to/evidence/serving-logs.json
+```
+
+Each page contains at most 500 application logs; the default limit is four pages.
+Use `--access` for access logs. The optional `--scaling-group-id` access scope may
+fail after deletion because the API checks the current group row; a query filter
+can still search retained cluster access logs. Credentials never enter the output.
