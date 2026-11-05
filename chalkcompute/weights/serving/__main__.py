@@ -10,7 +10,9 @@ from pathlib import Path
 
 from aiohttp import web
 
+from chalkcompute.weights.serving.adapters.sglang import SGLangAdapter
 from chalkcompute.weights.serving.adapters.vllm import VLLMAdapter
+from chalkcompute.weights.serving.full_checkpoint import FullCheckpointSyncer
 from chalkcompute.weights.serving.supervisor import AdmissionGate, Metrics, create_app
 from chalkcompute.weights.serving.syncer import WeightSyncer
 
@@ -25,10 +27,16 @@ def _listen(value: str) -> tuple[str, int]:
 
 
 async def serve(args: argparse.Namespace) -> None:
-    adapter = VLLMAdapter(args.engine_port, args.engine_args)
+    engine = getattr(args, "engine", "vllm")
+    if engine == "sglang-experimental":
+        adapter = SGLangAdapter(args.engine_port, args.engine_args)
+        syncer_class = FullCheckpointSyncer
+    else:
+        adapter = VLLMAdapter(args.engine_port, args.engine_args)
+        syncer_class = WeightSyncer
     gate = AdmissionGate()
     metrics = Metrics()
-    syncer = WeightSyncer(
+    syncer = syncer_class(
         Path(args.weights),
         adapter,
         gate,
@@ -56,13 +64,15 @@ async def serve(args: argparse.Namespace) -> None:
         deadline = loop.time() + args.startup_timeout
         while loop.time() < deadline:
             if process.returncode is not None:
-                raise RuntimeError(f"vLLM exited during startup ({process.returncode})")
+                raise RuntimeError(
+                    f"{engine} exited during startup ({process.returncode})"
+                )
             if stopped.is_set():
                 raise RuntimeError("Shutdown requested during startup")
             if await adapter.ready():
                 return
             await asyncio.sleep(1)
-        raise TimeoutError("vLLM startup deadline exceeded")
+        raise TimeoutError(f"{engine} startup deadline exceeded")
 
     try:
         await syncer.bootstrap(launch)
@@ -104,6 +114,8 @@ async def serve(args: argparse.Namespace) -> None:
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
                 await process.wait()
+        if isinstance(syncer, FullCheckpointSyncer):
+            syncer.close()
         if runner is not None:
             await runner.cleanup()
         for signum in (signal.SIGTERM, signal.SIGINT):
@@ -115,7 +127,9 @@ def main() -> None:
         description="Serve and synchronize a Chalk weight stream"
     )
     parser.add_argument(
-        "--engine", choices=["vllm"], default=os.environ.get("CHALK_ENGINE", "vllm")
+        "--engine",
+        choices=["vllm", "sglang-experimental"],
+        default=os.environ.get("CHALK_ENGINE", "vllm"),
     )
     parser.add_argument("--weights", default=os.environ.get("CHALK_WEIGHT_STREAM_DIR"))
     parser.add_argument("--engine-port", type=int, default=8001)
