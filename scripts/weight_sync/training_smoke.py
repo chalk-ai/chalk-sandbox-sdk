@@ -92,6 +92,15 @@ def make_image(source_root, staging):
     )
 
 
+def overlay_members(path):
+    with tarfile.open(path, "r:gz") as archive:
+        return {
+            member.name: hashlib.sha256(archive.extractfile(member).read()).hexdigest()
+            for member in archive.getmembers()
+            if member.isfile()
+        }
+
+
 class ResourceGuard:
     """Persist IDs immediately, recover ambiguous submissions by unique name."""
 
@@ -581,6 +590,7 @@ for path in Path('/proc').glob('[0-9]*'):
     except (FileNotFoundError, ProcessLookupError):
         pass
 assert any(item['kind'] == 'api' for item in result), 'No native API process found'
+assert any(item['kind'] == 'worker' for item in result), 'No native EngineCore/worker process found'
 print(json.dumps(sorted(result, key=lambda item: item['pid'])))
 """
         command = [
@@ -647,7 +657,10 @@ print(json.dumps(sorted(result, key=lambda item: item['pid'])))
         assert response.status == 200, (
             f"Disconnected client lost readiness: {response.status}"
         )
-        health.append(json.loads(response.content))
+        payload = json.loads(response.content)
+        assert payload == {"applied_version": 0, "healthy": True}, payload
+        assert response.headers["x-chalk-weight-version"] == "0"
+        health.append(payload)
         time.sleep(0.5)
     after = identities()
     assert before == after, "Serving replica restarted after client disconnect"
@@ -674,6 +687,7 @@ print(json.dumps(sorted(result, key=lambda item: item['pid'])))
         "first_sse_chunk_bytes": len(first),
         "metrics": metrics,
     }
+    assert result["next_request"]["version"] == "0"
     (guard.out / "client-disconnect.json").write_text(json.dumps(result, indent=2))
     return result
 
@@ -891,6 +905,14 @@ def main():
         with tempfile.TemporaryDirectory(prefix="weight-training-overlay-") as staging:
             recipe = make_image(args.source_root, Path(staging))
             archive = Path(staging) / "weight-sdk-overlay.tar.gz"
+            if args.prepared_image:
+                prepared_archive = args.prepared_image.parent / archive.name
+                if overlay_members(archive) != overlay_members(prepared_archive):
+                    raise ValueError(
+                        "Prepared image SDK source differs; rebuild before execution"
+                    )
+                archive = prepared_archive
+                record["prepared_image_evidence"] = str(args.prepared_image)
             shutil.copyfile(archive, args.out / archive.name)
             record["source_overlay_sha256"] = hashlib.sha256(
                 archive.read_bytes()
