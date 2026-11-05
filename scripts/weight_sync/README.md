@@ -46,3 +46,66 @@ Always inspect `launcher.json` and require both `sandbox_released` and
 `volume_deleted` to be true, even after failure. If the launcher is interrupted,
 recover the exact recorded sandbox ID and stream name and release only those
 owned resources. Do not infer GPU cleanup merely from remote driver completion.
+
+## Real training and separate live serving
+
+`training_smoke.py` runs a real `cc.training` submission with a Qwen3-8B BF16
+model and an independent authenticated serving ScalingGroup. It performs two
+full-parameter SGD steps on two pinned GSM8K training rows, checks every trainable
+parameter has a gradient, publishes updates, and records concurrent deterministic
+inference responses. This is an SFT integration smoke, not a GRPO or reward-quality
+benchmark. Actual changed BF16 bits and transmitted elements are reported separately.
+
+Prepare the CUDA/vLLM image on CPU first; this includes both `python` and `python3`
+and imports the exact backend training entrypoint. Use an integrated SDK checkout
+with the publisher, codec, serving, and training-volume feature branches:
+
+```sh
+PYTHONPATH=/path/to/integrated-sdk python scripts/weight_sync/training_smoke.py \
+  --source-root /path/to/integrated-sdk --env-file /path/to/ftqa.env \
+  --out /path/to/cpu-preparation
+
+PYTHONPATH=/path/to/integrated-sdk python scripts/weight_sync/training_smoke.py \
+  --source-root /path/to/integrated-sdk --env-file /path/to/ftqa.env \
+  --prepared-image /path/to/cpu-preparation/image.json \
+  --out /path/to/new-training-evidence --execute --seed-on-serving \
+  --steps 2 --budget-seconds 2400
+```
+
+The second invocation builds the packaged training source before claiming GPUs.
+Its default GPU budget is forty minutes, starting before the first serving claim.
+It uses at most one serving and one training A100 80GB simultaneously. Seeding on
+the planned serving GPU avoids a separate acquisition worker. The final full state
+is independently reconstructed and compared byte-for-byte with every canonical
+trained tensor. The trainer and live group stop before a fresh group loads that
+independent checkpoint for exact greedy-output comparison.
+
+The launcher records all resource IDs immediately. A detached `resource_watchdog.py`
+shares the immutable deadline, survives launcher death, inhibits workstation idle
+sleep, and recovers ambiguous submissions only by the unique test name. It cancels
+the run, stops its container, verifies the exact `cc-<run UUID>` CR and UID-owned pods
+are absent, and deletes only its owned CR using a UID precondition if retained after
+API termination. It never removes finalizers. ScalingGroup cleanup checks the exact
+CR and replicas bearing its immutable owner UID. Data deletion follows verified
+compute release. Dataset absence is checked through the active-list query because
+GetDataset can still return tombstoned rows. Inspect `launcher.json` and detached
+watchdog evidence after every execution; an API terminal status alone is insufficient.
+
+The launcher discovers actual serving placement across existing staging serverless
+Kubernetes contexts instead of assuming GetEnv's default job cluster. Read access
+to these contexts is required for cleanup proof. `placement_watchdog.py` is an
+additional recovery tool for an older launcher that omitted the real context; it
+preserves an independent append-only group-owner ledger and verifies cleanup even
+when the API already reports the group absent.
+
+`publish_to_first_response_s` is an observation across different hosts with
+unmeasured clock uncertainty. Engine apply and admission pause metrics use local
+monotonic durations. A single observer can skip intermediate published versions;
+its report lists those omissions. Source archives, manifests, worker audits, exact
+revision pins, and cleanup reports provide the evidence needed to interpret a run.
+
+For repeated guest progress checks, `guest_progress.py` requires the launcher's
+ledger, exact group and replica names, Kubernetes context, and known external SSH
+host. It verifies the live replica's group owner UID before running a fixed
+read-only probe. It reports seed/cache bytes, process stage, and published keyframe
+sizes without reading credentials or downloading model data to the workstation.
