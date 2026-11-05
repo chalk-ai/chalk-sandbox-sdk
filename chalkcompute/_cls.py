@@ -62,6 +62,7 @@ from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import (
     ComputeClass,
+    Runtime,
     ContainerSpec,
     NetworkPolicy,
     ExecutionBackend,
@@ -763,6 +764,7 @@ class RemoteClass:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        runtime: Runtime | None = None,
         network_policy: NetworkPolicy | None = None,
         execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
@@ -807,6 +809,7 @@ class RemoteClass:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            runtime=runtime,
             network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,
@@ -827,6 +830,7 @@ class RemoteClass:
         self._image = normalized_image
         self._cpu = cpu
         self._compute_class = compute_class
+        self._runtime = runtime
         self._network_policy = network_policy
         self._execution_target = execution_target
         self._memory = memory
@@ -1046,6 +1050,7 @@ class RemoteClass:
         rc._image = None
         rc._cpu = None
         rc._compute_class = None
+        rc._runtime = None
         rc._network_policy = None
         rc._execution_target = None
         rc._memory = None
@@ -1288,6 +1293,7 @@ class RemoteClass:
                     ),
                     cpu=self._cpu,
                     compute_class=self._compute_class,
+                    runtime=self._runtime,
                     network_policy=self._network_policy,
                     execution_target=self._execution_target,
                     memory=self._memory,
@@ -1660,6 +1666,7 @@ def cls(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    runtime: Runtime | None = None,
     network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
@@ -1701,6 +1708,7 @@ def cls(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    runtime: Runtime | None = None,
     network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
@@ -1743,6 +1751,7 @@ def cls(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    runtime: Runtime | None = None,
     network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
@@ -1808,6 +1817,8 @@ def cls(
     compute_class
         Where to run replicas. Omit to use the server default; HOST requires fixed,
         positive replica counts.
+    runtime
+        Runtime for host sandboxes. Not supported for Kubernetes workloads.
     network_policy
         Optional host egress policy. Omit for the server default;
         ``NetworkPolicy()`` denies all egress. Kubernetes does not support it.
@@ -1913,6 +1924,7 @@ def cls(
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            runtime=runtime,
             network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,

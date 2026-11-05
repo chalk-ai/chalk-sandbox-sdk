@@ -93,6 +93,7 @@ from chalkcompute._connect import (
 )
 from chalkcompute._containerspec import (
     ComputeClass,
+    Runtime,
     ContainerSpec,
     NetworkPolicy,
     ExecutionBackend,
@@ -2288,6 +2289,7 @@ class RemoteFunction:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        runtime: Runtime | None = None,
         network_policy: NetworkPolicy | None = None,
         execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
@@ -2366,6 +2368,7 @@ class RemoteFunction:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            runtime=runtime,
             network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,
@@ -2386,6 +2389,7 @@ class RemoteFunction:
         self._image = normalized_image
         self._cpu = cpu
         self._compute_class = compute_class
+        self._runtime = runtime
         self._network_policy = network_policy
         self._execution_target = execution_target
         self._memory = memory
@@ -2642,6 +2646,7 @@ class RemoteFunction:
         f._image = None
         f._cpu = None
         f._compute_class = None
+        f._runtime = None
         f._network_policy = None
         f._execution_target = None
         f._memory = None
@@ -3045,6 +3050,7 @@ class RemoteFunction:
                 ),
                 cpu=self._cpu,
                 compute_class=self._compute_class,
+                runtime=self._runtime,
                 network_policy=self._network_policy,
                 execution_target=self._execution_target,
                 memory=self._memory,
@@ -4250,6 +4256,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    runtime: Runtime | None = None,
     network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
@@ -4292,6 +4299,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    runtime: Runtime | None = None,
     network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
@@ -4335,6 +4343,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    runtime: Runtime | None = None,
     network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
@@ -4411,6 +4420,8 @@ def function(
     compute_class
         Where to run replicas. Omit to use the server default; HOST requires fixed,
         positive replica counts.
+    runtime
+        Runtime for host sandboxes. Not supported for Kubernetes workloads.
     network_policy
         Optional host egress policy. Omit for the server default;
         ``NetworkPolicy()`` denies all egress. Kubernetes does not support it.
@@ -4550,6 +4561,7 @@ def function(
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            runtime=runtime,
             network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,

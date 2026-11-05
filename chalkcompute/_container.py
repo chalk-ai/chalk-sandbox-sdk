@@ -44,6 +44,7 @@ from chalkcompute._connect import (
 )
 from chalkcompute._containerspec import (
     ComputeClass,
+    Runtime,
     ContainerSecurityPolicy,
     ContainerSpec,
     ExecutionBackend,
@@ -716,6 +717,7 @@ class Container:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        runtime: Runtime | None = None,
         execution_target: ExecutionBackend | None = None,
         tags: dict[str, str] | None = None,
         tracing: TracingPolicyConfig | None = None,
@@ -750,6 +752,7 @@ class Container:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            runtime=runtime,
             execution_target=execution_target,
             tags=tags,
         )
@@ -772,6 +775,7 @@ class Container:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._runtime = runtime
         self._execution_target = execution_target
         self._tags: dict[str, str] = dict(tags or {})
 
@@ -1147,6 +1151,7 @@ class Container:
                 security_policy=self._security_policy,
                 network_policy=self._network_policy,
                 compute_class=self._compute_class,
+                runtime=self._runtime,
                 execution_target=self._execution_target,
                 tags=self._tags,
             ).to_proto()
