@@ -1,82 +1,71 @@
-# Experimental SGLang full-checkpoint reload
+# Experimental SGLang serving
 
-This is an opt-in correctness baseline for SGLang **0.5.23**, audited at upstream
-commit `297e54fd105e974cdf401e5b4d20253a22c16f90`. It has CPU tests with a fake native
-HTTP server. It has **not** been validated on a GPU, ROCm image, or Chalk
-hypervisor. The backend runtime catalog remains unavailable for SGLang/ROCm.
-
-The first supported input contract is a dense, unquantized `LlamaForCausalLM`
-checkpoint whose config and actual tensor catalog are BF16. TP, PP, DP and EP
-are fixed to one; CUDA/HIP graphs are disabled. Quantized models, MoE, shared or
-derived weight caches, other model families, speculative decoding, and other
-parallel modes require separate adapters and validation. The only passthrough
-arguments are `--context-length` and `--mem-fraction-static`. `SGLANG_` environment
-overrides are rejected except the exact audited upstream build commit, build URL,
-image tag, and `SGLANG_RUST_BUILD_MODE=never`. This permits the pinned official
-CUDA runtime image's provenance while rejecting all runtime feature overrides.
+Install the SDK's `serving` extra into the pinned SGLang runtime, mount a Chalk weight
+stream at `/weights`, and launch:
 
 ```bash
-chalk-live-serve --engine sglang-experimental --weights /weights -- \
-  --context-length 4096 --mem-fraction-static 0.8
+chalk-live-serve --engine sglang-experimental \
+  --sglang-profile deterministic-triton --weights /weights -- \
+  --context-length 8192 --mem-fraction-static 0.5
 ```
 
-Install the image's compatible pinned Torch/SGLang stack separately. Installing
-the SDK does not choose or replace an accelerator runtime. The native server
-listens on loopback; the existing supervisor exposes the OpenAI routes.
+The CLI uses `deterministic-triton` by default for this engine. Native SGLang listens
+on loopback; the supervisor exposes the OpenAI routes on `CHALK_LISTEN_ADDR` (default
+`:8000`). Responses report the applied stream version in `X-Chalk-Policy-Version`.
+The SDK keeps SGLang optional: installing the base SDK does not install or replace
+Torch, SGLang or an accelerator runtime.
 
-For each desired version, the separate `FullCheckpointSyncer` walks the complete
-keyframe-to-target chain and reconstructs **one** final checkpoint on local disk
-before closing admission. It verifies all payloads, actual keyframe tensor
-names/shapes/dtypes, config architecture, and patch compatibility. CPU tensors
-are released after writing that checkpoint; no continuously resident CPU copy
-of the preceding model is retained. Mounted immutable version files are the
-source; this path does not call Volume APIs or reread mutable `CURRENT` during
-replay. Bootstrap starts the final checkpoint directly.
+The supported experimental contract is **SGLang 0.5.23**, upstream commit
+`297e54fd105e974cdf401e5b4d20253a22c16f90`, with dense unquantized BF16
+`LlamaForCausalLM`, TP/PP/DP/EP1, deterministic inference, Triton attention, PyTorch
+sampling, radix cache enabled, weight cache off and CUDA graphs disabled. The
+specific CUDA image used in the existing tiny A100 diagnostic is:
 
-After draining external work, the update performs native `in_place` pause, one
-synchronous `update_weights_from_disk` call with `keep_pause` and `flush_cache`,
-an explicit acknowledged cache flush, and native resume. The applied version
-advances only after successful resume. The TP1 disk result must report JSON
-`success: true` and zero paused requests. Pause/resume must return `status: ok`;
-every control response must be HTTP 200. A timeout, cancellation, invalid
-response, reload failure, cache-flush failure or resume uncertainty after
-mutation fails the replica closed and requires process-group restart. Native
-messages claiming rollback do not establish recovery.
+```
+lmsysorg/sglang@sha256:354700f4404ab0b8dcb493bc61d5d11e7c2a91f3a7babb4efe741cb75d4b51c0
+```
 
-Bootstrap assets stay available until engine shutdown because the tokenizer may
-refer to them. The current checkpoint stays available until replacement; an
-uncertain candidate stays available until engine shutdown. Superseded successful
-checkpoints are removed. Reserve local disk for bootstrap, current and candidate
-checkpoints (up to three full copies), and host memory for full replay plus
-checkpoint decoding. Disk or preparation errors leave the live engine untouched.
-This baseline still copies a full checkpoint into the engine; it does not claim
-sparse GPU writes, improved pause latency, or measured performance.
+That image contains Python3.12.16/Torch2.14.1+cu130. Other versions, model families,
+quantization, parallelism, speculative decoding, shared caches and ROCm/MI355X need
+separate validation. Only `--context-length` and `--mem-fraction-static` pass through
+to SGLang. Runtime `SGLANG_` overrides are rejected; only the exact pinned image's
+build provenance and `SGLANG_RUST_BUILD_MODE=never` are allowed. The backend
+SGLang/ROCm runtime catalog remains disabled.
 
-## Proposed device/image validation (requires a separately reviewed run)
+Each update reconstructs one complete final checkpoint from the verified mounted
+keyframe/patch chain **before closing admission**. The supervisor then drains native
+work, pauses generation, reloads synchronously, flushes cache and checks exact native
+model path, format, target version and one-scheduler runtime settings. It resumes
+native generation before acknowledging the applied stream version. A downstream
+disconnect remains admitted until native EOF. Uncertain mutation, missing/version-
+mismatched acknowledgement or resume failure closes the replica; restart is required.
+Corrupt payloads fail during preparation before native mutation.
 
-1. Resolve an immutable image digest and record its SGLang commit/version, Torch
-   build, `torch.version.hip`, gfx target, and userspace ROCm paths. The audited
-   upstream ROCm Dockerfile has gfx950 flavors, but their existence does not prove
-   compatibility with the Chalk hypervisor's injected ROCm 7.1.1. Inspect image
-   metadata and dependencies before claiming GPU compute. Keep CUDA-specific
-   library-path injection out of a ROCm image; use `torch.cuda` APIs for ROCm
-   where required by PyTorch.
-2. First use a tiny local BF16 Llama checkpoint, TP1, on the proposed runtime.
-   Check cold startup, deterministic before/after generation or logits against a
-   fresh native load of the exact target, sparse then dense publications,
-   unchanged target, backward PIN and version zero. Exercise active streaming
-   drain, downstream disconnect, invalid payload before mutation, injected native
-   reload/resume failure, fail-closed admission and clean restart recovery.
-3. Save immutable source/target IDs, image digest, native settings, outputs,
-   correctness comparisons, replay/apply/pause timings, full disk transfer bytes,
-   peak host/GPU memory and cleanup evidence. CPU fake-server tests alone cannot
-   establish loader layout, native cache correctness or device compatibility.
-4. Review those artifacts before an 8B run or enabling a catalog entry. An A100
-   result establishes only that CUDA image/device pair. MI355X needs its own
-   gfx950/ROCm image evidence. TP/EP and quantized models remain unavailable.
+This is a dense checkpoint reload baseline; it does not apply sparse GPU deltas.
+Reserve host memory for full replay/decoding and local disk for bootstrap, current
+and candidate checkpoints (up to three full copies). No CPU model remains resident
+between updates. Bootstrap/tokenizer assets and uncertain candidates remain available
+until the native process group stops. Cancelled preparation writers are joined before
+removing their output, after stopping GPU workers.
 
-For a proposed AMD run, report its node count, ~$30/node-hour cost, hard deadline,
-idle watchdog and exact teardown before allocation. The watchdog must be ready
-before claim, scale nodes down after >10 minutes without meaningful work, and
-release every owned sandbox, volume and node on completion/failure/cancellation.
-No AMD or other GPU resources were claimed for this implementation.
+## Validation scope
+
+The earlier explicit deterministic-triton diagnostic (PR611/head8364ef18) passed all
+ten tiny one-A100 comparisons with maximum logprob error0.0 at the unchanged1e-3 gate:
+streaming/disconnect drain, updates, no-op, backward PIN, corrupt-payload refusal,
+lost native ACK/fail-closed restart and fresh-native versions0/1/2. All resources were
+independently released. It used guest-local copies of an immutable fixture, so it does
+not prove live ChalkFS publication, trainer durability, AMD behavior, full-model latency
+or general numerical determinism.
+
+The older default BF16/FlashInfer/radix smoke and warm-cache diagnostic **failed**;
+those results are unchanged. CLI exposure and new native identity checks in this PR
+are CPU tested; native validation of this exact source is pending a separately reviewed,
+frozen run. The previous diagnostic is evidence for its exact source/profile, not a
+pass for later code. Do not enable a backend catalog entry or FULL_WEIGHTS based on it.
+
+Use `PYTHON=/path/to/existing/python scripts/check_weight_serving.sh` for reusable CPU
+checks. The separate guarded native harness preserves raw samples, fixed1e-3 criteria,
+immutable deadline and independent teardown; its sources and exact executed overlay
+must be frozen/reviewed before every resource claim. AMD tests additionally need a
+validated gfx950/ROCm image and an idle scale-down watchdog; none is claimed here.
