@@ -160,3 +160,136 @@ def test_late_success_persists_id_but_refuses_work_after_deadline(tmp_path):
     persisted = json.loads(ledger.read_text())
     assert persisted["seed_sandbox_id"] == "late-exact-id"
     assert persisted["submission_inflight"] is False
+
+
+def test_filtered_hf_cache_proves_seed_without_excluded_readme_or_license(
+    tmp_path, monkeypatch, capsys
+):
+    import fnmatch
+    import huggingface_hub
+    import safetensors
+    import xxhash
+    import chalkcompute.weights as weights
+    from chalkcompute._weights import _TensorSpec
+    from chalkcompute._weights_format import (
+        WeightManifest,
+        TensorEntry,
+        architecture_hash,
+        pointer_json,
+    )
+    from cpu_seed import SEED_CODE
+
+    config = b'{"model_type":"test"}'
+    payload = b"\x00\x00"
+    (tmp_path / "config.json").write_bytes(config)
+    (tmp_path / "model.safetensors").write_bytes(payload)
+    upstream = {
+        "config.json",
+        "model.safetensors",
+        "README.md",
+        "LICENSE",
+        ".gitattributes",
+    }
+    cached = {"config.json", "model.safetensors"}
+    calls = []
+
+    def offline_cache(repo_id, revision, local_files_only, allow_patterns=None):
+        assert (
+            repo_id == "test/model" and revision == "pinned-commit" and local_files_only
+        )
+        needed = {
+            name
+            for name in upstream
+            if allow_patterns is None
+            or any(fnmatch.fnmatch(name, pattern) for pattern in allow_patterns)
+        }
+        missing = needed - cached
+        if missing:
+            raise RuntimeError("Incomplete snapshot: " + ",".join(sorted(missing)))
+        calls.append("filtered-cache-reopened")
+        return str(tmp_path)
+
+    digest = xxhash.xxh3_128_hexdigest(payload)
+    manifest = WeightManifest(
+        0,
+        None,
+        "keyframe",
+        "test/model",
+        architecture_hash(config, [("weight", _TensorSpec((1,), "bfloat16"))]),
+        (
+            TensorEntry(
+                "weight",
+                "bfloat16",
+                (1,),
+                "dense",
+                "model.safetensors",
+                0,
+                len(payload),
+                1,
+                digest,
+            ),
+        ),
+    )
+    files = {
+        "CURRENT": pointer_json(0),
+        "v000000/manifest.json": manifest.to_json(),
+        "v000000/config.json": config,
+        "v000000/model.safetensors": payload,
+    }
+
+    class Snapshot:
+        version_id = 42
+
+        def read_file(self, path):
+            return files[path]
+
+        def listdir(self):
+            return [SimpleNamespace(path=path, kind="file") for path in files]
+
+    class Stream:
+        def __init__(self, name, model):
+            pass
+
+        def create(self):
+            return self
+
+        def seed_from_hf(self, model, revision):
+            return 0
+
+        def _snapshot(self):
+            return Snapshot()
+
+    class SafeOpen:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def keys(self):
+            return ["weight"]
+
+        def get_slice(self, key):
+            return SimpleNamespace(get_dtype=lambda: "BF16", get_shape=lambda: [1])
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline_cache)
+    monkeypatch.setattr(safetensors, "safe_open", SafeOpen)
+    monkeypatch.setattr(weights, "WeightStream", Stream)
+    exec(
+        compile(SEED_CODE, "guest-cpu-proof", "exec"),
+        {"CONFIG": ("owned", "test/model", "pinned-commit")},
+    )
+    assert calls == ["filtered-cache-reopened"]
+    output = capsys.readouterr().out
+    proof = json.loads(
+        next(
+            line.removeprefix("CPU_SEED_PROOF=")
+            for line in output.splitlines()
+            if line.startswith("CPU_SEED_PROOF=")
+        )
+    )
+    assert proof["snapshot_id"] == 42 and proof["elements"] == 1
+    assert proof["files"]["model.safetensors"]["bytes"] == 2

@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ftqa_smoke import MODELS, execute, load_env
+from ftqa_smoke import MODELS, load_env
 from training_smoke import ResourceGuard
 
 LEASE_SECONDS = 1200
@@ -281,7 +281,8 @@ assert read_pointer(snapshot.read_file('CURRENT'))==0
 manifest_bytes=snapshot.read_file(version_dir(0)+'/manifest.json')
 manifest=WeightManifest.from_json(manifest_bytes)
 assert manifest.kind=='keyframe' and manifest.version==0 and manifest.parent_version is None
-folder=Path(snapshot_download(repo_id=model,revision=revision,local_files_only=True))
+print('CPU_SEED_ATOMIC='+json.dumps({'version':0,'snapshot_id':snapshot.version_id,'published_at':published,'seed_seconds':published-started}),flush=True)
+folder=Path(snapshot_download(repo_id=model,revision=revision,local_files_only=True,allow_patterns=['*.safetensors','*.json','*.model','*.tiktoken','*.txt']))
 config=snapshot.read_file(version_dir(0)+'/config.json')
 assert config==(folder/'config.json').read_bytes()
 catalog={}
@@ -463,22 +464,44 @@ def main():
             env=remote_env,
         )
         sandbox_client.run(seed, timeout=min(STARTUP_SECONDS, remaining(record)))
+        record["cpu_ready_at"] = time.time()
         record["status"] = "seeding"
         write_json(ledger, record)
         model, revision = MODELS["8b"]
         code = "CONFIG=" + repr((name, model, revision)) + "\n" + SEED_CODE
         import shlex
 
-        result = execute(
-            seed,
+        record["seed_command_started_at"] = time.time()
+        write_json(ledger, record)
+        result = seed.exec(
+            "bash",
+            "-lc",
             "python3 -c " + shlex.quote(code),
-            timeout=max(1, int(remaining(record) - 60)),
+            timeout_secs=max(1, int(remaining(record) - 60)),
         )
-        (args.out / "seed-output.txt").write_text(result)
+        (args.out / "seed-stdout.txt").write_text(result.stdout_text[-1024 * 1024 :])
+        (args.out / "seed-stderr.txt").write_text(result.stderr_text[-1024 * 1024 :])
+        record["seed_command_finished_at"] = time.time()
+        atomic = next(
+            (
+                line.removeprefix("CPU_SEED_ATOMIC=")
+                for line in result.stdout_text.splitlines()
+                if line.startswith("CPU_SEED_ATOMIC=")
+            ),
+            None,
+        )
+        if atomic is not None:
+            record["atomic_seed"] = json.loads(atomic)
+        write_json(ledger, record)
+        if result.error is not None or result.exit_code not in (0, None):
+            raise RuntimeError(
+                f"CPU seed/proof command failed (exit={result.exit_code}); see retained seed-stderr.txt"
+            )
+        output = result.stdout_text
         proof = json.loads(
             next(
                 line.removeprefix("CPU_SEED_PROOF=")
-                for line in result.splitlines()
+                for line in output.splitlines()
                 if line.startswith("CPU_SEED_PROOF=")
             )
         )
@@ -525,6 +548,14 @@ def main():
                 write_json(ledger, record)
                 return
             time.sleep(1)
+    except BaseException as error:
+        record["failure"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+            "at": time.time(),
+        }
+        write_json(ledger, record)
+        raise
     finally:
         if not transferred:
             # The detached watchdog remains armed if local cleanup fails.
