@@ -153,3 +153,10 @@ a later phase that waits for it. `total_seconds` also includes other work and lo
 waiting. `metadata_pending` records a committed publication whose metadata still
 needs reconciliation. The smoke script saves all publication profiles in its JSON
 report without allocating compute.
+
+`refresh_failed` still includes the immutable committed snapshot: publication
+committed but refreshing CURRENT failed (or detected a competing publisher).
+Check CURRENT, resume from its exact checkpoint, and reconcile metadata before
+continuing; do not reuse the recorded logical version. `committed_unindexed`
+means an error after commit but before successful metadata indexing that was not
+a known metadata outage. These states preserve the original exception.

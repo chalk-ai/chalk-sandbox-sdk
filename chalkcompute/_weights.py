@@ -384,6 +384,7 @@ class WeightStream:
         files: list[tuple[str, Path]],
         *,
         timings: dict[str, float] | None = None,
+        commit_stats: dict[str, Any] | None = None,
     ) -> int:
         if len(files) + 2 > 200:
             raise WeightStreamError("Publication exceeds atomic 200-file volume commit")
@@ -405,13 +406,21 @@ class WeightStream:
         # Batch upload retains the server-returned immutable commit version.
         # Capture it before reloading main, which may already include a PIN write.
         committed_snapshot_id = self._volume.version.id
+        if commit_stats is not None:
+            commit_stats.update(
+                volume_version_id=committed_snapshot_id, status="refresh_failed"
+            )
         if timings is not None:
             timings["upload_commit"] = time.perf_counter() - started
         started = time.perf_counter()
-        if self.current() != manifest.version:
-            raise WeightStreamError("Concurrent publisher detected after commit")
-        if timings is not None:
-            timings["post_commit_refresh"] = time.perf_counter() - started
+        try:
+            if self.current() != manifest.version:
+                raise WeightStreamError("Concurrent publisher detected after commit")
+        finally:
+            if timings is not None:
+                timings["post_commit_refresh"] = time.perf_counter() - started
+        if commit_stats is not None:
+            commit_stats["status"] = "committed_unindexed"
         return committed_snapshot_id
 
 
@@ -535,6 +544,8 @@ class WeightPublisher:
     def _publish(self, state_dict, *, step, force_keyframe):
         import torch
 
+        from chalkcompute._weight_stream_metadata import WeightMetadataPending
+
         started = time.perf_counter()
         stats: dict[str, Any] = {
             "status": "failed",
@@ -563,9 +574,8 @@ class WeightPublisher:
             )
             stats["status"] = "published"
             return result
-        except Exception:
-            if stats["volume_version_id"] is not None:
-                stats["status"] = "metadata_pending"
+        except WeightMetadataPending:
+            stats["status"] = "metadata_pending"
             raise
         finally:
             stats["total_seconds"] = time.perf_counter() - started
@@ -724,7 +734,9 @@ class WeightPublisher:
                     trainer_step=step,
                     training_run_id=self.training_run_id,
                 )
-                snapshot_id = self.stream._commit(manifest, files, timings=phases)
+                snapshot_id = self.stream._commit(
+                    manifest, files, timings=phases, commit_stats=stats
+                )
                 stats["volume_version_id"] = snapshot_id
             self._previous, self._version, self._architecture = frozen, version, arch
             # Retained state advances with the committed volume even when the

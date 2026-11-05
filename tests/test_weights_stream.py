@@ -294,3 +294,29 @@ def test_failed_commit_profile_is_not_reported_published(stream):
     assert pub.last_publish_stats["status"] == "failed"
     assert pub.last_publish_stats["volume_version_id"] is None
     assert pub.last_publish_stats["total_seconds"] >= 0
+
+
+def test_profile_captures_committed_snapshot_when_refresh_fails(stream, monkeypatch):
+    pub = publisher(stream)
+    current = stream.current
+
+    def fail_after_commit():
+        if stream._volume.version.id:
+            raise RuntimeError("postcommit refresh unavailable")
+        return current()
+
+    monkeypatch.setattr(stream, "current", fail_after_commit)
+    with pytest.raises(RuntimeError, match="postcommit refresh"):
+        pub.publish({"w": torch.zeros(10)})
+    stats = pub.last_publish_stats
+    assert stats["status"] == "refresh_failed"
+    assert stats["volume_version_id"] == 1
+    assert stats["version"] == 0
+    assert stats["phases_seconds"]["post_commit_refresh"] >= 0
+    monkeypatch.setattr(stream, "current", current)
+    assert stream.current() == 0
+    # Publication did commit; a caller must resume/reconcile rather than reuse 0.
+    with pytest.raises(WeightStreamError, match="stale"):
+        pub.publish({"w": torch.zeros(10)})
+    pub.resume({"w": torch.zeros(10)})
+    assert pub.publish({"w": torch.ones(10)}) == 1
