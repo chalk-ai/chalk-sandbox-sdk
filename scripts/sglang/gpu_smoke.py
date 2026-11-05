@@ -148,6 +148,7 @@ def prepare(
     ):
         (out / name).write_bytes((cpu_proof_root / name).read_bytes())
     if deterministic_triton:
+        assert source_attestation is not None  # Validated before preparation.
         (out / "deterministic-source-attestation.json").write_bytes(
             source_attestation.read_bytes()
         )
