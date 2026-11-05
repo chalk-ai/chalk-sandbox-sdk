@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import dataclasses
 import json
 import threading
@@ -416,6 +417,120 @@ def test_native_cancellation_keeps_uncertain_path_and_fails_closed(stream):
         assert not adapter.calls[0][0].exists()
 
     asyncio.run(run())
+
+
+def test_shutdown_stops_native_group_before_joining_blocked_preparation(
+    monkeypatch, tmp_path
+):
+    from chalkcompute.weights.serving import __main__ as entrypoint
+
+    release = threading.Event()
+    events = []
+    outputs = []
+
+    async def run():
+        exited = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        class Process:
+            pid = 12345
+            returncode = None
+
+            async def wait(self):
+                await exited.wait()
+                return 0
+
+        async def spawn(*args, **kwargs):
+            return Process()
+
+        class Adapter:
+            url = "http://127.0.0.1:8001"
+
+            def __init__(self, *args):
+                pass
+
+            def launch_cmd(self, *args):
+                return ["test-engine"]
+
+            async def ready(self):
+                return True
+
+        class Syncer(FullCheckpointSyncer):
+            async def bootstrap(self, launch):
+                await launch(tmp_path)
+                self.gate.version = 0
+
+            async def run(self):
+                # Simulate a blocked immutable mount read. Only engine stop
+                # releases it; gathering cancellation first would deadlock.
+                def prepare(root, plan, output):
+                    outputs.append(output)
+                    loop.call_soon_threadsafe(self.gate.failed.set)
+                    if not release.wait(5):
+                        raise TimeoutError("Engine was not stopped before writer join")
+                    events.append("writer-joined")
+                    (output / "finished").write_text("done")
+
+                monkeypatch.setattr(
+                    "chalkcompute.weights.serving.full_checkpoint.materialize", prepare
+                )
+                await self._prepare(ApplyPlan(0, ()))
+
+            def close(self):
+                assert exited.is_set() and events == ["engine-stop", "writer-joined"]
+                assert not outputs[0].exists()
+                events.append("checkpoint-cleanup")
+                super().close()
+
+        class Runner:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                assert events[-1] == "checkpoint-cleanup"
+                events.append("http-cleanup")
+
+        class Site:
+            def __init__(self, *args):
+                pass
+
+            async def start(self):
+                pass
+
+        def stop_engine(pid, signum):
+            events.append("engine-stop")
+            exited.set()
+            release.set()
+
+        monkeypatch.setattr(entrypoint, "SGLangAdapter", Adapter)
+        monkeypatch.setattr(entrypoint, "FullCheckpointSyncer", Syncer)
+        monkeypatch.setattr(entrypoint.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(entrypoint.web, "AppRunner", Runner)
+        monkeypatch.setattr(entrypoint.web, "TCPSite", Site)
+        monkeypatch.setattr(entrypoint.os, "killpg", stop_engine)
+        args = argparse.Namespace(
+            engine="sglang-experimental",
+            weights=str(tmp_path),
+            engine_port=8001,
+            engine_args=[],
+            startup_timeout=1,
+        )
+        with pytest.raises(RuntimeError, match="became unhealthy"):
+            await entrypoint.serve(args)
+        assert events == [
+            "engine-stop",
+            "writer-joined",
+            "checkpoint-cleanup",
+            "http-cleanup",
+        ]
+
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
 
 
 @pytest.mark.parametrize(

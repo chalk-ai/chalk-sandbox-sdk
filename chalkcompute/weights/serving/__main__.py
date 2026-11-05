@@ -74,6 +74,17 @@ async def serve(args: argparse.Namespace) -> None:
             await asyncio.sleep(1)
         raise TimeoutError(f"{engine} startup deadline exceeded")
 
+    async def stop_engine() -> None:
+        if process is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(process.wait(), 15)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+
     try:
         await syncer.bootstrap(launch)
         runner = web.AppRunner(
@@ -102,18 +113,15 @@ async def serve(args: argparse.Namespace) -> None:
         await gate.fail()
         for task in tasks:
             task.cancel()
+        if isinstance(syncer, FullCheckpointSyncer):
+            # A cancelled preparation must join its writer before removing its
+            # output. Stop GPU workers first even if a mounted read is stuck.
+            await stop_engine()
         await asyncio.gather(*tasks, return_exceptions=True)
         # Stop the entire process group, including engine/TP workers, before
         # waiting for HTTP cleanup: an abandoned stream may still be generating.
-        if process is not None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGTERM)
-            try:
-                await asyncio.wait_for(process.wait(), 15)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
+        if not isinstance(syncer, FullCheckpointSyncer):
+            await stop_engine()
         if isinstance(syncer, FullCheckpointSyncer):
             syncer.close()
         if runner is not None:
