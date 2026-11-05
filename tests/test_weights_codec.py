@@ -1,7 +1,10 @@
 from dataclasses import replace
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("zstandard")
+pytest.importorskip("xxhash")
 
 from chalkcompute._weights_codec import (
     apply_patch,

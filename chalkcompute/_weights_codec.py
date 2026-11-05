@@ -7,7 +7,7 @@ import math
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from chalkcompute._weights_format import (
     TensorEntry,
@@ -29,7 +29,7 @@ class TensorPatch:
     indices: torch.Tensor | None = None
 
     @property
-    def encoding(self) -> str:
+    def encoding(self) -> Literal["dense", "sparse"]:
         return "dense" if self.indices is None else "sparse"
 
     @property
