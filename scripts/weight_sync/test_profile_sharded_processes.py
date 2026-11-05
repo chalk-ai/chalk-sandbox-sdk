@@ -17,6 +17,92 @@ from profile_sharded_processes import (
 )
 
 
+@pytest.mark.parametrize("recovery", [False, True])
+@pytest.mark.parametrize("fault", ["parent_identity_timeout", "request_write_failure"])
+def test_real_pre_spawn_fault_allows_retry_and_release_only_recovery(
+    tmp_path, monkeypatch, recovery, fault
+):
+    import profile_sharded_guard as guard
+    import profile_sharded_plan as plan
+
+    ledger = tmp_path / "launcher.json"
+    deadline = time.time() + (-10 if recovery else 15)
+    record = {"cpu_phase_id": "test-phase", "cpu_deadline_epoch": deadline}
+    ledger.write_text(json.dumps(record))
+    monkeypatch.setattr(plan, "validate_ledger", lambda p: json.loads(p.read_bytes()))
+    original_identity = guard.process_identity
+    original_write = guard.write_json
+    triggered = []
+
+    def parent_identity(pid):
+        if fault == "parent_identity_timeout" and not triggered:
+            triggered.append(fault)
+            raise subprocess.TimeoutExpired("controlled parent ps", 5)
+        return original_identity(pid)
+
+    def write(path, value):
+        if (
+            fault == "request_write_failure"
+            and path.name == "request.json"
+            and not triggered
+        ):
+            triggered.append(fault)
+            raise OSError("controlled request publication failure")
+        original_write(path, value)
+
+    monkeypatch.setattr(guard, "process_identity", parent_identity)
+    monkeypatch.setattr(guard, "write_json", write)
+    original_attempt = guard.run_attempt
+    calls = []
+
+    def attempt(path, value, number, **kwargs):
+        calls.append(number)
+        if not triggered:
+            return original_attempt(path, value, number, **kwargs)
+        value.update(
+            status="released", cpu_compute_released=True, volume_verified_absent=True
+        )
+        guard.write_json(path, value)
+
+    monkeypatch.setattr(guard, "run_attempt", attempt)
+    result = guard.cleanup(ledger, recovery=recovery)
+    assert result["released"] is True and calls == [0, 1] and triggered == [fault]
+    retained = json.loads(ledger.read_bytes())
+    assert retained["cpu_deadline_epoch"] == deadline
+    if recovery:
+        assert retained["status"] == "failed_recovered"
+        assert (
+            retained["execution_failed"] is True
+            and retained["execution_passed"] is False
+        )
+    root = tmp_path / "cleanup-attempt-0"
+    if fault == "parent_identity_timeout":
+        assert not root.exists()
+        prove_registered_absent(ledger)
+    else:
+        assert not (root / "request.json").exists()
+        assert not (root / "authorization.json").exists()
+        resolution = json.loads((root / "inert-resolution.json").read_bytes())
+        assert (
+            resolution["request_absent"] is True
+            and resolution["local_identity_proved"] is False
+        )
+        with pytest.raises(RuntimeError, match="Missing-request local worker identity"):
+            prove_registered_absent(ledger)
+
+
+def test_missing_request_with_authorization_refuses_remote_release(tmp_path):
+    from profile_sharded_processes import stop_registered
+
+    ledger = tmp_path / "launcher.json"
+    ledger.write_text(json.dumps({"cpu_phase_id": "test-phase"}))
+    root = tmp_path / "cleanup-attempt-0"
+    root.mkdir()
+    (root / "authorization.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="Authorized cleanup worker lacks request"):
+        stop_registered(ledger)
+
+
 @pytest.mark.parametrize("fault", ["popen_failure", "exit_before_ready"])
 def test_real_inert_spawn_failure_does_not_block_later_resource_release(
     tmp_path, monkeypatch, fault

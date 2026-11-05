@@ -103,6 +103,10 @@ def attempt_process(root):
 
 
 def run_attempt(ledger, record, number, *, cleanup_deadline=None):
+    # Do fallible process discovery before publishing an attempt directory.
+    parent_identity = process_identity(os.getpid())
+    if parent_identity is None:
+        raise RuntimeError("Cleanup supervisor identity unavailable")
     root = ledger.parent / ("cleanup-attempt-" + str(number))
     root.mkdir(exist_ok=False)
     deadline = min(
@@ -112,7 +116,7 @@ def run_attempt(ledger, record, number, *, cleanup_deadline=None):
         "phase_id": record["cpu_phase_id"],
         "ledger": str(ledger),
         "parent_pid": os.getpid(),
-        "parent_identity": process_identity(os.getpid()),
+        "parent_identity": parent_identity,
         "deadline": deadline,
     }
     write_json(root / "request.json", request)

@@ -141,8 +141,31 @@ def registered_groups(ledger, *, permit_inert_unproved=False):
     record = json.loads(ledger.read_bytes())
     result = []
     for root in sorted(ledger.parent.glob("cleanup-attempt-*")):
-        request = json.loads((root / "request.json").read_bytes())
         phase = record["cpu_phase_id"]
+        request_path = root / "request.json"
+        authorization = root / "authorization.json"
+        if not request_path.exists():
+            if authorization.exists():
+                raise RuntimeError("Authorized cleanup worker lacks request")
+            if permit_inert_unproved:
+                # A crash/write failure can occur between mkdir and request
+                # publication. No API can start without durable authorization.
+                # Continue resource release, but never infer local absence.
+                from profile_plan import write_json
+
+                write_json(
+                    root / "inert-resolution.json",
+                    {
+                        "phase_id": phase,
+                        "request_absent": True,
+                        "authorization_absent": True,
+                        "local_identity_proved": False,
+                        "resource_release_permitted": True,
+                    },
+                )
+                continue
+            raise RuntimeError("Missing-request local worker identity remains unproved")
+        request = json.loads(request_path.read_bytes())
         if request.get("phase_id") != phase or request.get("ledger") != str(ledger):
             raise RuntimeError("Cleanup registry phase/ledger differs")
         state_path = root / "spawn-state.json"
@@ -150,7 +173,6 @@ def registered_groups(ledger, *, permit_inert_unproved=False):
         if state and state.get("phase_id") != phase:
             raise RuntimeError("Cleanup spawn-state phase differs")
         ready_path = root / "ready.json"
-        authorization = root / "authorization.json"
         if not ready_path.exists():
             if authorization.exists():
                 raise RuntimeError("Authorized cleanup worker lacks ready identity")
