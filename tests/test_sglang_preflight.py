@@ -296,3 +296,33 @@ def test_cpu_constructor_disables_default_managed_creator_identity():
     sandbox = runner.make_sandbox(cc, "unsubmitted-cpu-plan", payload.IMAGE, "pass")
     assert sandbox.id is None
     assert sandbox._chalk_identity is False
+
+
+def test_host_constructor_is_cpu_only_identity_free_and_pool_scoped():
+    import chalkcompute as cc
+
+    sandbox = runner.make_sandbox(
+        cc, "unsubmitted-host-plan", payload.IMAGE, "pass", host_prewarm=True
+    )
+    assert sandbox.id is None and sandbox._gpu is None
+    assert sandbox._chalk_identity is False and sandbox._referenced_volumes == []
+    assert sandbox._compute_class == cc.ComputeClass.HOST
+    assert sandbox._runtime == cc.Runtime.GVISOR
+    assert sandbox._host_pool_id == "ExternalClusterHosts"
+    assert sandbox._cpu == "4" and sandbox._memory == "16Gi"
+
+
+def test_host_preparation_freezes_extra_native_cleanup_guard(prepared):
+    output, _ = prepared
+    root = output.parent
+    host_output = root / "host-prepared"
+    plan = runner.prepare(
+        host_output, root / "sdk", root / "guards", root / "upstream", host_prewarm=True
+    )
+    assert runner.validate_prepared(host_output) == plan
+    assert plan["kind"] == "sglang_host_prewarm_plan" and plan["gpu_claimed"] is False
+    assert plan["host_pool_id"] == "ExternalClusterHosts"
+    assert plan["expected_host_id"] == "svlsbfe05ebc-oracle-a100"
+    (host_output / "host_guard.py").write_text("changed")
+    with pytest.raises(ValueError, match="HOST guard"):
+        runner.validate_prepared(host_output)

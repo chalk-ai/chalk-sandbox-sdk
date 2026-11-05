@@ -72,3 +72,40 @@ the detached guard stays armed and reconciles the unique owned name. Preparation
 and unit tests claim nothing. A successful CPU proof does not authorize a GPU
 claim: submit a separate fixed-budget one-A100 plan after all prior resources are
 released, with a fresh-reference output oracle and verified teardown.
+
+## Optional CPU HOST prewarm
+
+Use a separately reviewed `--host-prewarm` preparation when the exact image is
+absent from the Oracle host cache. This still claims no GPU: the fixed plan uses
+HOST/GVISOR,4CPU/16GiB, explicit `ExternalClusterHosts`, identity disabled and the
+same900second lease. It reuses the offline CPU proof and bounded fixture export.
+
+Before create, the guard requires a fresh (<60s) external-cluster pool report
+containing only `svlsbfe05ebc-oracle-a100`, accepting placements with a connected
+external control stream and eight NVIDIA A100 devices. The actual committed
+placement must then match that host/pool. The API offers pool restriction rather
+than exact host affinity; if membership or placement changes, the phase fails and
+cleans up. No AMD/GPU demand or host scaling operation is submitted.
+
+The frozen `host_guard.py` is also the detached watchdog entrypoint. It proves
+read-only HOST inventory access before readiness, and wraps every normal,
+deadline/death and ambiguous-create cleanup with exact runsc runtime and
+containerd task absence checks on the Oracle host. It never stops unrelated
+runtimes or shared daemons. Failed native verification leaves compute unreleased
+and the guard armed. CR/retained-UID pods and native HOST absence are both required
+before disarm; a wrong actual host requires its own native cleanup proof.
+
+```bash
+python scripts/sglang/cpu_preflight.py --host-prewarm --out /tmp/sglang-host-plan \
+  --source-root /path/to/this/sdk \
+  --guard-root /path/to/validated/sdk/scripts/weight_sync \
+  --audited-source-root /path/to/audited/sglang-source-files
+```
+
+Root must confirm prior training/inference resources are fully released before
+approving this phase, because image pull/unpack can contend with host I/O even
+without GPUs. Review frozen hashes and use the copied controller's explicit
+`--execute` command. After cleanup, independently verify exact image content and
+completed mounted rootfs cache on the same host. Keeping an idle image cache does
+not retain running compute. A later GPU test still requires a separate budget and
+approval; cache eviction never authorizes extending that GPU lease.
