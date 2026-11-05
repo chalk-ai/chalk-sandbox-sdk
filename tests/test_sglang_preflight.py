@@ -242,6 +242,7 @@ def test_preparation_freezes_only_cpu_plan_without_resource_apis(prepared):
     assert runner.validate_prepared(output) == plan
     assert plan["lease_seconds"] == 900 and plan["gpu_claimed"] is False
     assert plan["owned_volume_names"] == [] and plan["compute_class"] == "K8S"
+    assert plan["chalk_identity"] is False
     assert not (output / "launcher.json").exists()
 
 
@@ -249,6 +250,7 @@ def test_preparation_freezes_only_cpu_plan_without_resource_apis(prepared):
     "name,value",
     [
         ("gpu_claimed", True),
+        ("chalk_identity", True),
         ("lease_seconds", 901),
         ("cpu", "8"),
         ("memory", "32Gi"),
@@ -286,3 +288,11 @@ def test_overlay_excludes_native_extensions_and_training_code(prepared):
             "chalkcompute/_weights_format.py",
             "chalkcompute/weights/serving/__init__.py",
         ]
+
+
+def test_cpu_constructor_disables_default_managed_creator_identity():
+    import chalkcompute as cc
+
+    sandbox = runner.make_sandbox(cc, "unsubmitted-cpu-plan", payload.IMAGE, "pass")
+    assert sandbox.id is None
+    assert sandbox._chalk_identity is False

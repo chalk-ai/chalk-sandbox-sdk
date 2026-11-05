@@ -46,7 +46,8 @@ Execution claims only one K8S CPU sandbox,4CPU/16GiB, hard900second lease includ
 pull/startup and export, and no volumes. The detached guard must be live and
 ready before the actual create. The image is passed as its raw digest string:
 no image build, pip install, package resolver or model download occurs. No Chalk
-credentials are passed into the guest. HF offline flags prevent implicit model
+credential environment is passed into the guest; `chalk_identity=False` also
+disables the SDK default platform-managed creator identity. HF offline flags prevent implicit model
 fetches. A second execution of the same plan fails its exclusive execution lock.
 
 The payload records actual dependency versions, requires SGLang0.5.23,

@@ -83,6 +83,7 @@ def prepare(out, source_root, guard_root, audited_source_root):
         "memory": "16Gi",
         "compute_class": "K8S",
         "gpu_claimed": False,
+        "chalk_identity": False,
         "owned_volume_names": [],
         "overlay_sha256": payload.digest(out / "overlay.tar.gz"),
         "overlay_files": files,
@@ -105,6 +106,7 @@ def validate_prepared(out):
         and plan["memory"] == "16Gi"
         and plan["compute_class"] == "K8S"
         and plan["gpu_claimed"] is False
+        and plan["chalk_identity"] is False
         and plan["owned_volume_names"] == []
     ):
         raise ValueError("CPU preflight resource/image plan changed")
@@ -140,6 +142,30 @@ namespace={'__name__':'sglang_preflight_payload','__file__':str(root/'preflight_
 exec(compile(base64.b64decode(CONFIG['payload']),'sglang-preflight-payload','exec'),namespace)
 proof=namespace['run_preflight'](root/'output',CONFIG['source_hashes'])
 """
+
+
+def make_sandbox(cc, name, image, program):
+    """Construct only; identity must be explicitly disabled despite SDK default."""
+    return cc.Sandbox(
+        name=name,
+        image=image,
+        entrypoint=["/opt/sglang/bin/python", "-u", "-c", program],
+        restart_policy=cc.RestartPolicy.NEVER,
+        cpu="4",
+        memory="16Gi",
+        compute_class=cc.ComputeClass.K8S,
+        execution_target=cc.ExecutionBackend.SERVERLESS,
+        lifetime="900s",
+        chalk_identity=False,
+        env={
+            "PYTHONUNBUFFERED": "1",
+            "OMP_NUM_THREADS": "2",
+            "MKL_NUM_THREADS": "2",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+        },
+    )
 
 
 def execute(out, env_file):
@@ -226,25 +252,7 @@ def execute(out, env_file):
     signal.signal(signal.SIGTERM, interrupted)
     try:
         sandbox_client = guard.guarded_sandbox_client(record, ledger)
-        sandbox = cc.Sandbox(
-            name=name,
-            image=plan["image"],
-            entrypoint=["/opt/sglang/bin/python", "-u", "-c", program],
-            restart_policy=cc.RestartPolicy.NEVER,
-            cpu="4",
-            memory="16Gi",
-            compute_class=cc.ComputeClass.K8S,
-            execution_target=cc.ExecutionBackend.SERVERLESS,
-            lifetime="900s",
-            env={
-                "PYTHONUNBUFFERED": "1",
-                "OMP_NUM_THREADS": "2",
-                "MKL_NUM_THREADS": "2",
-                "HF_HUB_OFFLINE": "1",
-                "TRANSFORMERS_OFFLINE": "1",
-                "HF_HUB_DISABLE_TELEMETRY": "1",
-            },
-        )
+        sandbox = make_sandbox(cc, name, plan["image"], program)
         sandbox_client.run(sandbox, timeout=min(600, guard.remaining(record) - 120))
         progress = guard.poll_guest_until_complete(sandbox, record, ledger, poll)
         proof = progress["proof"]
