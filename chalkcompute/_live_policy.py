@@ -30,6 +30,7 @@ from chalkcompute._weights import WeightStream
 
 if TYPE_CHECKING:
     from chalkcompute._connect import ConnectClient
+    from chalkcompute._weight_promotion import WeightStreamPromotion
     from chalkcompute._weights import WeightPublisher
 
 
@@ -355,24 +356,16 @@ class LivePolicy:
         self.stream.unpin()
 
     def promote(
-        self, version: int, model_name: str, *, aliases: Sequence[str] = ()
-    ) -> Any:
-        """Request checkpoint promotion; currently the service returns Unimplemented.
-
-        Raw patches are never registered as a model artifact.
-        """
-        from chalkcompute._gen.chalk.weightstream.v1 import service_pb as weight_pb
-
-        if self.stream._metadata is None:
-            raise LivePolicyError("Register the weight stream before promotion")
-        return self.stream._metadata._call(
-            "promote_weight_stream_version",
-            weight_pb.PromoteWeightStreamVersionRequest(
-                weight_stream_id=self.stream._metadata.id,
-                version=version,
-                model_name=model_name,
-                aliases=list(aliases),
-            ),
+        self,
+        version: int,
+        model_name: str,
+        *,
+        idempotency_key: str,
+        aliases: Sequence[str] = (),
+    ) -> WeightStreamPromotion:
+        """Start/recover durable checkpoint promotion, surfacing unsupported backends."""
+        return self.stream.promote(
+            version, model_name, idempotency_key=idempotency_key, aliases=aliases
         )
 
     def delete(self) -> None:

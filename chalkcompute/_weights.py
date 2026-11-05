@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from copy import deepcopy
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     import torch
 
     from chalkcompute._connect import ConnectClient
+    from chalkcompute._weight_promotion import WeightStreamPromotion
     from chalkcompute._weight_stream_metadata import _WeightStreamMetadata
 
 
@@ -172,6 +173,21 @@ class WeightStream:
             density_threshold=density_threshold,
             config=config,
             training_run_id=training_run_id,
+        )
+
+    def promote(
+        self,
+        version: int,
+        model_name: str,
+        *,
+        idempotency_key: str,
+        aliases: Sequence[str] = (),
+    ) -> WeightStreamPromotion:
+        """Start/recover a durable immutable promotion using an explicit retry key."""
+        from chalkcompute._weight_promotion import WeightStreamPromotion
+
+        return WeightStreamPromotion.start(
+            self, version, model_name, idempotency_key=idempotency_key, aliases=aliases
         )
 
     def pin(self, version: int) -> None:

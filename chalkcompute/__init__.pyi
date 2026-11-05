@@ -1,3 +1,15 @@
+from chalkcompute._weight_promotion import (
+    WeightStreamPromotion as WeightStreamPromotion,
+)
+from chalkcompute._weight_promotion import (
+    WeightPromotionResult as WeightPromotionResult,
+)
+from chalkcompute._weight_promotion import (
+    WeightPromotionFailed as WeightPromotionFailed,
+)
+from chalkcompute._weight_promotion import (
+    WeightPromotionCancelled as WeightPromotionCancelled,
+)
 from chalkcompute._live_policy import LivePolicy as LivePolicy
 from chalkcompute._live_policy import LivePolicyError as LivePolicyError
 from chalkcompute._live_policy import (
@@ -226,6 +238,10 @@ __all__ = [
     "PolicyGeneration",
     "PolicyChatGeneration",
     "PolicyReplica",
+    "WeightStreamPromotion",
+    "WeightPromotionResult",
+    "WeightPromotionFailed",
+    "WeightPromotionCancelled",
     "WeightStream",
     "WeightPublisher",
     "WeightStreamError",
