@@ -75,3 +75,71 @@ def test_cleanup_owns_leased_input_only_after_explicit_transfer(monkeypatch, tmp
     guard.record["owns_source_volume"] = True
     assert cleanup_data(guard) == []
     assert guard.name in deleted
+
+
+def test_dead_detached_watchdog_refuses_claims_even_with_stale_ready_file(tmp_path):
+    import json
+    from training_smoke import ResourceGuard
+
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=5)
+    record = {"name": "owned", "gpu_phase_id": "gpu-phase", "watchdog_pid": process.pid}
+    (tmp_path / "watchdog-ready").write_text(
+        json.dumps({"phase_id": "gpu-phase", "pid": process.pid})
+    )
+    guard = ResourceGuard("owned", tmp_path, record, "test", "fallback")
+    guard.watchdog_process = process
+    import pytest
+
+    with pytest.raises(RuntimeError, match="watchdog has exited"):
+        guard.check_budget()
+
+
+def test_ambiguous_dataset_finalize_recovers_only_exact_owned_name(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+    import chalkcompute as cc
+    import chalkcompute._connect as connect
+    from chalkcompute._gen.chalk.server.v1 import datasets_pb as dp
+    from chalkcompute._volume import VolumeNotFoundError
+    from training_smoke import cleanup_data
+
+    deleted = []
+
+    class Client:
+        def stub(self, kind):
+            return SimpleNamespace(list_datasets="list", delete_dataset="delete")
+
+        def call(self, method, request):
+            if method == "delete":
+                deleted.append(request.dataset_id)
+                return None
+            if request.filters.ids:
+                assert request.filters.ids == ["owned-id"]
+                return dp.ListDatasetsResponse()
+            assert request.filters.search == "leased-source"
+            return dp.ListDatasetsResponse(
+                datasets=[
+                    dp.DatasetMeta(id="other-id", dataset_name="leased-source-other"),
+                    dp.DatasetMeta(id="owned-id", dataset_name="leased-source"),
+                ]
+            )
+
+    def absent_volume(name, **kwargs):
+        raise VolumeNotFoundError("absent")
+
+    guard = SimpleNamespace(
+        name="leased-source",
+        out=tmp_path,
+        dataset_id=None,
+        record={
+            "owns_source_volume": False,
+            "submission_inflight": {"finalize_dataset_upload": True},
+        },
+    )
+    monkeypatch.setattr(connect, "ConnectClient", Client)
+    monkeypatch.setattr(cc, "Volume", absent_volume)
+    assert cleanup_data(guard) == []
+    assert deleted == ["owned-id"]
+    assert guard.record["dataset_deleted"] is True

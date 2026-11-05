@@ -82,8 +82,14 @@ def main():
     # Reconcile repeatedly across an ambiguous in-flight create RPC. This never
     # submits or recreates resources; only exact unique names from the ledger.
     errors = []
-    for attempt in range(6):
+    attempt = 0
+    reconcile_until = time.time() + 60
+    while True:
         record = json.loads(args.ledger.read_text())
+        reconcile_until = max(
+            reconcile_until,
+            max(record.get("submission_deadlines_epoch", {}).values(), default=0) + 60,
+        )
         resource_ledger = out / "training-resources.json"
         if resource_ledger.exists():
             record["training_resources"] = json.loads(resource_ledger.read_text())
@@ -109,11 +115,13 @@ def main():
             guard.cleanup_compute()
         except Exception as error:
             errors.append(f"attempt {attempt}: {type(error).__name__}: {error}")
-        if attempt != 5:
-            time.sleep(15)
+        attempt += 1
+        if attempt >= 6 and time.time() >= reconcile_until:
+            break
+        time.sleep(15)
     (out / "result.json").write_text(
         json.dumps(
-            {"cleanup_attempts": 6, "errors": errors, "finished_at": time.time()},
+            {"cleanup_attempts": attempt, "errors": errors, "finished_at": time.time()},
             indent=2,
         )
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 
 from cpu_seed import valid_handoff, write_json
@@ -37,11 +38,46 @@ def load_seed_lease(ledger, prepared_image):
     return record, proof
 
 
+def reserve_cpu_receiver(seed_ledger, receiver_record, receiver_out):
+    """One receiver phase owns this lease; stale claims require explicit recovery."""
+    claim = {
+        "cpu_phase_id": receiver_record["cpu_seed_phase_id"],
+        "gpu_phase_id": receiver_record["gpu_phase_id"],
+        "launcher_pid": os.getpid(),
+        "receiver_out": str(receiver_out.resolve()),
+        "claimed_at": time.time(),
+    }
+    path = seed_ledger.parent / "cpu-receiver-claim.json"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            existing = json.loads(path.read_text())
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                "CPU lease has an incomplete/stale receiver claim; explicit recovery required"
+            ) from error
+        if any(
+            existing.get(key) != claim[key]
+            for key in ("cpu_phase_id", "gpu_phase_id", "launcher_pid", "receiver_out")
+        ):
+            raise RuntimeError(
+                "CPU lease is reserved by another or stale receiver phase; refusing takeover"
+            )
+        return existing
+    with os.fdopen(descriptor, "w") as handle:
+        json.dump(claim, handle, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return claim
+
+
 def await_seed_transfer(guard, seed_ledger, seed_record, proof, prepared_image):
     """Expose guard readiness, then require parent approval and CPU guard exit."""
     # Revalidate after all CPU preparation. Overlap cleanup ownership before the
     # CPU guard exits so launcher death cannot leave a data-lease coverage gap.
     load_seed_lease(seed_ledger, prepared_image)
+    guard.check_budget()
     guard.record["owns_source_volume"] = True
     guard.record["status"] = "awaiting_parent_gpu_authorization"
     guard.save()
@@ -49,6 +85,8 @@ def await_seed_transfer(guard, seed_ledger, seed_record, proof, prepared_image):
         guard.out / "gpu-handoff-ready.json",
         {
             "gpu_phase_id": guard.record["gpu_phase_id"],
+            "execution_config": guard.record["execution_config"],
+            "execution_config_sha256": guard.record["execution_config_sha256"],
             "gpu_deadline_epoch": guard.record["gpu_deadline_epoch"],
             "gpu_guard_ready": True,
             "cpu_phase_id": seed_record["cpu_phase_id"],
@@ -72,6 +110,8 @@ def await_seed_transfer(guard, seed_ledger, seed_record, proof, prepared_image):
             if not (
                 valid_handoff(seed_record, authorization)
                 and authorization["gpu_phase_id"] == guard.record["gpu_phase_id"]
+                and authorization.get("execution_config_sha256")
+                == guard.record["execution_config_sha256"]
                 and authorization["gpu_deadline_epoch"]
                 == guard.record["gpu_deadline_epoch"]
                 and latest["status"] == "data_ownership_transferred"

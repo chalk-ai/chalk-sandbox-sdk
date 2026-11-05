@@ -161,8 +161,25 @@ class ResourceGuard:
         ]
         self.cleanup_lock = threading.Lock()
         self.claim_deadline = None
+        self.watchdog_process = None
 
     def check_budget(self):
+        if self.record.get("watchdog_pid"):
+            ready = json.loads((self.out / "watchdog-ready").read_text())
+            if ready.get("pid") != self.record["watchdog_pid"] or ready.get(
+                "phase_id"
+            ) != self.record.get("gpu_phase_id"):
+                raise RuntimeError(
+                    "GPU watchdog ready proof does not match this phase/PID"
+                )
+            if (
+                self.watchdog_process is not None
+                and self.watchdog_process.poll() is not None
+            ):
+                raise RuntimeError(
+                    "GPU watchdog has exited; further submissions refused"
+                )
+            os.kill(ready["pid"], 0)
         if (
             (self.out / "watchdog-expired").exists()
             or self.record.get("watchdog_expired")
@@ -534,6 +551,29 @@ def cleanup_data(guard):
 
     errors = []
     client = ConnectClient()
+    if guard.dataset_id is None and guard.record.get("submission_inflight", {}).get(
+        "finalize_dataset_upload"
+    ):
+        try:
+            stub = client.stub(dc.DatasetMetadataServiceClientSync)
+            response = client.call(
+                stub.list_datasets,
+                dp.ListDatasetsRequest(
+                    limit=100, filters=dp.ListDatasetsFilters(search=guard.name)
+                ),
+            )
+            matches = [
+                item for item in response.datasets if item.dataset_name == guard.name
+            ]
+            if len(matches) > 1:
+                raise RuntimeError(
+                    "Unique dataset name matched multiple active datasets"
+                )
+            if matches:
+                guard.dataset_id = matches[0].id
+                guard.record["dataset_id"] = guard.dataset_id
+        except Exception as error:
+            errors.append(f"dataset recovery: {type(error).__name__}: {error}")
     if guard.dataset_id:
         try:
             stub = client.stub(dc.DatasetMetadataServiceClientSync)
@@ -790,6 +830,55 @@ class Observer:
             raise RuntimeError("Visibility observer did not stop")
 
 
+def arm_resource_watchdog(guard, budget_seconds):
+    record = guard.record
+    # Detached process survives an abrupt launcher exit or SIGKILL.
+    record["gpu_budget_started_at"] = time.time()
+    record["gpu_deadline_epoch"] = record["gpu_budget_started_at"] + budget_seconds
+    guard.claim_deadline = time.monotonic() + budget_seconds
+    guard.save()
+    watchdog_log = (guard.out / "watchdog.log").open("ab", buffering=0)
+    watchdog = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("resource_watchdog.py")),
+            "--ledger",
+            str(guard.out / "launcher.json"),
+            "--deadline",
+            str(record["gpu_deadline_epoch"]),
+            "--parent-pid",
+            str(os.getpid()),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=watchdog_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    record["watchdog_pid"] = watchdog.pid
+    guard.watchdog_process = watchdog
+    inhibitor = subprocess.Popen(
+        ["caffeinate", "-i", "-w", str(watchdog.pid)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    record["sleep_inhibitor_pid"] = inhibitor.pid
+    guard.save()
+    ready_deadline = time.monotonic() + 45
+    while time.monotonic() < ready_deadline:
+        if watchdog.poll() is not None:
+            raise RuntimeError("Detached watchdog exited before readiness")
+        if (guard.out / "watchdog-ready").exists():
+            ready_proof = json.loads((guard.out / "watchdog-ready").read_text())
+            if ready_proof.get("phase_id") != record["gpu_phase_id"]:
+                raise RuntimeError("GPU watchdog readiness phase mismatch")
+            break
+        time.sleep(0.2)
+    else:
+        raise TimeoutError("Detached watchdog readiness was not confirmed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=ROOT)
@@ -905,6 +994,8 @@ def main():
     client = ConnectClient()
     client._ensure_auth()
     record["environment_id"] = client._env_id
+    if seed_record and seed_record["environment_id"] != client._env_id:
+        raise RuntimeError("CPU seed belongs to a different authenticated environment")
     from chalkcompute._gen.chalk.server.v1 import team_connect, team_pb
 
     environment = client.call(
@@ -934,10 +1025,27 @@ def main():
     class BudgetClient(ConnectClient):
         def call(self, method, request, **kwargs):
             method_name = getattr(method, "__name__", "")
+            if method_name == "finalize_dataset_upload":
+                guard.check_budget()
+                record.setdefault("submission_inflight", {})[method_name] = True
+                record.setdefault("submission_deadlines_epoch", {})[method_name] = (
+                    time.time() + kwargs.get("timeout", 30)
+                )
+                guard.save()
+                response = super().call(method, request, **kwargs)
+                if response.dataset:
+                    guard.dataset_id = response.dataset.id
+                    record["dataset_id"] = guard.dataset_id
+                record["submission_inflight"][method_name] = False
+                guard.save()
+                return response
             if method_name in {"create_training_run", "create_scaling_group"}:
                 # Check at the actual RPC, after any image build/source upload.
                 guard.check_budget()
                 record.setdefault("submission_inflight", {})[method_name] = True
+                record.setdefault("submission_deadlines_epoch", {})[method_name] = (
+                    time.time() + kwargs.get("timeout", 30)
+                )
                 guard.save()
             response = super().call(method, request, **kwargs)
             if method_name in {"create_training_run", "create_scaling_group"}:
@@ -998,8 +1106,16 @@ def main():
         record["cpu_seed_ledger"] = str(args.cpu_seed_ledger)
         record["cpu_seed_phase_id"] = seed_record["cpu_phase_id"]
         record["cpu_seed_proof"] = seed_proof
+        from seed_handoff import reserve_cpu_receiver
+
+        record["cpu_receiver_claim"] = reserve_cpu_receiver(
+            args.cpu_seed_ledger, record, args.out
+        )
+        guard.save()
     guard.volume = cc.Volume(name, create_if_missing=seed_record is None)
     try:
+        if args.execute:
+            arm_resource_watchdog(guard, args.budget_seconds)
         with tempfile.TemporaryDirectory(prefix="weight-training-overlay-") as staging:
             recipe = make_image(args.source_root, Path(staging))
             archive = Path(staging) / "weight-sdk-overlay.tar.gz"
@@ -1022,9 +1138,12 @@ def main():
                 else recipe.build(timeout=900)
             )
             (args.out / "image.json").write_text(image.to_json())
-        dataset = DatasetClient().upload(name, FIXTURES)
+        dataset = DatasetClient(connect_client=budget_client).upload(
+            name, FIXTURES, timeout=60
+        )
         guard.dataset_id = dataset.dataset_id
         record["dataset_id"] = guard.dataset_id
+        guard.save()
         # Load the plain function module so the real decorator packages its source.
         module_path = Path(__file__).with_name("remote_training.py")
         source = module_path.read_bytes()
@@ -1071,6 +1190,21 @@ def main():
                 raise RuntimeError(
                     "Packaged trainer image differs from CPU preparation"
                 )
+        record["execution_config"] = {
+            "steps": args.steps,
+            "cpu_threads": args.cpu_threads,
+            "budget_seconds": args.budget_seconds,
+            "serving_startup_seconds": args.serving_startup_seconds,
+            "training_timeout_seconds": args.training_timeout_seconds,
+            "harness_commit": record["harness_commit"],
+            "source_overlay_sha256": record["source_overlay_sha256"],
+            "training_deploy_image_uri": record["training_deploy_image_uri"],
+        }
+        record["execution_config_sha256"] = hashlib.sha256(
+            json.dumps(
+                record["execution_config"], sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
         trainer._build_deploy_image = lambda: deploy_image
         guard.save()
         record["status"] = "cpu_prepared"
@@ -1117,53 +1251,6 @@ def main():
             )
             guard.stop_sandbox(seed)
             guard.sandboxes.remove(seed)
-        # Detached process survives an abrupt launcher exit or SIGKILL.
-        record["gpu_budget_started_at"] = time.time()
-        record["gpu_deadline_epoch"] = (
-            record["gpu_budget_started_at"] + args.budget_seconds
-        )
-        guard.claim_deadline = time.monotonic() + args.budget_seconds
-        guard.save()
-        watchdog_log = (args.out / "watchdog.log").open("ab", buffering=0)
-        watchdog = subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).with_name("resource_watchdog.py")),
-                "--ledger",
-                str(args.out / "launcher.json"),
-                "--deadline",
-                str(record["gpu_deadline_epoch"]),
-                "--parent-pid",
-                str(os.getpid()),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=watchdog_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        record["watchdog_pid"] = watchdog.pid
-        inhibitor = subprocess.Popen(
-            ["caffeinate", "-i", "-w", str(watchdog.pid)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        record["sleep_inhibitor_pid"] = inhibitor.pid
-        guard.save()
-        ready_deadline = time.monotonic() + 45
-        while time.monotonic() < ready_deadline:
-            if watchdog.poll() is not None:
-                raise RuntimeError("Detached watchdog exited before readiness")
-            if (args.out / "watchdog-ready").exists():
-                ready_proof = json.loads((args.out / "watchdog-ready").read_text())
-                if ready_proof.get("phase_id") != record["gpu_phase_id"]:
-                    raise RuntimeError("GPU watchdog readiness phase mismatch")
-                break
-            time.sleep(0.2)
-        else:
-            raise TimeoutError("Detached watchdog readiness was not confirmed")
-
         if seed_record:
             from seed_handoff import await_seed_transfer
 

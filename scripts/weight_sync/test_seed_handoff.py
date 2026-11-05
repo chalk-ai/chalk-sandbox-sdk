@@ -109,6 +109,8 @@ def test_transfer_waits_for_bound_guard_exit_before_metadata_read(
             "gpu_phase_id": "gpu-unique",
             "gpu_deadline_epoch": time.time() + 120,
             "owns_source_volume": False,
+            "execution_config": {"budget_seconds": 120},
+            "execution_config_sha256": "bounded-plan",
         }
 
         def save(self):
@@ -143,6 +145,7 @@ def test_transfer_waits_for_bound_guard_exit_before_metadata_read(
             gpu_guard_ready=True,
             gpu_deadline_epoch=guard.record["gpu_deadline_epoch"],
             approved_by="parent",
+            execution_config_sha256=guard.record["execution_config_sha256"],
         )
         original_write(tmp_path / "cpu-authorization.json", authorization)
         original_write(
@@ -188,3 +191,37 @@ def test_transfer_waits_for_bound_guard_exit_before_metadata_read(
         seed_handoff.await_seed_transfer(guard, ledger, record, proof, image)
         assert metadata_reads == ["opened", "CURRENT", "v000000/manifest.json"]
         assert guard.record["status"] == "cpu_seed_transfer_verified"
+
+
+def test_two_receivers_cannot_share_or_steal_one_cpu_lease(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from seed_handoff import reserve_cpu_receiver
+
+    ledger = tmp_path / "launcher.json"
+    ledger.write_text("{}")
+
+    def claim(phase):
+        record = {"cpu_seed_phase_id": "cpu-exact", "gpu_phase_id": phase}
+        try:
+            return reserve_cpu_receiver(ledger, record, tmp_path / phase)
+        except RuntimeError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(claim, ["receiver-a", "receiver-b"]))
+    assert sum(item is not None for item in results) == 1
+    winner = next(item for item in results if item is not None)
+    assert (
+        reserve_cpu_receiver(
+            ledger,
+            {"cpu_seed_phase_id": "cpu-exact", "gpu_phase_id": winner["gpu_phase_id"]},
+            tmp_path / winner["gpu_phase_id"],
+        )
+        == winner
+    )
+    with pytest.raises(RuntimeError, match="refusing takeover"):
+        reserve_cpu_receiver(
+            ledger,
+            {"cpu_seed_phase_id": "cpu-exact", "gpu_phase_id": "stale-retry"},
+            tmp_path / "new",
+        )
