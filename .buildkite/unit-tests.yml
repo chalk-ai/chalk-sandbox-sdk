@@ -24,7 +24,7 @@ steps:
       echo "--- :mag: Ty type gate"
       uv run --with ty ty check chalkcompute/ tests/typing/ --exclude chalkcompute/_gen/
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 5
 
   - label: ":pytest: Unit tests"
@@ -38,5 +38,5 @@ steps:
       echo "--- :pytest: Unit test gate"
       uv run python -m pytest tests/ -v --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 5
