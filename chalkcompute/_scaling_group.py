@@ -326,16 +326,8 @@ class ScalingGroup:
     ``readiness_probe`` checks each replica. ``startup_probe`` checks the public
     endpoint before ``deploy()`` returns.
 
-    HTTP groups with ``min_replicas > 0`` and no startup probe also poll
-    ``GET /`` for up to 60 extra seconds to check routing. If the route check
-    times out, deployment logs a warning and returns normally.
-
-    This check adds no health requirements. Readiness settings and explicit
-    startup probes keep their existing behavior. gRPC and scale-to-zero groups
-    skip the extra check. Authenticated groups are supported.
-
-    An app returning an empty 404 at ``/`` makes the route check wait the full
-    timeout. The check does not verify which revision is serving traffic.
+    HTTP deployments may also wait up to 60 extra seconds for the public URL.
+    If the route check times out, deployment logs a warning and returns normally.
 
     ``network_policy`` configures host egress. Omit it for the server default;
     ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
@@ -606,9 +598,8 @@ class ScalingGroup:
     ) -> ScalingGroup:
         """Build the image, upload local files, and create the scaling group.
 
-        HTTP groups with a positive replica minimum and no startup probe also
-        wait up to 60 additional seconds for the public route. This best-effort
-        check logs a warning on timeout; use a startup probe to require health.
+        HTTP deployments may wait up to 60 extra seconds for the public URL.
+        If the route check times out, log a warning and return normally.
 
         Parameters
         ----------
