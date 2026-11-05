@@ -149,13 +149,14 @@ def release_data(record):
     import chalkcompute as cc
     from chalkcompute._volume import VolumeNotFoundError
 
-    try:
-        cc.Volume(record["name"], create_if_missing=False).delete()
-        cc.Volume(record["name"], create_if_missing=False).reload()
-    except VolumeNotFoundError:
-        record["volume_verified_absent"] = True
-    else:
-        raise RuntimeError("CPU seed volume deletion unconfirmed")
+    for name in record.get("owned_volume_names", [record["name"]]):
+        try:
+            cc.Volume(name, create_if_missing=False).delete()
+            cc.Volume(name, create_if_missing=False).reload()
+        except VolumeNotFoundError:
+            continue
+        raise RuntimeError("CPU owned volume deletion unconfirmed")
+    record["volume_verified_absent"] = True
 
 
 def watchdog(ledger):
@@ -327,6 +328,161 @@ print('CPU_SEED_PROOF='+json.dumps(proof),flush=True)
 """
 
 
+def arm_cpu_watchdog(record, ledger):
+    """Arm a detached fixed-lease guard before the first resource claim."""
+    write_json(ledger, record)
+    watchdog_log = (ledger.parent / "cpu-watchdog.log").open("ab", buffering=0)
+    watch = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--watchdog", str(ledger)],
+        stdin=subprocess.DEVNULL,
+        stdout=watchdog_log,
+        stderr=watchdog_log,
+        start_new_session=True,
+    )
+    caffeinate = subprocess.Popen(
+        ["caffeinate", "-i", "-w", str(watch.pid)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    record["cpu_watchdog_pid"], record["cpu_caffeinate_pid"] = watch.pid, caffeinate.pid
+    write_json(ledger, record)
+    for _ in range(60):
+        if watch.poll() is not None:
+            raise RuntimeError("CPU watchdog exited before readiness")
+        if (ledger.parent / "cpu-watchdog-ready.json").exists():
+            break
+        time.sleep(1)
+    else:
+        raise TimeoutError("CPU watchdog readiness timeout; no compute submitted")
+
+    return watch
+
+
+def guarded_sandbox_client(record, ledger):
+    from chalkcompute._sandbox import SandboxClient
+
+    sandbox_client = SandboxClient.from_env()
+    # This launcher sends exactly one create; it reconciles ambiguous
+    # responses rather than replaying a mutating RPC. SDK policy is unchanged.
+    from chalkcompute import _sandbox as sandbox_module
+
+    create_stub = sandbox_module.pb_connect.SandboxServiceClientSync(
+        sandbox_client._address,
+        protocol=sandbox_module.ProtocolType.GRPC,
+        interceptors=(),
+        http_client=sandbox_module.SYNC_HTTP_CLIENT,
+        read_max_bytes=sandbox_module.RPC_READ_MAX_BYTES,
+    )
+    sandbox_client._stub = GuardedSandboxStub(
+        sandbox_client._stub, record, ledger, create_once=create_stub.create_sandbox
+    )
+    return sandbox_client
+
+
+def make_guest_program(phase, code, config):
+    """Inline a stdlib entrypoint; polls never invoke the supplied payload."""
+    source = Path(__file__).with_name("cpu_seed_guest.py").read_text()
+    root = "/tmp/weight-cpu-seed-" + phase
+    entrypoint = (
+        source
+        + "\nrun_seed_once(Path("
+        + repr(root)
+        + "),"
+        + repr(phase)
+        + ","
+        + repr(code)
+        + ","
+        + repr(config)
+        + ")\nwhile True: time.sleep(5)\n"
+    )
+    poll = source + "\nprint(json.dumps(read_progress(Path(" + repr(root) + "))))\n"
+    return entrypoint, poll, root
+
+
+def poll_guest_until_complete(seed, record, ledger, poll_code):
+    while remaining(record) > 60:
+        # A replay/lost response only repeats this short read. The seed
+        # process belongs to PID1, independent of any exec/RPC lifetime.
+        response = seed.exec("python3", "-c", poll_code, timeout_secs=20)
+        if response.error is not None or response.exit_code not in (0, None):
+            raise RuntimeError("Read-only CPU progress poll failed")
+        progress = json.loads(response.stdout_text)
+        (ledger.parent / "seed-progress.json").write_text(
+            json.dumps(progress, indent=2)
+        )
+        (ledger.parent / "seed-stdout.txt").write_text(progress["stdout"])
+        (ledger.parent / "seed-stderr.txt").write_text(progress["stderr"])
+        if progress.get("started"):
+            if progress["started"]["phase_id"] != record["cpu_phase_id"]:
+                raise RuntimeError("Guest entrypoint phase mismatch")
+            record["seed_command_started_at"] = progress["started"]["started_at"]
+        if progress.get("atomic_seed"):
+            record["atomic_seed"] = progress["atomic_seed"]
+            record["status"] = "proving"
+        record["last_progress_at"] = time.time()
+        completed = progress.get("completed")
+        if completed:
+            if completed["phase_id"] != record["cpu_phase_id"]:
+                raise RuntimeError("Guest completion phase mismatch")
+            record["seed_command_finished_at"] = completed["finished_at"]
+            record["guest_completion"] = completed
+            write_json(ledger, record)
+            if completed["status"] != "passed":
+                raise RuntimeError(
+                    "CPU entrypoint seed/proof failed; see retained seed-stderr.txt"
+                )
+            return progress
+        write_json(ledger, record)
+        time.sleep(min(5, max(0, remaining(record) - 60)))
+    else:
+        raise TimeoutError("CPU proof did not finish before cleanup reserve")
+
+
+def read_guest_file(sandbox, path, *, max_bytes, record):
+    """Bounded read-only K8S file export; no filesystem sessions or mutation."""
+    import base64
+    from pathlib import PurePosixPath
+
+    if not 0 <= max_bytes <= 20 * 1024 * 1024:
+        raise ValueError("CPU file export bound must be 0..20MiB")
+    parsed = PurePosixPath(path)
+    if not parsed.is_absolute() or ".." in parsed.parts:
+        raise ValueError("CPU file export requires an absolute safe guest path")
+
+    def command(code):
+        remaining(record)
+        response = sandbox.exec("python3", "-c", code, timeout_secs=20)
+        if response.error is not None or response.exit_code not in (0, None):
+            raise RuntimeError("Read-only CPU file export failed")
+        return response.stdout_text
+
+    size = int(
+        command(
+            "from pathlib import Path; print(Path(" + repr(path) + ").stat().st_size)"
+        )
+    )
+    if size > max_bytes:
+        raise ValueError("Guest file exceeds authorized export bound")
+    chunks = []
+    for offset in range(0, size, 64 * 1024):
+        code = (
+            "import base64\nfrom pathlib import Path\nwith Path("
+            + repr(path)
+            + ').open("rb") as handle:\n handle.seek('
+            + str(offset)
+            + ")\n print(base64.b64encode(handle.read("
+            + str(min(64 * 1024, size - offset))
+            + ")).decode())\n"
+        )
+        chunks.append(base64.b64decode(command(code).strip(), validate=True))
+    data = b"".join(chunks)
+    if len(data) != size:
+        raise RuntimeError("Guest file changed during bounded export")
+    return data
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared-image", type=Path)
@@ -342,7 +498,6 @@ def main():
     load_env(args.env_file)
     import chalkcompute as cc
     from chalkcompute._connect import ConnectClient
-    from chalkcompute._sandbox import SandboxClient
 
     args.out.mkdir(parents=True, exist_ok=False)
     client = ConnectClient()
@@ -403,32 +558,7 @@ def main():
         args.prepared_image.read_bytes()
     ).hexdigest()
     ledger = args.out / "launcher.json"
-    write_json(ledger, record)
-    watchdog_log = (args.out / "cpu-watchdog.log").open("ab", buffering=0)
-    watch = subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--watchdog", str(ledger)],
-        stdin=subprocess.DEVNULL,
-        stdout=watchdog_log,
-        stderr=watchdog_log,
-        start_new_session=True,
-    )
-    caffeinate = subprocess.Popen(
-        ["caffeinate", "-i", "-w", str(watch.pid)],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    record["cpu_watchdog_pid"], record["cpu_caffeinate_pid"] = watch.pid, caffeinate.pid
-    write_json(ledger, record)
-    for _ in range(60):
-        if watch.poll() is not None:
-            raise RuntimeError("CPU watchdog exited before readiness")
-        if (args.out / "cpu-watchdog-ready.json").exists():
-            break
-        time.sleep(1)
-    else:
-        raise TimeoutError("CPU watchdog readiness timeout; no compute submitted")
+    watch = arm_cpu_watchdog(record, ledger)
 
     def interrupted(signum, frame):
         raise KeyboardInterrupt
@@ -437,21 +567,7 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     transferred = False
     try:
-        sandbox_client = SandboxClient.from_env()
-        # This launcher sends exactly one create; it reconciles ambiguous
-        # responses rather than replaying a mutating RPC. SDK policy is unchanged.
-        from chalkcompute import _sandbox as sandbox_module
-
-        create_stub = sandbox_module.pb_connect.SandboxServiceClientSync(
-            sandbox_client._address,
-            protocol=sandbox_module.ProtocolType.GRPC,
-            interceptors=(),
-            http_client=sandbox_module.SYNC_HTTP_CLIENT,
-            read_max_bytes=sandbox_module.RPC_READ_MAX_BYTES,
-        )
-        sandbox_client._stub = GuardedSandboxStub(
-            sandbox_client._stub, record, ledger, create_once=create_stub.create_sandbox
-        )
+        sandbox_client = guarded_sandbox_client(record, ledger)
         env_keys = {
             "CHALK_API_SERVER",
             "CHALK_CLIENT_ID",
@@ -466,20 +582,9 @@ def main():
         remote_env.update(
             {"PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
         )
-        guest_source = Path(__file__).with_name("cpu_seed_guest.py").read_text()
-        guest_root = "/tmp/weight-cpu-seed-" + record["cpu_phase_id"]
         model, revision = MODELS["8b"]
-        guest_program = (
-            guest_source
-            + "\nrun_seed_once(Path("
-            + repr(guest_root)
-            + "),"
-            + repr(record["cpu_phase_id"])
-            + ","
-            + repr(SEED_CODE)
-            + ","
-            + repr((name, model, revision))
-            + ")\nwhile True: time.sleep(5)\n"
+        guest_program, poll_code, guest_root = make_guest_program(
+            record["cpu_phase_id"], SEED_CODE, (name, model, revision)
         )
         (args.out / "guest-entrypoint-executed.py").write_text(guest_program)
         record["guest_entrypoint_sha256"] = hashlib.sha256(
@@ -503,47 +608,8 @@ def main():
         record["cpu_ready_at"] = time.time()
         record["status"] = "seeding"
         write_json(ledger, record)
-        poll_code = (
-            guest_source
-            + "\nprint(json.dumps(read_progress(Path("
-            + repr(guest_root)
-            + "))))\n"
-        )
-        while remaining(record) > 60:
-            # A replay/lost response only repeats this short read. The seed
-            # process belongs to PID1, independent of any exec/RPC lifetime.
-            response = seed.exec("python3", "-c", poll_code, timeout_secs=20)
-            if response.error is not None or response.exit_code not in (0, None):
-                raise RuntimeError("Read-only CPU progress poll failed")
-            progress = json.loads(response.stdout_text)
-            (args.out / "seed-progress.json").write_text(json.dumps(progress, indent=2))
-            (args.out / "seed-stdout.txt").write_text(progress["stdout"])
-            (args.out / "seed-stderr.txt").write_text(progress["stderr"])
-            if progress.get("started"):
-                if progress["started"]["phase_id"] != record["cpu_phase_id"]:
-                    raise RuntimeError("Guest entrypoint phase mismatch")
-                record["seed_command_started_at"] = progress["started"]["started_at"]
-            if progress.get("atomic_seed"):
-                record["atomic_seed"] = progress["atomic_seed"]
-                record["status"] = "proving"
-            record["last_progress_at"] = time.time()
-            completed = progress.get("completed")
-            if completed:
-                if completed["phase_id"] != record["cpu_phase_id"]:
-                    raise RuntimeError("Guest completion phase mismatch")
-                record["seed_command_finished_at"] = completed["finished_at"]
-                record["guest_completion"] = completed
-                write_json(ledger, record)
-                if completed["status"] != "passed":
-                    raise RuntimeError(
-                        "CPU entrypoint seed/proof failed; see retained seed-stderr.txt"
-                    )
-                proof = progress["proof"]
-                break
-            write_json(ledger, record)
-            time.sleep(min(5, max(0, remaining(record) - 60)))
-        else:
-            raise TimeoutError("CPU proof did not finish before cleanup reserve")
+        progress = poll_guest_until_complete(seed, record, ledger, poll_code)
+        proof = progress["proof"]
         write_json(args.out / "cpu-proof.json", proof)
         record["snapshot_id"] = proof["snapshot_id"]
         record["proof_sha256"] = hashlib.sha256(

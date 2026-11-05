@@ -318,3 +318,37 @@ def test_create_uses_scoped_single_attempt_callback_not_retrying_stub(tmp_path):
         ).create_sandbox("request")
     assert calls == ["one create"]
     assert json.loads(ledger.read_text())["submission_inflight"] is True
+
+
+def test_bounded_guest_file_export_reads_only_and_enforces_size(tmp_path):
+    import contextlib
+    import io
+    from cpu_seed import read_guest_file
+
+    payload = b"proof-fixture" * 10000
+    path = tmp_path / "fixture.bin"
+    path.write_bytes(payload)
+    calls = []
+
+    class Sandbox:
+        def exec(self, command, flag, code, timeout_secs):
+            assert (command, flag, timeout_secs) == ("python3", "-c", 20)
+            calls.append(code)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                exec(compile(code, "read-only-export", "exec"), {})
+            return SimpleNamespace(
+                stdout_text=output.getvalue(), exit_code=0, error=None
+            )
+
+    record = {"cpu_deadline_epoch": time.time() + 60}
+    sandbox = Sandbox()
+    assert (
+        read_guest_file(sandbox, str(path), max_bytes=len(payload), record=record)
+        == payload
+    )
+    assert path.read_bytes() == payload
+    calls.clear()
+    with pytest.raises(ValueError, match="authorized export bound"):
+        read_guest_file(sandbox, str(path), max_bytes=1, record=record)
+    assert len(calls) == 1
