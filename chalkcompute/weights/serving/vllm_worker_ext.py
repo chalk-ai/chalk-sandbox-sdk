@@ -92,3 +92,15 @@ class WeightSyncExtension:
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
         return {"ok": True, "version": manifest.version}
+
+    def ws_tensor_hashes(self, names: list[str]) -> dict[str, str]:
+        """Bounded internal correctness audit; callers choose exact parameter names."""
+        import hashlib
+
+        torch = importlib.import_module("torch")
+        parameters = dict(self.model_runner.get_model().named_parameters())
+        hashes = {}
+        for name in names:
+            value = parameters[name].detach().contiguous().reshape(-1).view(torch.uint8)
+            hashes[name] = hashlib.sha256(value.cpu().numpy().tobytes()).hexdigest()
+        return hashes
