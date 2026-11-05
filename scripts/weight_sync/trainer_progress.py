@@ -13,6 +13,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument(
+        "--full", action="store_true", help="Include per-tensor change maps"
+    )
     args = parser.parse_args()
     record = json.loads(args.ledger.read_text())
     load_env(args.env_file)
@@ -40,7 +43,16 @@ def main():
             {
                 "status": report.get("status"),
                 "phases": report.get("phases", [])[-4:],
-                "steps": report.get("steps", []),
+                "steps": [
+                    step
+                    if args.full
+                    else {
+                        key: value
+                        for key, value in step.items()
+                        if key != "changed_tensors"
+                    }
+                    for step in report.get("steps", [])
+                ],
             }
         )
     )
