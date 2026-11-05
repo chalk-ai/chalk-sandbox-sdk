@@ -28,7 +28,7 @@ import dataclasses
 import logging
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, overload
 
@@ -41,6 +41,12 @@ from chalkcompute._containerspec import (
     ContainerSpec,
     ExecutionBackend,
     NetworkPolicy,
+)
+from chalkcompute._volume import (
+    Volume,
+    VolumeMount,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
 from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
@@ -241,6 +247,8 @@ class TrainingFunction:
         network_policy: NetworkPolicy | None = None,
         env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
+        volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount]
+        | None = None,
         metadata: dict[str, Any] | None = None,
         max_retries: int | None = None,
     ) -> None:
@@ -289,6 +297,7 @@ class TrainingFunction:
         self._network_policy = network_policy
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
+        self._volumes = normalize_volume_refs(volumes)
         self._metadata = dict(metadata) if metadata else {}
         self._max_retries = max_retries
 
@@ -498,6 +507,25 @@ class TrainingFunction:
                 for m in resolved
             ]
 
+        for volume in self._volumes:
+            mount = referenced_volume_mount(client, volume)
+            if any(
+                existing.mount_path == mount.mount_path for existing in proto_mounts
+            ):
+                raise TrainingError(
+                    f"Duplicate training volume mount path: {mount.mount_path}"
+                )
+            proto_mounts.append(
+                container_pb.VolumeMount(
+                    name=mount.name,
+                    mount_path=mount.mount_path,
+                    type=mount.type.value,
+                    version_id=mount.version_id,
+                    ref_name=mount.ref_name,
+                    size_limit=mount.size_limit,
+                )
+            )
+
         data_source = self._build_data_source()
         container_spec = self._build_container_spec(image_uri)
         secret_refs = [_secret_to_proto(s) for s in self._secrets]
@@ -597,6 +625,7 @@ def training(
     network_policy: NetworkPolicy | None = None,
     env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
 ) -> TrainingFunction | _NoOpTrainingFunction: ...
@@ -618,6 +647,7 @@ def training(
     network_policy: NetworkPolicy | None = None,
     env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
 ) -> Callable[..., TrainingFunction | _NoOpTrainingFunction]: ...
@@ -640,6 +670,7 @@ def training(
     network_policy: NetworkPolicy | None = None,
     env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
 ) -> (
@@ -691,6 +722,7 @@ def training(
             network_policy=network_policy,
             env=env,
             secrets=secrets,
+            volumes=volumes,
             metadata=metadata,
             max_retries=max_retries,
         )
