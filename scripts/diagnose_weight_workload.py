@@ -89,9 +89,7 @@ def cpu_context(pid: int, proc_root: Path, cgroup_root: Path) -> dict:
             read(path / "cpu.cfs_period_us"),
         )
         if quota is not None and period is not None:
-            v1.append(
-                {"path": str(path), "quota_cpus": parse_cpu_max(f"{quota} {period}")}
-            )
+            v1.append({"quota_cpus": parse_cpu_max(f"{quota} {period}")})
     quotas = [
         item["quota_cpus"] for item in [*limits, *v1] if item["quota_cpus"] is not None
     ]
