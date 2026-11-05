@@ -35,6 +35,7 @@ include = ["chalkcompute/**", "README.md"]
 exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [project.optional-dependencies]
+weights = ["torch>=2.5", "numpy>=1.26", "safetensors>=0.5", "zstandard>=0.23", "xxhash>=3.5", "huggingface-hub>=0.28"]
 sql = ["pyarrow>=14.0.0"]
 workflows = ["chalkpy[workflows]>=2.154.27"]
 dev = [
