@@ -280,17 +280,22 @@ class ResourceGuard:
         raise RuntimeError("Training container termination unconfirmed")
 
     def capture_training_resource(self):
+        return self.capture_container_resource(self.run_id, "training_resources")
+
+    def capture_container_resource(self, container_id, resource_key):
         """Record the real CR UID; API terminal status does not prove finalization."""
-        if not self.run_id:
+        if not container_id:
             return
         found = []
         for context in self.kube_contexts:
             for item in self.kube_items(
-                "chalkcontainers", name="cc-" + self.run_id, context=context
+                "chalkcontainers", name="cc-" + container_id, context=context
             ):
                 metadata = item["metadata"]
                 if metadata["namespace"] not in self.record["expected_namespaces"]:
-                    raise RuntimeError("Training CR namespace differs from environment")
+                    raise RuntimeError(
+                        "Container CR namespace differs from environment"
+                    )
                 found.append(
                     {
                         "context": context,
@@ -302,15 +307,20 @@ class ResourceGuard:
                     }
                 )
         if found:
-            self.record["training_resources"] = found
+            self.record[resource_key] = found
             self.save()
         return found
 
     def verify_training_absent(self):
-        self.capture_training_resource()
+        self.verify_container_absent(self.run_id, "training_resources")
+        self.record["training_cr_verified_absent"] = True
+        self.save()
+
+    def verify_container_absent(self, container_id, resource_key):
+        self.capture_container_resource(container_id, resource_key)
         # The container service may retain a terminal CR. Delete only our recorded
         # immutable UID and let the controller finalizer perform runtime cleanup.
-        for resource in self.record.get("training_resources", []):
+        for resource in self.record.get(resource_key, []):
             options = {
                 "apiVersion": "v1",
                 "kind": "DeleteOptions",
@@ -342,7 +352,7 @@ class ResourceGuard:
                 )
                 if result.returncode and "NotFound" not in result.stderr:
                     raise RuntimeError(
-                        "Owned training CR delete failed: " + result.stderr
+                        "Owned container CR delete failed: " + result.stderr
                     )
 
         for _ in range(36):
@@ -350,10 +360,10 @@ class ResourceGuard:
             for context in self.kube_contexts:
                 remaining.extend(
                     self.kube_items(
-                        "chalkcontainers", name="cc-" + self.run_id, context=context
+                        "chalkcontainers", name="cc-" + container_id, context=context
                     )
                 )
-            resources = self.record.get("training_resources", [])
+            resources = self.record.get(resource_key, [])
             for resource in resources:
                 for pod in self.kube_items("pods", context=resource["context"]):
                     if any(
@@ -362,11 +372,11 @@ class ResourceGuard:
                     ):
                         remaining.append(pod)
             if not remaining:
-                self.record["training_cr_verified_absent"] = True
+                self.record[resource_key + "_verified_absent"] = True
                 self.save()
                 return
             time.sleep(5)
-        raise RuntimeError("Training CR/owned pods remain after API stop")
+        raise RuntimeError("Container CR/owned pods remain after API stop")
 
     def stop_sandbox(self, sandbox):
         import chalkcompute as cc
