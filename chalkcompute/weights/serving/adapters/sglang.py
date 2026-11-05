@@ -16,6 +16,17 @@ from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from chalkcompute._weights_format import WeightManifest, WeightStreamError
 
+# Observed OCI config for the audited linux/amd64 0.5.23 runtime image
+# sha256:354700f4404ab0b8dcb493bc61d5d11e7c2a91f3a7babb4efe741cb75d4b51c0.
+# These identify the build or prohibit Rust source builds; none enables runtime
+# cache/parallelism/kernel features. Unknown names and changed values fail closed.
+_UPSTREAM_ENV = {
+    "SGLANG_BUILD_COMMIT": "297e54fd105e974cdf401e5b4d20253a22c16f90",
+    "SGLANG_BUILD_URL": "https://github.com/sgl-project/sglang/actions/runs/40978390925",
+    "SGLANG_IMAGE_TAG": "lmsysorg/sglang:v0.5.23-runtime",
+    "SGLANG_RUST_BUILD_MODE": "never",
+}
+
 
 def validate_config(config: bytes) -> None:
     value = json.loads(config)
@@ -60,9 +71,12 @@ class SGLangAdapter:
         validate_config((model_dir / "config.json").read_bytes())
         if version("sglang") != "0.5.23":
             raise ValueError("Experimental reload requires exactly SGLang 0.5.23")
-        if any(key.startswith("SGLANG_") for key in os.environ):
+        if any(
+            key.startswith("SGLANG_") and _UPSTREAM_ENV.get(key) != value
+            for key, value in os.environ.items()
+        ):
             raise ValueError(
-                "Experimental SGLang does not accept SGLANG_ environment overrides"
+                "Experimental SGLang rejects unreviewed SGLANG_ environment overrides"
             )
         return [
             sys.executable,
