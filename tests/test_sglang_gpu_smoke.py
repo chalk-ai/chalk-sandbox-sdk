@@ -505,6 +505,187 @@ def test_independent_volume_verifier_rejects_other_environment_before_read(monke
         )
 
 
+def test_release_verifier_exact_api_lookup_is_bound_and_timed(monkeypatch):
+    verifier = importlib.import_module("verify_host_release")
+    import chalkcompute._connect as connection
+    from chalkcompute._gen.chalk.sandbox.v2 import service_pb
+
+    calls = []
+    stub = SimpleNamespace(get_sandbox=object())
+
+    def invoke(method, request, **kwargs):
+        calls.append((method, request.id, kwargs))
+        return service_pb.GetSandboxResponse(
+            sandbox=service_pb.SandboxInfo(
+                id="owned-id",
+                name="owned-name",
+                status=service_pb.SandboxStatus.TERMINATED,
+            )
+        )
+
+    client = SimpleNamespace(
+        _ensure_auth=lambda: None,
+        _env_id="env-1",
+        stub=lambda cls: stub,
+        call=invoke,
+    )
+    monkeypatch.setattr(connection, "ConnectClient", lambda: client)
+    proof = verifier.verify_api_association(
+        {
+            "environment_id": "env-1",
+            "seed_sandbox_id": "owned-id",
+            "name": "phase-name",
+            "seed_name": "owned-name",
+        }
+    )
+    assert calls == [(stub.get_sandbox, "owned-id", {"timeout": 15})]
+    assert proof["status"] == "terminated"
+    client._env_id = "wrong-env"
+    with pytest.raises(RuntimeError, match="environment differs"):
+        verifier.verify_api_association({"environment_id": "env-1"})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("outcome", ["running", "wrong-id", "not-found", "timeout"])
+def test_release_verifier_api_rejects_live_mismatched_and_unknown(monkeypatch, outcome):
+    verifier = importlib.import_module("verify_host_release")
+    import chalkcompute._connect as connection
+    from chalkcompute._gen.chalk.sandbox.v2 import service_pb
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+
+    def invoke(*args, **kwargs):
+        if outcome == "not-found":
+            raise ConnectError(Code.NOT_FOUND, "absent")
+        if outcome == "timeout":
+            raise ConnectError(Code.DEADLINE_EXCEEDED, "unknown")
+        return service_pb.GetSandboxResponse(
+            sandbox=service_pb.SandboxInfo(
+                id="other" if outcome == "wrong-id" else "owned-id",
+                name="owned-name",
+                status=service_pb.SandboxStatus.RUNNING,
+            )
+        )
+
+    monkeypatch.setattr(
+        connection,
+        "ConnectClient",
+        lambda: SimpleNamespace(
+            _ensure_auth=lambda: None,
+            _env_id="env-1",
+            stub=lambda cls: SimpleNamespace(get_sandbox=object()),
+            call=invoke,
+        ),
+    )
+    record = {
+        "environment_id": "env-1",
+        "seed_sandbox_id": "owned-id",
+        "name": "owned-name",
+    }
+    if outcome == "not-found":
+        assert verifier.verify_api_association(record)["status"] == "not_found"
+    else:
+        with pytest.raises((RuntimeError, ConnectError)):
+            verifier.verify_api_association(record)
+
+
+@pytest.mark.parametrize("status", ["inflight", "acknowledged"])
+def test_release_verifier_checks_ambiguous_fixture_horizon(
+    tmp_path, monkeypatch, status
+):
+    verifier = importlib.import_module("verify_host_release")
+    monkeypatch.setattr(verifier.time, "time", lambda: 200)
+    marker = {
+        "phase_id": "phase-1",
+        "name": "owned-fixture",
+        "status": status,
+        "started_at": 100,
+        "rpc_deadline_epoch": 130,
+        "reconcile_until_epoch": 190,
+    }
+    (tmp_path / "upload-create.json").write_text(json.dumps(marker))
+    record = {
+        "cpu_phase_id": "phase-1",
+        "submission_inflight": False,
+        "owned_volume_names": ["owned-fixture"],
+        "fixture_create_reconciled_until_epoch": 180,
+    }
+    if status == "inflight":
+        with pytest.raises(RuntimeError, match="horizon not satisfied"):
+            verifier.verify_reconciliation(record, tmp_path)
+    else:
+        assert (
+            verifier.verify_reconciliation(record, tmp_path)["fixture_create_status"]
+            == status
+        )
+    record["fixture_create_reconciled_until_epoch"] = 195
+    assert (
+        verifier.verify_reconciliation(record, tmp_path)["fixture_create_status"]
+        == status
+    )
+    record["submission_inflight"] = True
+    with pytest.raises(RuntimeError, match="still ambiguous"):
+        verifier.verify_reconciliation(record, tmp_path)
+
+
+def test_release_verifier_rejects_early_sandbox_reconciliation(tmp_path, monkeypatch):
+    verifier = importlib.import_module("verify_host_release")
+    monkeypatch.setattr(verifier.time, "time", lambda: 200)
+    record = {
+        "submission_inflight": False,
+        "owned_volume_names": [],
+        "create_reconcile_until_epoch": 190,
+        "create_reconciled_until_epoch": 180,
+    }
+    with pytest.raises(RuntimeError, match="horizon not satisfied"):
+        verifier.verify_reconciliation(record, tmp_path)
+    record["create_reconciled_until_epoch"] = 195
+    assert (
+        verifier.verify_reconciliation(record, tmp_path)[
+            "sandbox_reconciled_until_epoch"
+        ]
+        == 195
+    )
+
+
+def test_cache_state_bounds_realistic_full_internal_config(tmp_path, monkeypatch):
+    import asyncio
+
+    # Pinned SchedulerInternalStateController returns all resolved server args,
+    # topology, memory/debug data and optionally environment vars for each DP.
+    internal = {
+        **{f"unrelated_arg_{index}": "x" * 1024 for index in range(200)},
+        "disable_radix_cache": False,
+        "attention_backend": "triton",
+        "dtype": "float32",
+        "world_size": 1,
+        "memory_usage": {"large_debug": list(range(10000))},
+        "env_vars": {"DO_NOT_PERSIST": "secret-sentinel"},
+    }
+    server = {**internal, "internal_states": [internal] * 8}
+    model = {"model_path": "v0", "load_format": "auto", "dtype": "float32"}
+
+    async def response(client, path, **kwargs):
+        return (server if path == "/server_info" else model), {}
+
+    monkeypatch.setattr(scenario, "request", response)
+    asyncio.run(scenario.cache_state(None, tmp_path, "large-config"))
+    data = (tmp_path / "cache-state-large-config.json").read_bytes()
+    state = json.loads(data)
+
+    assert len(data) < 16384
+    assert state["internal_state_count"] == 8
+    assert state["internal_states_omitted"] == 4
+    assert len(state["internal_states"]) == 4
+    assert state["internal_states"][0]["disable_radix_cache"] is False
+    assert state["config"]["attention_backend"] == "triton"
+    assert state["server_response_bytes"] > 1024 * 1024
+    raw = json.dumps(server, sort_keys=True, separators=(",", ":")).encode()
+    assert state["server_response_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert b"secret-sentinel" not in data
+    assert b"large_debug" not in data
+
+
 def test_cache_diagnostic_finishes_flush_and_fresh_cases_after_warm_failure(
     tmp_path, monkeypatch
 ):

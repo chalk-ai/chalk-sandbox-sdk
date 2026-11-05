@@ -712,29 +712,46 @@ async def cache_state(client, out, label):
         "mem_fraction_static",
         "cuda_graph_backend_decode",
         "cuda_graph_backend_prefill",
+        "world_size",
+        "effective_max_running_requests_per_dp",
+        "last_gen_throughput",
     }
 
     def selected(value):
         result = {}
         if isinstance(value, dict):
-            for key, item in value.items():
-                if key in allowed and isinstance(
-                    item, (str, int, float, bool, type(None))
-                ):
-                    result[key] = item
-                elif isinstance(item, dict):
-                    nested = selected(item)
-                    if nested:
-                        result[key] = nested
+            for key in sorted(allowed):
+                if key in value:
+                    item = value[key]
+                    if isinstance(item, (str, int, float, bool, type(None))):
+                        result[key] = bounded_scalar(item)
         return result
 
+    def bounded_scalar(value):
+        data = json.dumps(value).encode()
+        if len(data) <= 128:
+            return value
+        return {"omitted_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    # Pinned SGLang internal_states repeats the full resolved server config,
+    # plus topology/memory/debug/environment fields. Persist only the audited
+    # cache-relevant scalars, and hash/count the complete response rather than
+    # copying arbitrary configuration/debug state into the bounded artifact.
+    raw = json.dumps(server, sort_keys=True, separators=(",", ":")).encode()
+    internal = server.get("internal_states")
+    internal_list = internal if isinstance(internal, list) else []
     state = {
         "observed_at": time.time(),
         "config": selected(server),
-        "internal_states": server.get("internal_states"),
+        "internal_states": [selected(item) for item in internal_list[:4]],
+        "internal_state_count": len(internal_list),
+        "internal_states_omitted": max(0, len(internal_list) - 4),
+        "server_response_bytes": len(raw),
+        "server_response_sha256": hashlib.sha256(raw).hexdigest(),
         "model": {
-            key: model.get(key)
+            key: bounded_scalar(model.get(key))
             for key in ("model_path", "load_format", "weight_version", "dtype")
+            if isinstance(model.get(key), (str, int, float, bool, type(None)))
         },
     }
     if len(json.dumps(state).encode()) > 16384:

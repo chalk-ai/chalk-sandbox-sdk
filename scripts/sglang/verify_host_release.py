@@ -59,6 +59,83 @@ def verify_volumes(record):
     return client._env_id
 
 
+def verify_api_association(record):
+    """One exact authenticated lookup; never enumerate unrelated sandboxes."""
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+    from chalkcompute._connect import ConnectClient
+    from chalkcompute._gen.chalk.sandbox.v2 import service_connect, service_pb
+
+    client = ConnectClient()
+    client._ensure_auth()
+    if client._env_id != record["environment_id"]:
+        raise RuntimeError("Sandbox verifier authenticated environment differs")
+    sandbox_id = record["seed_sandbox_id"]
+    try:
+        response = client.call(
+            client.stub(service_connect.SandboxServiceClientSync).get_sandbox,
+            service_pb.GetSandboxRequest(id=sandbox_id),
+            timeout=15,
+        )
+    except ConnectError as error:
+        if error.code != Code.NOT_FOUND:
+            raise
+        status = "not_found"
+    else:
+        info = response.sandbox
+        if (
+            info is None
+            or info.id != sandbox_id
+            or info.name != record.get("seed_name", record["name"])
+        ):
+            raise RuntimeError("Sandbox API association identity differs")
+        if info.status != service_pb.SandboxStatus.TERMINATED:
+            raise RuntimeError("Sandbox API association remains nonterminated")
+        status = "terminated"
+    return {
+        "sandbox_id": sandbox_id,
+        "status": status,
+        "environment_id": client._env_id,
+        "rpc_timeout_seconds": 15,
+    }
+
+
+def verify_reconciliation(record, out):
+    """Reject early absence while an ambiguous create can still arrive."""
+    if record.get("submission_inflight") is not False:
+        raise RuntimeError("Sandbox submission is still ambiguous")
+    proof = {"sandbox_submission_inflight": False}
+    if "create_reconciled_until_epoch" in record:
+        until = record["create_reconcile_until_epoch"]
+        reconciled = record["create_reconciled_until_epoch"]
+        if not (until <= reconciled <= time.time()):
+            raise RuntimeError("Sandbox create reconciliation horizon not satisfied")
+        proof["sandbox_reconciled_until_epoch"] = reconciled
+    marker_path = out / "upload-create.json"
+    if marker_path.exists():
+        marker = json.loads(marker_path.read_bytes())
+        if (
+            marker["phase_id"] != record["cpu_phase_id"]
+            or marker["name"] not in record["owned_volume_names"]
+            or marker["rpc_deadline_epoch"] != marker["started_at"] + 30
+            or marker["reconcile_until_epoch"] != marker["started_at"] + 90
+            or marker["status"] not in {"inflight", "acknowledged"}
+        ):
+            raise RuntimeError("Fixture create marker identity/deadlines differ")
+        if marker["status"] == "inflight":
+            until = marker["reconcile_until_epoch"]
+            reconciled = record.get("fixture_create_reconciled_until_epoch", 0)
+            if not (until <= reconciled <= time.time()):
+                raise RuntimeError(
+                    "Fixture create reconciliation horizon not satisfied"
+                )
+            proof["fixture_reconciled_until_epoch"] = reconciled
+        proof["fixture_create_status"] = marker["status"]
+    elif record["owned_volume_names"]:
+        raise RuntimeError("Owned fixture lacks its create ownership marker")
+    return proof
+
+
 def verify(out):
     record = json.loads((out / "launcher.json").read_bytes())
     if (
@@ -70,6 +147,8 @@ def verify(out):
     owner_uids = {resource["uid"] for resource in record.get("seed_resources", [])}
     if not owner_uids:
         raise RuntimeError("Retained exact CR owner UID is required")
+    reconciliation = verify_reconciliation(record, out)
+    association = verify_api_association(record)
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
             executor.submit(check_kubernetes, context, kind, container_id, owner_uids)
@@ -99,6 +178,8 @@ def verify(out):
         "owned_volume_names": record["owned_volume_names"],
         "watchdog_disarmed": disarmed,
         "watchdog_exited": exited,
+        "reconciliation": reconciliation,
+        "sandbox_api_association": association,
     }
     if proof["owned_volume_names"]:
         proof["authenticated_environment_id"] = verify_volumes(record)
