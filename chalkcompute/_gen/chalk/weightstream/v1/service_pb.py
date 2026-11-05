@@ -12,12 +12,15 @@ from protobuf import Enum, Message
 from protobuf._codegen import file_desc
 from protobuf.wkt.google.protobuf import timestamp_pb
 
+from ....google.rpc import status_pb
 from ...auth.v1 import permissions_pb
 from ...flags.v1 import flags_pb
 
 if TYPE_CHECKING:
     from protobuf import DescFile, Oneof
     from protobuf.wkt.google.protobuf.timestamp_pb import Timestamp
+
+    from ....google.rpc.status_pb import Status
 
 
 _WeightStreamFields: TypeAlias = Literal["id", "name", "volume_name", "base_model", "architecture_hash", "current_version", "pinned_version", "created_at", "updated_at"]
@@ -851,6 +854,371 @@ class PromoteWeightStreamVersionResponse(Message[_PromoteWeightStreamVersionResp
         model_version: int
         model_volume_version_id: int
 
+_WeightStreamPromotionResultFields: TypeAlias = Literal["model_name", "model_version_id", "model_version", "model_volume_name", "model_volume_version_id"]
+
+class WeightStreamPromotionResult(Message[_WeightStreamPromotionResultFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.WeightStreamPromotionResult
+    ```
+
+    Attributes:
+        model_name:
+            ```proto
+            string model_name = 1;
+            ```
+        model_version_id:
+            Registry row UUID and registry version number, not logical weight versions.
+
+            ```proto
+            string model_version_id = 2;
+            ```
+        model_version:
+            ```proto
+            uint64 model_version = 3;
+            ```
+        model_volume_name:
+            Dedicated immutable output containing a complete deployable checkpoint.
+
+            ```proto
+            string model_volume_name = 4;
+            ```
+        model_volume_version_id:
+            ```proto
+            uint64 model_volume_version_id = 5;
+            ```
+    """
+
+    __slots__ = ("model_name", "model_version_id", "model_version", "model_volume_name", "model_volume_version_id")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_name: str = "",
+            model_version_id: str = "",
+            model_version: int = 0,
+            model_volume_name: str = "",
+            model_volume_version_id: int = 0,
+        ) -> None:
+            pass
+
+        model_name: str
+        model_version_id: str
+        model_version: int
+        model_volume_name: str
+        model_volume_version_id: int
+
+_WeightStreamPromotionFields: TypeAlias = Literal["id", "weight_stream_id", "source_version", "source_volume_name", "model_name", "aliases", "state", "created_at", "updated_at", "completed_at", "result", "error", "cleanup_pending"]
+
+class WeightStreamPromotion(Message[_WeightStreamPromotionFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.WeightStreamPromotion
+    ```
+
+    Attributes:
+        id:
+            Opaque identifier scoped to the authenticated environment.
+
+            ```proto
+            string id = 1;
+            ```
+        weight_stream_id:
+            ```proto
+            string weight_stream_id = 2;
+            ```
+        source_version:
+            Source metadata and volume are frozen before dispatch. Version zero and
+            volume snapshot zero are valid; no mutable ref is used during replay. The
+            snapshot must contain the base checkpoint and complete reachable ancestry.
+
+            ```proto
+            optional chalk.weightstream.v1.WeightStreamVersion source_version = 3;
+            ```
+        source_volume_name:
+            ```proto
+            string source_volume_name = 4;
+            ```
+        model_name:
+            ```proto
+            string model_name = 5;
+            ```
+        aliases:
+            ```proto
+            repeated string aliases = 6;
+            ```
+        state:
+            ```proto
+            chalk.weightstream.v1.WeightStreamPromotionState state = 7;
+            ```
+        created_at:
+            ```proto
+            optional google.protobuf.Timestamp created_at = 8;
+            ```
+        updated_at:
+            ```proto
+            optional google.protobuf.Timestamp updated_at = 9;
+            ```
+        completed_at:
+            Present only for SUCCEEDED, FAILED, and CANCELLED.
+
+            ```proto
+            optional google.protobuf.Timestamp completed_at = 10;
+            ```
+        outcome:
+            ```proto
+            oneof outcome
+            ```
+        cleanup_pending:
+            Failed/cancelled operations may still own unregistered output volumes until
+            durable cleanup succeeds. Running materializer jobs must already be stopped.
+
+            ```proto
+            bool cleanup_pending = 13;
+            ```
+    """
+
+    __slots__ = ("id", "weight_stream_id", "source_version", "source_volume_name", "model_name", "aliases", "state", "created_at", "updated_at", "completed_at", "cleanup_pending", "outcome")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            id: str = "",
+            weight_stream_id: str = "",
+            source_version: WeightStreamVersion | None = None,
+            source_volume_name: str = "",
+            model_name: str = "",
+            aliases: list[str] | None = None,
+            state: WeightStreamPromotionState | None = None,
+            created_at: Timestamp | None = None,
+            updated_at: Timestamp | None = None,
+            completed_at: Timestamp | None = None,
+            outcome: Oneof[Literal["result"], WeightStreamPromotionResult] | Oneof[Literal["error"], Status] | None = None,
+            cleanup_pending: bool = False,
+        ) -> None:
+            pass
+
+        id: str
+        weight_stream_id: str
+        source_version: WeightStreamVersion | None
+        source_volume_name: str
+        model_name: str
+        aliases: list[str]
+        state: WeightStreamPromotionState
+        created_at: Timestamp | None
+        updated_at: Timestamp | None
+        completed_at: Timestamp | None
+        outcome: Oneof[Literal["result"], WeightStreamPromotionResult] | Oneof[Literal["error"], Status] | None
+        cleanup_pending: bool
+
+_StartWeightStreamPromotionRequestFields: TypeAlias = Literal["weight_stream_id", "version", "model_name", "aliases", "idempotency_key"]
+
+class StartWeightStreamPromotionRequest(Message[_StartWeightStreamPromotionRequestFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.StartWeightStreamPromotionRequest
+    ```
+
+    Attributes:
+        weight_stream_id:
+            ```proto
+            string weight_stream_id = 1;
+            ```
+        version:
+            ```proto
+            uint64 version = 2;
+            ```
+        model_name:
+            ```proto
+            string model_name = 3;
+            ```
+        aliases:
+            ```proto
+            repeated string aliases = 4;
+            ```
+        idempotency_key:
+            Required nonempty key, unique within the authenticated environment. Retrying
+            the same stream/version/model/alias set returns the original operation,
+            including after completion. Reuse with different input is ALREADY_EXISTS.
+            Retries never register another version or reapply registry aliases.
+
+            ```proto
+            string idempotency_key = 5;
+            ```
+    """
+
+    __slots__ = ("weight_stream_id", "version", "model_name", "aliases", "idempotency_key")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            weight_stream_id: str = "",
+            version: int = 0,
+            model_name: str = "",
+            aliases: list[str] | None = None,
+            idempotency_key: str = "",
+        ) -> None:
+            pass
+
+        weight_stream_id: str
+        version: int
+        model_name: str
+        aliases: list[str]
+        idempotency_key: str
+
+_StartWeightStreamPromotionResponseFields: TypeAlias = Literal["promotion"]
+
+class StartWeightStreamPromotionResponse(Message[_StartWeightStreamPromotionResponseFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.StartWeightStreamPromotionResponse
+    ```
+
+    Attributes:
+        promotion:
+            Returned only after the operation and immutable source are durable. Runtime
+            or handler incompatibility must fail closed before dispatching any work.
+
+            ```proto
+            optional chalk.weightstream.v1.WeightStreamPromotion promotion = 1;
+            ```
+    """
+
+    __slots__ = ("promotion",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            promotion: WeightStreamPromotion | None = None,
+        ) -> None:
+            pass
+
+        promotion: WeightStreamPromotion | None
+
+_GetWeightStreamPromotionRequestFields: TypeAlias = Literal["promotion_id"]
+
+class GetWeightStreamPromotionRequest(Message[_GetWeightStreamPromotionRequestFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.GetWeightStreamPromotionRequest
+    ```
+
+    Attributes:
+        promotion_id:
+            ```proto
+            string promotion_id = 1;
+            ```
+    """
+
+    __slots__ = ("promotion_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            promotion_id: str = "",
+        ) -> None:
+            pass
+
+        promotion_id: str
+
+_GetWeightStreamPromotionResponseFields: TypeAlias = Literal["promotion"]
+
+class GetWeightStreamPromotionResponse(Message[_GetWeightStreamPromotionResponseFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.GetWeightStreamPromotionResponse
+    ```
+
+    Attributes:
+        promotion:
+            ```proto
+            optional chalk.weightstream.v1.WeightStreamPromotion promotion = 1;
+            ```
+    """
+
+    __slots__ = ("promotion",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            promotion: WeightStreamPromotion | None = None,
+        ) -> None:
+            pass
+
+        promotion: WeightStreamPromotion | None
+
+_CancelWeightStreamPromotionRequestFields: TypeAlias = Literal["promotion_id"]
+
+class CancelWeightStreamPromotionRequest(Message[_CancelWeightStreamPromotionRequestFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.CancelWeightStreamPromotionRequest
+    ```
+
+    Attributes:
+        promotion_id:
+            ```proto
+            string promotion_id = 1;
+            ```
+    """
+
+    __slots__ = ("promotion_id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            promotion_id: str = "",
+        ) -> None:
+            pass
+
+        promotion_id: str
+
+_CancelWeightStreamPromotionResponseFields: TypeAlias = Literal["promotion"]
+
+class CancelWeightStreamPromotionResponse(Message[_CancelWeightStreamPromotionResponseFields]):
+    """
+    ```proto
+    message chalk.weightstream.v1.CancelWeightStreamPromotionResponse
+    ```
+
+    Attributes:
+        promotion:
+            Idempotent cancellation stops owned work before reporting CANCELLED. A
+            registry commit wins a cancellation race and resolves as SUCCEEDED. Terminal
+            operations are returned unchanged; registered outputs are preserved.
+
+            ```proto
+            optional chalk.weightstream.v1.WeightStreamPromotion promotion = 1;
+            ```
+    """
+
+    __slots__ = ("promotion",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            promotion: WeightStreamPromotion | None = None,
+        ) -> None:
+            pass
+
+        promotion: WeightStreamPromotion | None
+
 class WeightStreamVersionKind(Enum):
     """
     ```proto
@@ -876,13 +1244,67 @@ class WeightStreamVersionKind(Enum):
     KEYFRAME = 1
     PATCH = 2
 
+class WeightStreamPromotionState(Enum):
+    """
+    Promotions materialize an indexed immutable snapshot without following CURRENT
+    or PIN. Only SUCCEEDED has a registry result. FAILED has a non-OK error.
+
+    ```proto
+    enum chalk.weightstream.v1.WeightStreamPromotionState
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_UNSPECIFIED = 0
+            ```
+        QUEUED:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_QUEUED = 1
+            ```
+        MATERIALIZING:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_MATERIALIZING = 2
+            ```
+        REGISTERING:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_REGISTERING = 3
+            ```
+        CANCELLING:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_CANCELLING = 4
+            ```
+        SUCCEEDED:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_SUCCEEDED = 5
+            ```
+        FAILED:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_FAILED = 6
+            ```
+        CANCELLED:
+            ```proto
+            WEIGHT_STREAM_PROMOTION_STATE_CANCELLED = 7
+            ```
+    """
+
+    UNSPECIFIED = 0
+    QUEUED = 1
+    MATERIALIZING = 2
+    REGISTERING = 3
+    CANCELLING = 4
+    SUCCEEDED = 5
+    FAILED = 6
+    CANCELLED = 7
+
 
 _DESC = file_desc(
-    b'\n#chalk/weightstream/v1/service.proto\x12\x15chalk.weightstream.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x96\x03\n\x0cWeightStream\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0bvolume_name\x18\x03 \x01(\tR\nvolumeName\x12\x1d\n\nbase_model\x18\x04 \x01(\tR\tbaseModel\x12+\n\x11architecture_hash\x18\x05 \x01(\tR\x10architectureHash\x12,\n\x0fcurrent_version\x18\x06 \x01(\x04H\x00R\x0ecurrentVersion\x88\x01\x01\x12*\n\x0epinned_version\x18\x07 \x01(\x04H\x01R\rpinnedVersion\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x12\n\x10_current_versionB\x11\n\x0f_pinned_version"\xc9\x04\n\x13WeightStreamVersion\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12*\n\x0eparent_version\x18\x03 \x01(\x04H\x00R\rparentVersion\x88\x01\x01\x12B\n\x04kind\x18\x04 \x01(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x04kind\x12*\n\x11volume_version_id\x18\x05 \x01(\x04R\x0fvolumeVersionId\x12+\n\x11architecture_hash\x18\x06 \x01(\tR\x10architectureHash\x12&\n\x0ctrainer_step\x18\x07 \x01(\x04H\x01R\x0btrainerStep\x88\x01\x01\x12+\n\x0ftraining_run_id\x18\x08 \x01(\tH\x02R\rtrainingRunId\x88\x01\x01\x12#\n\rpayload_bytes\x18\t \x01(\x04R\x0cpayloadBytes\x128\n\x18changed_element_fraction\x18\n \x01(\x01R\x16changedElementFraction\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\x11\n\x0f_parent_versionB\x0f\n\r_trainer_stepB\x12\n\x10_training_run_id"\xcc\x01\n\x19CreateWeightStreamRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nbase_model\x18\x02 \x01(\tR\tbaseModel\x12$\n\x0bvolume_name\x18\x03 \x01(\tH\x00R\nvolumeName\x88\x01\x01\x120\n\x11architecture_hash\x18\x04 \x01(\tH\x01R\x10architectureHash\x88\x01\x01B\x0e\n\x0c_volume_nameB\x14\n\x12_architecture_hash"f\n\x1aCreateWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\x89\x01\n\x16GetWeightStreamRequest\x12*\n\x10weight_stream_id\x18\x01 \x01(\tH\x00R\x0eweightStreamId\x12.\n\x12weight_stream_name\x18\x02 \x01(\tH\x00R\x10weightStreamNameB\x13\n\x11weight_stream_key"c\n\x17GetWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"Q\n\x18ListWeightStreamsFilters\x12\x14\n\x05names\x18\x01 \x03(\tR\x05names\x12\x1f\n\x0bbase_models\x18\x02 \x03(\tR\nbaseModels"\xb2\x01\n\x18ListWeightStreamsRequest\x12I\n\x07filters\x18\x01 \x01(\x0b2/.chalk.weightstream.v1.ListWeightStreamsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\x9d\x01\n\x19ListWeightStreamsResponse\x12J\n\x0eweight_streams\x18\x01 \x03(\x0b2#.chalk.weightstream.v1.WeightStreamR\rweightStreams\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"h\n RecordWeightStreamVersionRequest\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"i\n!RecordWeightStreamVersionResponse\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"\xd3\x01\n\x1fListWeightStreamVersionsFilters\x12D\n\x05kinds\x18\x01 \x03(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x05kinds\x12$\n\x0bmin_version\x18\x02 \x01(\x04H\x00R\nminVersion\x88\x01\x01\x12$\n\x0bmax_version\x18\x03 \x01(\x04H\x01R\nmaxVersion\x88\x01\x01B\x0e\n\x0c_min_versionB\x0e\n\x0c_max_version"\xea\x01\n\x1fListWeightStreamVersionsRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12P\n\x07filters\x18\x02 \x01(\x0b26.chalk.weightstream.v1.ListWeightStreamVersionsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\xa0\x01\n ListWeightStreamVersionsResponse\x12F\n\x08versions\x18\x01 \x03(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x08versions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"_\n\x19SetWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version"f\n\x1aSetWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"G\n\x1bClearWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId"h\n\x1cClearWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\xa0\x01\n!PromoteWeightStreamVersionRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12\x1d\n\nmodel_name\x18\x03 \x01(\tR\tmodelName\x12\x18\n\x07aliases\x18\x04 \x03(\tR\x07aliases"\xc9\x01\n"PromoteWeightStreamVersionResponse\x12\x1d\n\nmodel_name\x18\x01 \x01(\tR\tmodelName\x12(\n\x10model_version_id\x18\x02 \x01(\tR\x0emodelVersionId\x12#\n\rmodel_version\x18\x03 \x01(\x04R\x0cmodelVersion\x125\n\x17model_volume_version_id\x18\x04 \x01(\x04R\x14modelVolumeVersionId*\x94\x01\n\x17WeightStreamVersionKind\x12*\n&WEIGHT_STREAM_VERSION_KIND_UNSPECIFIED\x10\x00\x12\'\n#WEIGHT_STREAM_VERSION_KIND_KEYFRAME\x10\x01\x12$\n WEIGHT_STREAM_VERSION_KIND_PATCH\x10\x022\xa9\t\n\x13WeightStreamService\x12~\n\x12CreateWeightStream\x120.chalk.weightstream.v1.CreateWeightStreamRequest\x1a1.chalk.weightstream.v1.CreateWeightStreamResponse"\x03\x80}\x0c\x12u\n\x0fGetWeightStream\x12-.chalk.weightstream.v1.GetWeightStreamRequest\x1a..chalk.weightstream.v1.GetWeightStreamResponse"\x03\x80}\x0b\x12{\n\x11ListWeightStreams\x12/.chalk.weightstream.v1.ListWeightStreamsRequest\x1a0.chalk.weightstream.v1.ListWeightStreamsResponse"\x03\x80}\x0b\x12\x93\x01\n\x19RecordWeightStreamVersion\x127.chalk.weightstream.v1.RecordWeightStreamVersionRequest\x1a8.chalk.weightstream.v1.RecordWeightStreamVersionResponse"\x03\x80}\x0e\x12\x90\x01\n\x18ListWeightStreamVersions\x126.chalk.weightstream.v1.ListWeightStreamVersionsRequest\x1a7.chalk.weightstream.v1.ListWeightStreamVersionsResponse"\x03\x80}\x0b\x12~\n\x12SetWeightStreamPin\x120.chalk.weightstream.v1.SetWeightStreamPinRequest\x1a1.chalk.weightstream.v1.SetWeightStreamPinResponse"\x03\x80}\x0e\x12\x84\x01\n\x14ClearWeightStreamPin\x122.chalk.weightstream.v1.ClearWeightStreamPinRequest\x1a3.chalk.weightstream.v1.ClearWeightStreamPinResponse"\x03\x80}\x0e\x12\xed\x01\n\x1aPromoteWeightStreamVersion\x128.chalk.weightstream.v1.PromoteWeightStreamVersionRequest\x1a9.chalk.weightstream.v1.PromoteWeightStreamVersionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16model_registry_enabled\x129This action is not enabled. Please contact Chalk Support.B\xbf\x01\n\x19com.chalk.weightstream.v1B\x0cServiceProtoP\x01Z\x1eweightstream/v1;weightstreamv1\xa2\x02\x03CWX\xaa\x02\x15Chalk.Weightstream.V1\xca\x02\x15Chalk\\Weightstream\\V1\xe2\x02!Chalk\\Weightstream\\V1\\GPBMetadata\xea\x02\x17Chalk::Weightstream::V1b\x06proto3',
+    b'\n#chalk/weightstream/v1/service.proto\x12\x15chalk.weightstream.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x17google/rpc/status.proto"\x96\x03\n\x0cWeightStream\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0bvolume_name\x18\x03 \x01(\tR\nvolumeName\x12\x1d\n\nbase_model\x18\x04 \x01(\tR\tbaseModel\x12+\n\x11architecture_hash\x18\x05 \x01(\tR\x10architectureHash\x12,\n\x0fcurrent_version\x18\x06 \x01(\x04H\x00R\x0ecurrentVersion\x88\x01\x01\x12*\n\x0epinned_version\x18\x07 \x01(\x04H\x01R\rpinnedVersion\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x12\n\x10_current_versionB\x11\n\x0f_pinned_version"\xc9\x04\n\x13WeightStreamVersion\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12*\n\x0eparent_version\x18\x03 \x01(\x04H\x00R\rparentVersion\x88\x01\x01\x12B\n\x04kind\x18\x04 \x01(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x04kind\x12*\n\x11volume_version_id\x18\x05 \x01(\x04R\x0fvolumeVersionId\x12+\n\x11architecture_hash\x18\x06 \x01(\tR\x10architectureHash\x12&\n\x0ctrainer_step\x18\x07 \x01(\x04H\x01R\x0btrainerStep\x88\x01\x01\x12+\n\x0ftraining_run_id\x18\x08 \x01(\tH\x02R\rtrainingRunId\x88\x01\x01\x12#\n\rpayload_bytes\x18\t \x01(\x04R\x0cpayloadBytes\x128\n\x18changed_element_fraction\x18\n \x01(\x01R\x16changedElementFraction\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\x11\n\x0f_parent_versionB\x0f\n\r_trainer_stepB\x12\n\x10_training_run_id"\xcc\x01\n\x19CreateWeightStreamRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nbase_model\x18\x02 \x01(\tR\tbaseModel\x12$\n\x0bvolume_name\x18\x03 \x01(\tH\x00R\nvolumeName\x88\x01\x01\x120\n\x11architecture_hash\x18\x04 \x01(\tH\x01R\x10architectureHash\x88\x01\x01B\x0e\n\x0c_volume_nameB\x14\n\x12_architecture_hash"f\n\x1aCreateWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\x89\x01\n\x16GetWeightStreamRequest\x12*\n\x10weight_stream_id\x18\x01 \x01(\tH\x00R\x0eweightStreamId\x12.\n\x12weight_stream_name\x18\x02 \x01(\tH\x00R\x10weightStreamNameB\x13\n\x11weight_stream_key"c\n\x17GetWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"Q\n\x18ListWeightStreamsFilters\x12\x14\n\x05names\x18\x01 \x03(\tR\x05names\x12\x1f\n\x0bbase_models\x18\x02 \x03(\tR\nbaseModels"\xb2\x01\n\x18ListWeightStreamsRequest\x12I\n\x07filters\x18\x01 \x01(\x0b2/.chalk.weightstream.v1.ListWeightStreamsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\x9d\x01\n\x19ListWeightStreamsResponse\x12J\n\x0eweight_streams\x18\x01 \x03(\x0b2#.chalk.weightstream.v1.WeightStreamR\rweightStreams\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"h\n RecordWeightStreamVersionRequest\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"i\n!RecordWeightStreamVersionResponse\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"\xd3\x01\n\x1fListWeightStreamVersionsFilters\x12D\n\x05kinds\x18\x01 \x03(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x05kinds\x12$\n\x0bmin_version\x18\x02 \x01(\x04H\x00R\nminVersion\x88\x01\x01\x12$\n\x0bmax_version\x18\x03 \x01(\x04H\x01R\nmaxVersion\x88\x01\x01B\x0e\n\x0c_min_versionB\x0e\n\x0c_max_version"\xea\x01\n\x1fListWeightStreamVersionsRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12P\n\x07filters\x18\x02 \x01(\x0b26.chalk.weightstream.v1.ListWeightStreamVersionsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\xa0\x01\n ListWeightStreamVersionsResponse\x12F\n\x08versions\x18\x01 \x03(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x08versions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"_\n\x19SetWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version"f\n\x1aSetWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"G\n\x1bClearWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId"h\n\x1cClearWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\xa0\x01\n!PromoteWeightStreamVersionRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12\x1d\n\nmodel_name\x18\x03 \x01(\tR\tmodelName\x12\x18\n\x07aliases\x18\x04 \x03(\tR\x07aliases"\xc9\x01\n"PromoteWeightStreamVersionResponse\x12\x1d\n\nmodel_name\x18\x01 \x01(\tR\tmodelName\x12(\n\x10model_version_id\x18\x02 \x01(\tR\x0emodelVersionId\x12#\n\rmodel_version\x18\x03 \x01(\x04R\x0cmodelVersion\x125\n\x17model_volume_version_id\x18\x04 \x01(\x04R\x14modelVolumeVersionId"\xee\x01\n\x1bWeightStreamPromotionResult\x12\x1d\n\nmodel_name\x18\x01 \x01(\tR\tmodelName\x12(\n\x10model_version_id\x18\x02 \x01(\tR\x0emodelVersionId\x12#\n\rmodel_version\x18\x03 \x01(\x04R\x0cmodelVersion\x12*\n\x11model_volume_name\x18\x04 \x01(\tR\x0fmodelVolumeName\x125\n\x17model_volume_version_id\x18\x05 \x01(\x04R\x14modelVolumeVersionId"\xb7\x05\n\x15WeightStreamPromotion\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12(\n\x10weight_stream_id\x18\x02 \x01(\tR\x0eweightStreamId\x12Q\n\x0esource_version\x18\x03 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\rsourceVersion\x12,\n\x12source_volume_name\x18\x04 \x01(\tR\x10sourceVolumeName\x12\x1d\n\nmodel_name\x18\x05 \x01(\tR\tmodelName\x12\x18\n\x07aliases\x18\x06 \x03(\tR\x07aliases\x12G\n\x05state\x18\x07 \x01(\x0e21.chalk.weightstream.v1.WeightStreamPromotionStateR\x05state\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12=\n\x0ccompleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\x0bcompletedAt\x12L\n\x06result\x18\x0b \x01(\x0b22.chalk.weightstream.v1.WeightStreamPromotionResultH\x00R\x06result\x12*\n\x05error\x18\x0c \x01(\x0b2\x12.google.rpc.StatusH\x00R\x05error\x12\'\n\x0fcleanup_pending\x18\r \x01(\x08R\x0ecleanupPendingB\t\n\x07outcome"\xc9\x01\n!StartWeightStreamPromotionRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12\x1d\n\nmodel_name\x18\x03 \x01(\tR\tmodelName\x12\x18\n\x07aliases\x18\x04 \x03(\tR\x07aliases\x12\'\n\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey"p\n"StartWeightStreamPromotionResponse\x12J\n\tpromotion\x18\x01 \x01(\x0b2,.chalk.weightstream.v1.WeightStreamPromotionR\tpromotion"D\n\x1fGetWeightStreamPromotionRequest\x12!\n\x0cpromotion_id\x18\x01 \x01(\tR\x0bpromotionId"n\n GetWeightStreamPromotionResponse\x12J\n\tpromotion\x18\x01 \x01(\x0b2,.chalk.weightstream.v1.WeightStreamPromotionR\tpromotion"G\n"CancelWeightStreamPromotionRequest\x12!\n\x0cpromotion_id\x18\x01 \x01(\tR\x0bpromotionId"q\n#CancelWeightStreamPromotionResponse\x12J\n\tpromotion\x18\x01 \x01(\x0b2,.chalk.weightstream.v1.WeightStreamPromotionR\tpromotion*\x94\x01\n\x17WeightStreamVersionKind\x12*\n&WEIGHT_STREAM_VERSION_KIND_UNSPECIFIED\x10\x00\x12\'\n#WEIGHT_STREAM_VERSION_KIND_KEYFRAME\x10\x01\x12$\n WEIGHT_STREAM_VERSION_KIND_PATCH\x10\x02*\x87\x03\n\x1aWeightStreamPromotionState\x12-\n)WEIGHT_STREAM_PROMOTION_STATE_UNSPECIFIED\x10\x00\x12(\n$WEIGHT_STREAM_PROMOTION_STATE_QUEUED\x10\x01\x12/\n+WEIGHT_STREAM_PROMOTION_STATE_MATERIALIZING\x10\x02\x12-\n)WEIGHT_STREAM_PROMOTION_STATE_REGISTERING\x10\x03\x12,\n(WEIGHT_STREAM_PROMOTION_STATE_CANCELLING\x10\x04\x12+\n\'WEIGHT_STREAM_PROMOTION_STATE_SUCCEEDED\x10\x05\x12(\n$WEIGHT_STREAM_PROMOTION_STATE_FAILED\x10\x06\x12+\n\'WEIGHT_STREAM_PROMOTION_STATE_CANCELLED\x10\x072\xc8\r\n\x13WeightStreamService\x12~\n\x12CreateWeightStream\x120.chalk.weightstream.v1.CreateWeightStreamRequest\x1a1.chalk.weightstream.v1.CreateWeightStreamResponse"\x03\x80}\x0c\x12u\n\x0fGetWeightStream\x12-.chalk.weightstream.v1.GetWeightStreamRequest\x1a..chalk.weightstream.v1.GetWeightStreamResponse"\x03\x80}\x0b\x12{\n\x11ListWeightStreams\x12/.chalk.weightstream.v1.ListWeightStreamsRequest\x1a0.chalk.weightstream.v1.ListWeightStreamsResponse"\x03\x80}\x0b\x12\x93\x01\n\x19RecordWeightStreamVersion\x127.chalk.weightstream.v1.RecordWeightStreamVersionRequest\x1a8.chalk.weightstream.v1.RecordWeightStreamVersionResponse"\x03\x80}\x0e\x12\x90\x01\n\x18ListWeightStreamVersions\x126.chalk.weightstream.v1.ListWeightStreamVersionsRequest\x1a7.chalk.weightstream.v1.ListWeightStreamVersionsResponse"\x03\x80}\x0b\x12~\n\x12SetWeightStreamPin\x120.chalk.weightstream.v1.SetWeightStreamPinRequest\x1a1.chalk.weightstream.v1.SetWeightStreamPinResponse"\x03\x80}\x0e\x12\x84\x01\n\x14ClearWeightStreamPin\x122.chalk.weightstream.v1.ClearWeightStreamPinRequest\x1a3.chalk.weightstream.v1.ClearWeightStreamPinResponse"\x03\x80}\x0e\x12\xed\x01\n\x1aPromoteWeightStreamVersion\x128.chalk.weightstream.v1.PromoteWeightStreamVersionRequest\x1a9.chalk.weightstream.v1.PromoteWeightStreamVersionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16model_registry_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xed\x01\n\x1aStartWeightStreamPromotion\x128.chalk.weightstream.v1.StartWeightStreamPromotionRequest\x1a9.chalk.weightstream.v1.StartWeightStreamPromotionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16model_registry_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\x90\x01\n\x18GetWeightStreamPromotion\x126.chalk.weightstream.v1.GetWeightStreamPromotionRequest\x1a7.chalk.weightstream.v1.GetWeightStreamPromotionResponse"\x03\x80}\x0b\x12\x99\x01\n\x1bCancelWeightStreamPromotion\x129.chalk.weightstream.v1.CancelWeightStreamPromotionRequest\x1a:.chalk.weightstream.v1.CancelWeightStreamPromotionResponse"\x03\x80}\x0cB\xbf\x01\n\x19com.chalk.weightstream.v1B\x0cServiceProtoP\x01Z\x1eweightstream/v1;weightstreamv1\xa2\x02\x03CWX\xaa\x02\x15Chalk.Weightstream.V1\xca\x02\x15Chalk\\Weightstream\\V1\xe2\x02!Chalk\\Weightstream\\V1\\GPBMetadata\xea\x02\x17Chalk::Weightstream::V1b\x06proto3',
     [
         permissions_pb.desc(),
         flags_pb.desc(),
         timestamp_pb.desc(),
+        status_pb.desc(),
     ],
     {
         "WeightStream": WeightStream,
@@ -905,7 +1327,16 @@ _DESC = file_desc(
         "ClearWeightStreamPinResponse": ClearWeightStreamPinResponse,
         "PromoteWeightStreamVersionRequest": PromoteWeightStreamVersionRequest,
         "PromoteWeightStreamVersionResponse": PromoteWeightStreamVersionResponse,
+        "WeightStreamPromotionResult": WeightStreamPromotionResult,
+        "WeightStreamPromotion": WeightStreamPromotion,
+        "StartWeightStreamPromotionRequest": StartWeightStreamPromotionRequest,
+        "StartWeightStreamPromotionResponse": StartWeightStreamPromotionResponse,
+        "GetWeightStreamPromotionRequest": GetWeightStreamPromotionRequest,
+        "GetWeightStreamPromotionResponse": GetWeightStreamPromotionResponse,
+        "CancelWeightStreamPromotionRequest": CancelWeightStreamPromotionRequest,
+        "CancelWeightStreamPromotionResponse": CancelWeightStreamPromotionResponse,
         "WeightStreamVersionKind": WeightStreamVersionKind,
+        "WeightStreamPromotionState": WeightStreamPromotionState,
     },
 )
 
