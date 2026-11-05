@@ -19,15 +19,13 @@ def main():
     activate_controller_sdk(args.cpu_ledger.parent)
     from ftqa_smoke import load_env
     from profile_verify import verify
-    from profile_writers import process_identity
+    from profile_sharded_processes import members, prove_registered_absent
 
     load_env(args.env_file)
     record = json.loads(args.cpu_ledger.read_bytes())
-    if any(
-        process_identity(v["pid"]) is not None
-        for v in record.get("cleanup_workers", [])
-    ):
-        raise RuntimeError("Owned cleanup worker process remains")
+    prove_registered_absent(args.cpu_ledger)
+    if members(record["launcher_identity"]):
+        raise RuntimeError("Owned controller group descendants remain")
     print(json.dumps(verify(args.cpu_ledger, None, args.out), indent=2))
 
 

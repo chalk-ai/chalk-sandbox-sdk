@@ -21,6 +21,7 @@ NEW_SOURCES = (
     "profile_sharded_guard.py",
     "profile_sharded_plan.py",
     "profile_sharded_verify.py",
+    "profile_sharded_processes.py",
 )
 POLICY = {
     "base_profile_plan_sha256": "94d331f3509a50d1ce5d0eb4e7dc1f987151311f931e12f7bd8ab2a0798c06f9",
@@ -148,6 +149,8 @@ def validate_ledger(ledger):
         or record.get("memory") != plan["memory"]
         or record.get("gpu_claimed") is not False
         or record.get("launcher_identity", {}).get("pid") != record.get("launcher_pid")
+        or record.get("launcher_identity", {}).get("group")
+        != record.get("launcher_pid")
     ):
         raise RuntimeError("Synthetic ledger differs from frozen fixed lease/resources")
     return record
@@ -241,6 +244,15 @@ def preview(out):
             str(out / "guard/profile_sharded_guard.py"),
             "--cleanup",
             str(out / "launcher.json"),
+            "--env-file",
+            "<FTQA_ENV_FILE>",
+        ],
+        "recover_release_only": [
+            sys.executable,
+            str(out / "guard/profile_sharded_guard.py"),
+            "--cleanup",
+            str(out / "launcher.json"),
+            "--recover-release",
             "--env-file",
             "<FTQA_ENV_FILE>",
         ],

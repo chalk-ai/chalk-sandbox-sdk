@@ -22,12 +22,12 @@ staging; arbitrary nested metadata directories are not supported.
 
 ## Separate frozen remote candidate — unexecuted
 
-`sharded-synthetic-frozen-v1` is separate from the unchanged full-8B frozen v4.
+`sharded-synthetic-frozen-v2` is separate from the unchanged full-8B frozen v4.
 Its plan SHA-256 is
-`d4987c36e1c4b561bab75b2dd656fee02b3ce3d74ed145e54dea479fd4d5de3a`.
+`3b30b3291b1ebf43b65519edf02fc2526dc6be5bfcf4b9999c57e7cce60c322a`.
 The local artifact is under
-`chalk-private/.artifacts/weight-sync-p0/sharded-synthetic-frozen-v1/`.
-It contains 27 frozen helper sources, 239 controller SDK sources, the reviewed
+`chalk-private/.artifacts/weight-sync-p0/sharded-synthetic-frozen-v2/`.
+It contains 28 frozen helper sources, 239 controller SDK sources, the reviewed
 runtime overlay and pinned prebuilt image, and a compiled 91,439-byte entrypoint.
 `preview.json` contains exact validation, execution, cleanup and verification
 commands. No execution authorization or resource allocation has been created.
@@ -35,13 +35,27 @@ commands. No execution authorization or resource allocation has been created.
 The proposed phase uses the singleton Oracle HOST pool, **4 CPU, 8 GiB RAM,
 zero GPU**, with an absolute 600-second phase deadline and 120-second cleanup
 reserve. Its relative sandbox TTL is at most the remaining work time, reserving
-the complete lost-create/reconciliation window. The independent watchdog stops
-the original controller at the work cutoff or launcher death, then retries
-cleanup using bounded, inert-until-registered process-group workers. Every
+the complete lost-create/reconciliation window. The watchdog is the sole cleanup API owner. The controller creates an owned
+session before work, requests cleanup in finally, and waits without issuing
+release calls. At cutoff or launcher death the watchdog stops and proves absence
+of the complete controller group, then retries cleanup using bounded,
+inert-until-registered worker groups. A kernel lock prevents overlapping cleanup
+supervisors. Each worker starts an independent OS monitor before authorization;
+it watches the full supervisor and worker identities and the absolute deadline
+while API calls run, and kills the entire group on owner death, timeout or exit.
+Durable per-attempt files retain identities independently of mutable ledger
+updates. Teardown and the verifier enumerate nonzombie group descendants even
+when their leader has exited. Every
 attempt reloads canonical UUID/owner identities and retains phase-specific error
 history. Unknown UUIDs or failed native/metadata absence proofs never become
 successful release claims. A deadline failure remains explicit for parent
 intervention; elapsed lease time alone does not prove resource release.
+A separate `recover_release_only` preview command allows at most 120 seconds of
+release-only recovery after expiry. It stops exact owned groups and retries
+compute/data release while respecting ambiguous-create horizons, without new
+creates or changes to the original lease. Execution failure is permanent even
+when release recovery succeeds. Frozen v1 remains immutable, superseded, and
+unexecuted.
 
 Before creating metadata and again before sandbox submission, the launcher
 checks live host capacity. The existing membership helper retains its stronger
@@ -74,12 +88,17 @@ resource change.
 
 ## Local validation and remaining work
 
-All **166 weight-sync harness tests** pass, including 15 focused sharded tests.
+All **176 weight-sync harness tests** pass, including 25 focused sharded tests.
 They cover actual SDK batch staging, atomic pointer visibility, both sides of
 lost patch/reference responses, baseline/patch corruption, wrong index mappings,
 changing source bytes, transient cleanup retries and late identity recovery,
 unknown UUID deadline failure, launcher death during create, reused-PID refusal,
-and enforced runtime limits/peak counters. Added Python sources pass Ruff and ty.
+and enforced runtime limits/peak counters. Six real local process tests exercise
+post-authorization blocked work during supervisor death, deadline expiry, inert
+startup death, worker success/failure with inherited children, and descendants
+after leader exit. Recovery tests preserve execution failure and metadata
+reconciliation horizons; a kernel-lock test rejects a second cleanup API owner.
+Added Python sources pass Ruff and ty.
 
 Actual remote SDK cache/upload/cgroup/disk measurements remain **unmeasured**.
 The candidate requires parent source/command review before any allocation.

@@ -174,6 +174,7 @@ def execute(out, authorization_path, env_file):
 
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
+    work_passed = False
     try:
         write_json(out / "host-membership-before-create.json", host.membership())
         capacity = profile_capacity.collect_raw()
@@ -293,20 +294,28 @@ def execute(out, authorization_path, env_file):
         )
         record["status"] = "proof_complete"
         guard.write_json(ledger, record)
+        work_passed = True
     finally:
-        guard.release_cpu(record, out)
-        if record.get("submission_inflight"):
-            raise RuntimeError("Ambiguous CPU submission; detached guard remains armed")
-        guard.release_data(record)
-        record["status"] = "released"
-        guard.write_json(ledger, record)
-        guard.write_json(out / "cpu-watchdog-disarmed.json", {"phase_id": phase})
-        watch.wait(timeout=15)
+        # The detached watchdog is the only cleanup API writer. Controller has
+        # stopped all work and issues no API calls while waiting for teardown.
+        write_json(
+            out / "cpu-cleanup-request.json",
+            {
+                "phase_id": phase,
+                "controller_work_stopped": True,
+                "execution_passed": work_passed,
+            },
+        )
+        watch.wait(timeout=max(1, record["cpu_deadline_epoch"] - time.time()))
         if watch.returncode or not (out / "cpu-watchdog-exited.json").exists():
-            raise RuntimeError("CPU cleanup watchdog exit unconfirmed")
+            raise RuntimeError("Watchdog cleanup unconfirmed")
 
 
 def main():
+    if os.getsid(0) != os.getpid():
+        os.setsid()
+    if os.getsid(0) != os.getpid() or os.getpgrp() != os.getpid():
+        raise RuntimeError("Controller requires its own session/group before any work")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--authorization", type=Path, required=True)
