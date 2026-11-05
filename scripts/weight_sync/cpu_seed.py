@@ -23,6 +23,8 @@ from training_smoke import ResourceGuard
 
 LEASE_SECONDS = 1200
 STARTUP_SECONDS = 900
+CREATE_RPC_SECONDS = 60
+CREATE_RECONCILE_GRACE_SECONDS = 60
 
 
 def write_json(path, data):
@@ -81,9 +83,16 @@ class GuardedSandboxStub:
         os.kill(ready["pid"], 0)
         if (self.ledger.parent / "cpu-expired").exists():
             raise TimeoutError("CPU watchdog has expired")
+        rpc_seconds = min(CREATE_RPC_SECONDS, remaining(self.record))
+        self.record["create_rpc_deadline_epoch"] = time.time() + rpc_seconds
+        self.record["create_reconcile_until_epoch"] = (
+            self.record["create_rpc_deadline_epoch"] + CREATE_RECONCILE_GRACE_SECONDS
+        )
         self.record["submission_inflight"] = True
         write_json(self.ledger, self.record)
-        response = self.stub.create_sandbox(request, **kwargs)
+        response = self.stub.create_sandbox(
+            request, timeout_ms=max(1, int(rpc_seconds * 1000)), **kwargs
+        )
         if response.sandbox:
             self.record["seed_sandbox_id"] = response.sandbox.id
         self.record["submission_inflight"] = False
@@ -166,7 +175,9 @@ def watchdog(ledger):
         record["fallback_kube_context"],
     )
     guard.out.mkdir(exist_ok=True)
-    guard.kube_items("chalkcontainers", name="cpu-preflight-" + phase)
+    for context in guard.kube_contexts:
+        for resource in ("chalkcontainers", "pods"):
+            guard.kube_items(resource, name="cpu-preflight-" + phase, context=context)
     write_json(
         out / "cpu-watchdog-ready.json",
         {"phase_id": phase, "pid": os.getpid(), "ready_at": time.time()},
@@ -208,16 +219,28 @@ def watchdog(ledger):
     errors = []
     history = []
     # Late ambiguous creates must be reconciled even after a first absent list.
-    for attempt in range(6):
+    reconcile_until = max(
+        time.time() + CREATE_RECONCILE_GRACE_SECONDS,
+        record.get("create_reconcile_until_epoch", 0),
+    )
+    attempt = 0
+    while True:
         record = json.loads(ledger.read_text())
+        reconcile_until = max(
+            reconcile_until, record.get("create_reconcile_until_epoch", 0)
+        )
         errors = []
         try:
             release_cpu(record, guard.out)
         except Exception as error:
             errors.append(f"compute attempt {attempt}: {type(error).__name__}: {error}")
             history.extend(errors)
-        if attempt != 5:
-            time.sleep(10)
+        attempt += 1
+        if attempt >= 6 and time.time() >= reconcile_until:
+            break
+        time.sleep(10)
+    record["create_reconciled_until_epoch"] = time.time()
+    record["submission_inflight"] = False
     if not errors:
         try:
             release_data(record)
@@ -316,12 +339,33 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     client = ConnectClient()
     client._ensure_auth()
-    contexts = subprocess.check_output(
+    from chalkcompute._gen.chalk.server.v1 import team_connect, team_pb
+
+    environment = client.call(
+        client.stub(team_connect.TeamServiceClientSync).get_env,
+        team_pb.GetEnvRequest(),
+    ).environment
+    if environment.id != client._env_id:
+        raise RuntimeError(
+            "Environment metadata differs from authenticated environment"
+        )
+    parts = environment.kube_cluster_name.split("/")
+    derived_context = "gke_" + parts[1] + "_" + parts[3] + "_" + parts[5]
+    available_contexts = subprocess.check_output(
         ["kubectl", "config", "get-contexts", "-o", "name"], text=True
     ).splitlines()
-    contexts = [value for value in contexts if "chalk-serverless-stage" in value]
-    if not contexts:
-        raise RuntimeError("No staging serverless cleanup contexts")
+    if derived_context not in available_contexts:
+        raise RuntimeError("API-reported environment kube context is unavailable")
+    contexts = list(
+        dict.fromkeys(
+            [derived_context]
+            + [
+                value
+                for value in available_contexts
+                if "chalk-serverless-stage" in value
+            ]
+        )
+    )
     name = "weight-cpu-seed-" + uuid.uuid4().hex[:10]
     record = {
         "name": name,
@@ -329,7 +373,7 @@ def main():
         "cpu_phase_id": uuid.uuid4().hex,
         "launcher_pid": os.getpid(),
         "environment_id": client._env_id,
-        "expected_namespaces": [client._env_id, "ns-" + client._env_id],
+        "expected_namespaces": [environment.id, environment.kube_job_namespace],
         "kube_context": contexts[0],
         "fallback_kube_context": contexts[-1],
         "kube_contexts": contexts,

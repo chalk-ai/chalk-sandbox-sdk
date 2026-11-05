@@ -91,6 +91,11 @@ def test_create_requires_independent_live_watchdog_and_persists_id(tmp_path):
         def create_sandbox(self, request, **kwargs):
             persisted = json.loads(ledger.read_text())
             assert persisted["submission_inflight"] is True
+            assert 0 < kwargs["timeout_ms"] <= 60000
+            assert (
+                persisted["create_reconcile_until_epoch"]
+                == persisted["create_rpc_deadline_epoch"] + 60
+            )
             calls.append(request)
             return SimpleNamespace(sandbox=SimpleNamespace(id="sandbox-exact"))
 
@@ -135,3 +140,23 @@ def test_ambiguous_create_remains_inflight_for_detached_recovery(tmp_path):
     with pytest.raises(ConnectionError):
         GuardedSandboxStub(Stub(), record, ledger).create_sandbox("request")
     assert json.loads(ledger.read_text())["submission_inflight"] is True
+
+
+def test_late_success_persists_id_but_refuses_work_after_deadline(tmp_path):
+    record, _ = handoff()
+    ledger = tmp_path / "launcher.json"
+    write_json(
+        tmp_path / "cpu-watchdog-ready.json",
+        {"phase_id": record["cpu_phase_id"], "pid": os.getpid()},
+    )
+
+    class Stub:
+        def create_sandbox(self, request, **kwargs):
+            record["cpu_deadline_epoch"] = time.time() - 1
+            return SimpleNamespace(sandbox=SimpleNamespace(id="late-exact-id"))
+
+    with pytest.raises(TimeoutError):
+        GuardedSandboxStub(Stub(), record, ledger).create_sandbox("request")
+    persisted = json.loads(ledger.read_text())
+    assert persisted["seed_sandbox_id"] == "late-exact-id"
+    assert persisted["submission_inflight"] is False
