@@ -992,9 +992,15 @@ class Volume:
         list of VersionInfo
             One entry per immutable version, ordered by the server.
         """
+        return list(self.iter_versions(limit=limit))
+
+    def iter_versions(self, *, limit: int = 100) -> Iterator[VersionInfo]:
+        """Traverse immutable version history page by page without collecting it."""
+        if not 1 <= limit <= 1000:
+            raise ValueError("Version history page size must be between 1 and 1000")
         self._ensure_ready()
-        versions: list[VersionInfo] = []
         cursor = ""
+        seen_cursors: set[str] = set()
         while True:
             response = self._client._list_volume_versions(
                 self._name,
@@ -1002,10 +1008,13 @@ class Volume:
                 cursor=cursor,
                 ref_name=self._selector_ref(),
             )
-            versions.extend(_proto_to_version_info(v) for v in response.versions)
+            yield from (_proto_to_version_info(v) for v in response.versions)
             cursor = response.next_cursor
             if not cursor:
-                return versions
+                return
+            if cursor in seen_cursors:
+                raise VolumeError("Volume version history repeated a pagination cursor")
+            seen_cursors.add(cursor)
 
     def latest_version(self) -> VersionInfo:
         """Fetch the latest committed version on this handle's ref.

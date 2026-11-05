@@ -33,6 +33,9 @@ from chalkcompute._weights_format import (
 if TYPE_CHECKING:
     import torch
 
+    from chalkcompute._connect import ConnectClient
+    from chalkcompute._weight_stream_metadata import _WeightStreamMetadata
+
 
 class WeightStream:
     """Versioned model weights with one active publisher and independent PIN writes.
@@ -52,6 +55,7 @@ class WeightStream:
         if self._volume.ref != "main" or self._volume.version_id is not None:
             raise ValueError("Weight streams require a mutable main volume ref")
         self._lock = threading.RLock()
+        self._metadata: _WeightStreamMetadata | None = None
 
     @property
     def volume(self) -> Volume:
@@ -61,6 +65,57 @@ class WeightStream:
     def create(self) -> WeightStream:
         self._volume.reload()
         return self
+
+    @property
+    def id(self) -> str | None:
+        """Registered control-plane ID, or None for explicit volume-only usage."""
+        return self._metadata.id if self._metadata is not None else None
+
+    def register(
+        self, *, client: ConnectClient | None = None, max_snapshots: int = 1000
+    ) -> WeightStream:
+        """Register/attach this volume and reconcile its immutable publications.
+
+        Without registration the stream remains a volume-only publisher. The
+        optional client is borrowed; the caller retains its cleanup obligation.
+        Registration uses the volume's authenticated environment by default.
+        """
+        from chalkcompute._weight_stream_metadata import register
+
+        with self._lock:
+            if self._metadata is None:
+                self._metadata = register(self, client or self._volume._client._connect)
+            self._metadata.reconcile(self, max_snapshots=max_snapshots)
+        return self
+
+    def reconcile(self, *, max_snapshots: int = 1000) -> list[int]:
+        """Retry pending metadata, newest first, using original volume snapshots.
+
+        Manifests and immutable volume history form the durable retry outbox;
+        no in-process queue is required. CURRENT/PIN are never changed here.
+        """
+        with self._lock:
+            if self._metadata is None:
+                raise WeightStreamError(
+                    "Register the stream before reconciling metadata"
+                )
+            return self._metadata.reconcile(self, max_snapshots=max_snapshots)
+
+    @property
+    def reconciliation_stats(self) -> dict[str, int | float]:
+        """Last reconciliation's snapshot/read/record counts and elapsed seconds."""
+        return dict(self._metadata.last_reconcile_stats) if self._metadata else {}
+
+    def _record_committed(self, version: int, snapshot_id: int) -> None:
+        if self._metadata is not None:
+            from chalkcompute._weight_stream_metadata import WeightMetadataPending
+
+            try:
+                self._metadata.record(
+                    self, self._volume.at_version(snapshot_id), version
+                )
+            except Exception as error:
+                raise WeightMetadataPending(version, snapshot_id) from error
 
     def _snapshot(self) -> Volume:
         self._volume.reload()
@@ -108,6 +163,9 @@ class WeightStream:
 
     def pin(self, version: int) -> None:
         with self._lock:
+            if self._metadata is not None:
+                self._metadata.pin(version)
+                return
             snapshot = self._snapshot()
             target = WeightManifest.from_json(
                 snapshot.read_file(f"{version_dir(version)}/manifest.json")
@@ -118,6 +176,9 @@ class WeightStream:
     def unpin(self) -> None:
         # A tombstone avoids races between a deletion and a concurrent publication.
         with self._lock:
+            if self._metadata is not None:
+                self._metadata.pin(None)
+                return
             self._volume.put_file("PIN", pointer_json(None))
 
     def pinned(self) -> int | None:
@@ -311,10 +372,11 @@ class WeightStream:
                 architecture_hash(config, tensors),
                 tuple(entries),
             )
-            self._commit(manifest, files)
+            snapshot_id = self._commit(manifest, files)
+            self._record_committed(0, snapshot_id)
             return 0
 
-    def _commit(self, manifest: WeightManifest, files: list[tuple[str, Path]]) -> None:
+    def _commit(self, manifest: WeightManifest, files: list[tuple[str, Path]]) -> int:
         if len(files) + 2 > 200:
             raise WeightStreamError("Publication exceeds atomic 200-file volume commit")
         # Stale-parent rejection; one active publishing process is a contract.
@@ -331,8 +393,12 @@ class WeightStream:
                 batch.put_file(f"{prefix}/{name}", path)
             batch.put(f"{prefix}/manifest.json", manifest.to_json())
             batch.put("CURRENT", pointer_json(manifest.version))
+        # Batch upload retains the server-returned immutable commit version.
+        # Capture it before reloading main, which may already include a PIN write.
+        committed_snapshot_id = self._volume.version.id
         if self.current() != manifest.version:
             raise WeightStreamError("Concurrent publisher detected after commit")
+        return committed_snapshot_id
 
 
 class _TensorSpec:
@@ -565,8 +631,11 @@ class WeightPublisher:
                     trainer_step=step,
                     training_run_id=self.training_run_id,
                 )
-                self.stream._commit(manifest, files)
+                snapshot_id = self.stream._commit(manifest, files)
             self._previous, self._version, self._architecture = frozen, version, arch
+            # Retained state advances with the committed volume even when the
+            # independent metadata index is temporarily unavailable.
+            self.stream._record_committed(version, snapshot_id)
             return version
 
 

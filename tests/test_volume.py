@@ -1244,3 +1244,32 @@ def test_native_client_symbol_is_bound() -> None:
         pytest.skip("native extension not built")
     assert _volume._NativeVolumeClient is not None
     assert _volume._NativeVolumeRpcError is not None
+
+
+def test_iter_versions_is_lazy_and_page_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.list_volume_versions.side_effect = [
+        pb_v2.ListVolumeVersionsResponse(
+            versions=[_version_proto(1)], next_cursor="next"
+        ),
+        pb_v2.ListVolumeVersionsResponse(versions=[_version_proto(2)]),
+    ]
+    versions = Volume("models", client=client).iter_versions(limit=1)
+    assert client._rpc.list_volume_versions.call_count == 0
+    assert next(versions).id == 1
+    assert client._rpc.list_volume_versions.call_count == 1
+    versions.close()
+    assert client._rpc.list_volume_versions.call_count == 1
+
+
+def test_iter_versions_rejects_repeated_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.list_volume_versions.return_value = pb_v2.ListVolumeVersionsResponse(
+        next_cursor="loop"
+    )
+    with pytest.raises(VolumeError, match="repeated"):
+        list(Volume("models", client=client).iter_versions())

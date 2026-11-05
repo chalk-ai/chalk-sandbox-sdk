@@ -56,3 +56,46 @@ The script creates a unique volume, publishes a keyframe/patch/restore, exercise
 pin/unpin and exact materialization, then deletes only its volume in `finally`
 and verifies deletion. It allocates no sandbox or GPU. Credentials are never
 included in its JSON result.
+
+## Optional control-plane registration
+
+The example above works directly with the volume. Call `stream.register()` to
+attach an existing volume (including already published or live-ref-pruned history)
+to WeightStreamService and index its publications. `stream.id` then exposes its
+immutable control-plane identity. Registration checks that an existing stream name
+has the same volume and base model; a missing base model can be recovered from a
+published manifest. Registered pin/unpin operations use the service's authoritative
+PIN commit and metadata path. The volume's authenticated environment is used.
+
+After registration each publication first commits the volume, advances the
+publisher's retained diff state, and then records its metadata. A metadata outage
+raises `WeightMetadataPending`, which includes `version` and `volume_version_id`:
+**the publication has already succeeded**. Continue with the next logical version;
+retry `stream.reconcile()` to index committed publications rather than publishing
+the same version again. For example:
+
+```python
+from chalkcompute.weights import WeightMetadataPending
+
+stream.register()
+try:
+    version = publisher.publish(model.state_dict(), step=training_step)
+except WeightMetadataPending as committed:
+    version = committed.version
+    stream.reconcile()  # Retry later if the control plane is still unavailable.
+```
+
+Manifests and immutable volume history form a durable retry outbox. Reconciliation
+records missing versions newest first using each publication's original snapshot;
+PIN writes, later publications, and live-ref pruning never substitute a later
+snapshot into an existing descriptor. Repeated reconciliation is idempotent, also
+when an indexing response was lost after server success. Normal publication uses
+the batch commit's returned immutable version and does not scan history.
+
+`reconcile(max_snapshots=1000)` traverses volume history lazily in bounded pages,
+refuses incomplete or ambiguous history, and fails clearly if the explicit snapshot
+bound is exceeded. Raise the bound deliberately for longer histories. Inspect
+`stream.reconciliation_stats` for snapshot/read/record counts and elapsed seconds.
+Dense fallback does not retain the exact changed-element count: indexed density is
+the transmitted-element fraction, an upper bound on actual changed elements.
+CURRENT/PIN in the volume remain authoritative even when the index is unavailable.
