@@ -316,6 +316,13 @@ class EvaluationSuite:
     created_at: datetime | None = None
     _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
 
+    archived_at: datetime | None = None
+    archived_by: str | None = None
+
+    def archive(self) -> EvaluationSuite:
+        """Hide this suite and its evaluations and runs, preserving datasets."""
+        return self._require_client().archive_suite(self.id)
+
     @classmethod
     def create(cls, name: str, *, chalk_client: Any | None = None) -> EvaluationSuite:
         """Create an evaluation suite in the active environment."""
@@ -670,6 +677,26 @@ class EvaluationClient:
             evaluation_pb.ListEvaluationSuitesRequest(),
         )
         return [_evaluation_suite_from_proto(raw, self) for raw in response.suites]
+
+    @_instrumented("chalkcompute.evaluation_suite.archive")
+    def archive_suite(self, suite_id: str) -> EvaluationSuite:
+        """Archive a suite and hide its evaluations and runs from lists.
+
+        Preserves datasets and running work. Default cannot be archived.
+        Repeated calls succeed; the original handle is not mutated.
+        """
+        suite_id = suite_id.strip()
+        if not suite_id:
+            raise ValueError("suite_id is required")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.archive_evaluation_suite,
+            evaluation_pb.ArchiveEvaluationSuiteRequest(suite_id=suite_id),
+            not_found_subject=f"Evaluation suite {suite_id!r} not found",
+        )
+        if response.suite is None:
+            raise EvaluationError("ArchiveEvaluationSuite returned no suite")
+        return _evaluation_suite_from_proto(response.suite, self)
 
     @_instrumented("chalkcompute.evaluation.archive")
     def archive(self, evaluation_id: str) -> Evaluation:
@@ -1089,6 +1116,15 @@ def _evaluation_suite_from_proto(
         environment_id=raw.environment_id or None,
         created_by=raw.created_by or None,
         created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        archived_at=(
+            raw.archive_status.archived_at.to_datetime()
+            if raw.archive_status is not None
+            and raw.archive_status.archived_at is not None
+            else None
+        ),
+        archived_by=raw.archive_status.archived_by
+        if raw.archive_status is not None
+        else None,
         _client=client,
     )
 

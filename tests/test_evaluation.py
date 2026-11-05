@@ -958,3 +958,61 @@ def test_archive_requires_evaluation_in_response() -> None:
     )
     with pytest.raises(EvaluationError, match="returned no evaluation"):
         EvaluationClient(connect_client=transport).archive("eval-1")
+
+
+def test_archive_suite_returns_new_handle_and_archive_metadata() -> None:
+    transport = _FakeConnectClient(
+        {
+            "create_evaluation_suite": [
+                _message(
+                    evaluation_pb.CreateEvaluationSuiteResponse,
+                    {"suite": {"id": "suite-1", "name": "Release"}},
+                )
+            ],
+            "archive_evaluation_suite": [
+                _message(
+                    evaluation_pb.ArchiveEvaluationSuiteResponse,
+                    {
+                        "suite": {
+                            "id": "suite-1",
+                            "name": "Release",
+                            "archiveStatus": {
+                                "archivedAt": "2026-11-05T12:00:00Z",
+                                "archivedBy": "user-1",
+                            },
+                        }
+                    },
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=transport)
+    original = client.create_suite("Release")
+    archived = original.archive()
+    assert archived.id == original.id
+    assert archived.archived_at is not None
+    assert archived.archived_by == "user-1"
+    assert original.archived_at is None
+    assert archived._client is client
+    assert transport.calls[-1][0] == "archive_evaluation_suite"
+    assert transport.calls[-1][1].suite_id == original.id
+
+
+def test_archive_suite_validates_id_and_response() -> None:
+    transport = _FakeConnectClient(
+        {"archive_evaluation_suite": [evaluation_pb.ArchiveEvaluationSuiteResponse()]}
+    )
+    client = EvaluationClient(connect_client=transport)
+    with pytest.raises(ValueError, match="suite_id"):
+        client.archive_suite(" ")
+    assert transport.calls == []
+    with pytest.raises(EvaluationError, match="returned no suite"):
+        client.archive_suite("suite-1")
+
+
+def test_archive_suite_translates_not_found() -> None:
+    transport = _FakeConnectClient(
+        {"archive_evaluation_suite": [ConnectRpcError(Code.NOT_FOUND, "missing")]}
+    )
+    with pytest.raises(EvaluationNotFoundError):
+        EvaluationClient(connect_client=transport).archive_suite("missing")
