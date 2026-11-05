@@ -1,9 +1,9 @@
 # Disposable weight sync validation
 
-These opt-in scripts claim one FTQA A100 80GB, run real ChalkFS/vLLM 0.33 checks,
-copy lightweight evidence locally, terminate the sandbox and verify its terminal
-status, then delete and verify removal of the unique stream volume. They do not
-run from imports or ordinary tests. The sandbox also has a one-hour maximum lifetime.
+The standalone `ftqa_smoke.py` opts into one FTQA A100 80GB and real ChalkFS/vLLM
+0.33 checks. It copies lightweight evidence locally, terminates the sandbox and
+verifies its terminal status, then deletes and verifies removal of its unique
+stream volume. These scripts do not run from imports or ordinary tests. The sandbox also has a one-hour maximum lifetime.
 
 The source checkout must integrate both the publisher and serving feature branches.
 This scripts PR deliberately adds no publisher implementation. For the recorded
@@ -65,22 +65,58 @@ PYTHONPATH=/path/to/integrated-sdk python scripts/weight_sync/training_smoke.py 
   --source-root /path/to/integrated-sdk --env-file /path/to/ftqa.env \
   --out /path/to/cpu-preparation
 
+# This CPU-only command pauses after full proof and CPU compute release.
+PYTHONPATH=/path/to/integrated-sdk python scripts/weight_sync/cpu_seed.py \
+  --prepared-image /path/to/cpu-preparation/image.json \
+  --env-file /path/to/ftqa.env --out /path/to/cpu-seed
+
+# Start only after CPU proof passes. This waits for independent authorization.
 PYTHONPATH=/path/to/integrated-sdk python scripts/weight_sync/training_smoke.py \
   --source-root /path/to/integrated-sdk --env-file /path/to/ftqa.env \
   --prepared-image /path/to/cpu-preparation/image.json \
-  --out /path/to/new-training-evidence --execute --seed-on-serving \
-  --steps 2 --budget-seconds 2400 --external-ssh-host USER@KNOWN_OWNED_HOST
+  --cpu-seed-ledger /path/to/cpu-seed/launcher.json \
+  --out /path/to/new-training-evidence --execute \
+  --steps 2 --budget-seconds 2700 --serving-startup-seconds 600 \
+  --training-timeout-seconds 1200 --external-ssh-host USER@KNOWN_OWNED_HOST
 ```
 
-CPU preparation builds both the base image and the actual packaged training source.
-The execution invocation reuses that base and resolves its exact packaged image
-before claiming GPUs.
-Its default GPU budget is forty minutes, starting before the first serving claim.
-It uses at most one serving and one training A100 80GB simultaneously. Seeding on
-the planned serving GPU avoids a separate acquisition worker. The final full state
-is independently reconstructed and compared byte-for-byte with every canonical
-trained tensor. The trainer and live group stop before a fresh group loads that
-independent checkpoint for exact greedy-output comparison.
+CPU preparation builds both the base image and actual packaged training source.
+Run launchers from outside another SDK checkout (for example `/tmp`) so the
+explicit `PYTHONPATH` selects the integrated package.
+
+CPU seeding uses a fixed twenty-minute lease, K8S two CPUs and 32GiB memory,
+with at most fifteen minutes for startup. Its detached guard and sleep inhibitor
+are ready before one non-replayed CreateSandbox RPC. The payload runs once in a
+NEVER-restarting container entrypoint. Only short read-only progress polls use
+ExecCommand: a retried long K8S ExecCommand can rerun a successful publication.
+An exclusive guest marker prevents re-entry; atomic proof/completion files
+survive a lost polling response. All source shard bytes, immutable shard bytes,
+CURRENT, keyframe manifest, tensor catalog, config and metadata are verified.
+The CPU sandbox and retained UID-owned pods stop before the launcher pauses.
+Only the input volume remains, under the original unextended lease.
+
+The receiver reserves the CPU lease exclusively and arms its detached guard
+before dataset or training metadata creation. It reuses the exact stream name,
+image, source overlay and packaged trainer, without another HF download.
+`gpu-handoff-ready.json` publishes its unique phase, deadline and canonical
+execution-config SHA. An independent reviewer supplies `cpu-authorization.json`
+in the CPU evidence directory only after reviewing this ready proof and the
+CPU proof. The authorization binds the CPU phase, proof SHA, volume and immutable
+snapshot, HF revision, image/overlay/trainer identities, GPU phase/deadline,
+execution-config SHA, and explicit transferred-volume cleanup ownership.
+The launchers never self-authorize. A duplicate or stale receiver claim is refused.
+
+CPU and receiver guards overlap data ownership during transfer. The receiver
+requires a confirmed CPU watchdog exit and unchanged immutable CURRENT/manifest
+before its first GPU request. Data-cleanup errors keep the receiver guard armed
+for independent retries. The forty-five-minute example budget starts before
+receiver metadata preparation and is never extended; it uses at most one live
+serving A100 and one trainer A100. Both the initial and fresh serving starts are
+bounded to ten minutes. The trainer is claimed only with at least 1,920 seconds
+remaining (twenty-minute training cap, fresh-start reserve and cleanup margin).
+The final full state is reconstructed and compared byte-for-byte with every
+canonical trained tensor. The trainer and live group stop before a fresh group
+loads that independent checkpoint for exact greedy-output comparison.
 
 Before training, the launcher closes an actual SSE completion after its first
 chunk. Twenty readiness samples, a healthy follow-up completion, zero failure
@@ -142,3 +178,37 @@ Each page contains at most 500 application logs; the default limit is four pages
 Use `--access` for access logs. The optional `--scaling-group-id` access scope may
 fail after deletion because the API checks the current group row; a query filter
 can still search retained cluster access logs. Credentials never enter the output.
+
+## Reusing the CPU guard
+
+`cpu_seed_guest.py` is pure standard library code. A payload sets a `proof` dict;
+`run_seed_once` records its result durably and `read_progress` only reads files.
+For another bounded CPU preflight, reuse these helpers from `cpu_seed.py`:
+
+- `arm_cpu_watchdog(record, ledger)` starts and verifies the independent guard.
+- `guarded_sandbox_client(record, ledger)` scopes no-replay behavior to creation.
+- `make_guest_program(phase, code, config)` builds the entrypoint and read-only poll.
+- `poll_guest_until_complete(sandbox, record, ledger, poll_code)` retains evidence.
+- `read_guest_file(..., max_bytes=..., record=record)` exports at most 20MiB through
+  short read-only chunks, without requiring HOST filesystem sessions.
+- `release_cpu(record, out)` stops the sandbox and verifies exact CR/UID pods.
+
+Use the Team.GetEnv-derived namespace/context fields shown in the launcher and
+preflight every actual cleanup context. Set `owned_volume_names=[]` for a preflight
+that creates no volume. After successful compute and data release, record status
+`released`, write the matching phase disarm, wait for the watchdog to exit and
+check its exit proof. An ambiguous create remains watchdog-covered through its
+RPC deadline plus reconciliation grace.
+
+`cpu_seed_status.py --ledger ... --verify-volume-absence --env-file ...` is an
+independent read-only release check. It checks retained owner UIDs even after the
+CR disappears and verifies the authenticated environment before volume queries.
+An active seed holds its input volume intentionally; volume absence is required
+after expiry/failure, rather than at the paused handoff gate.
+
+CPU guard regressions make no resource claims:
+
+```sh
+python -m pytest -q -o pythonpath=/path/to/integrated-sdk \
+  scripts/weight_sync/test_*.py
+```
