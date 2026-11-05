@@ -42,6 +42,7 @@ from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
+from chalkcompute._volume_commit import _PreparedVolumeCommit
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,8 @@ class ForkInfo:
     """Metadata for a volume fork.
 
     A fork is an independent version lineage created by :meth:`Volume.fork`.
+    ``sequence_number`` is the server-reported ref sequence, which can differ
+    from ``version_id``. ``None`` means the metadata source did not provide it.
     """
 
     name: str
@@ -106,6 +109,7 @@ class ForkInfo:
     commit_id: str | None = None
     updated_at: datetime.datetime | None = None
     parent_version_id: int | None = None
+    sequence_number: int | None = None
 
 
 class VolumeMountType(Enum):
@@ -296,6 +300,10 @@ class VersionInfo:
         Ref this version was committed on, if known.
     commit_id
         Client-supplied commit identifier that produced this version.
+    sequence_number
+        Server-reported commit sequence for this ref. This may differ from
+        the snapshot identifier. ``None`` means the metadata source did not
+        provide it; zero is a valid sequence.
     """
 
     id: int
@@ -303,6 +311,7 @@ class VersionInfo:
     created_at: datetime.datetime | None = None
     ref: str | None = None
     commit_id: str | None = None
+    sequence_number: int | None = None
 
     @property
     def version_id(self) -> int:
@@ -1202,6 +1211,69 @@ class Volume:
             version_id=self._read_version_id(),
         )
 
+    def _prepare_commit(
+        self,
+        files: Sequence[tuple[str, bytes | Path]],
+        *,
+        commit_id: str,
+        expected_sequence: int,
+    ) -> _PreparedVolumeCommit:
+        """Stage one frozen request without publishing (private groundwork).
+
+        The expected sequence must come from an observed ref. Staging may upload
+        unreferenced objects, but never creates a volume or changes its ref.
+        There is no verified submission API until the server persists and
+        returns proof of the full request associated with a commit ID.
+        """
+        self._ensure_mutable()
+        self._raise_if_closed()
+        self._client._raise_if_closed()
+        if not commit_id or not isinstance(commit_id, str):
+            raise ValueError("commit_id must be a nonempty string")
+        if type(expected_sequence) is not int or not 0 <= expected_sequence < 2**64:
+            raise ValueError("expected_sequence must be an unsigned 64-bit integer")
+        if not files or len(files) > _BATCH_MAX_FILES:
+            raise ValueError("Prepared commit requires one bounded nonempty file batch")
+        environment_id = self._client._connect._env_id
+        if not environment_id or not self._client._chalk_server:
+            raise VolumeError(
+                "Prepared commit requires authenticated environment identity"
+            )
+        ref = self._selector_ref() or "main"
+        # Bypass the create-if-missing behavior of _fetch_info, even for a new
+        # default Volume handle. Freeze the server's stable volume identity.
+        response = self._client._get_volume(self._name, ref_name=ref)
+        if response.volume is None or not response.volume.volume_id:
+            raise VolumeError("GetVolume returned no stable volume identity")
+        if response.volume.name != self._name:
+            raise VolumeError("GetVolume returned a different volume name")
+        try:
+            staged = self._client._inner.stage(
+                self._name, builtins.list(files), _default_upload_config()
+            )
+            serialized = self._client._inner.staged_intent(self._name, staged, ref)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, self._name)
+        intent = pb_v2.CommitIntent.from_binary(bytes(serialized))
+        if intent.volume is None or intent.volume.name != self._name:
+            raise VolumeError("Staged intent changed volume identity")
+        if intent.volume.volume_id not in ("", response.volume.volume_id):
+            raise VolumeError("Staged intent changed stable volume identity")
+        if intent.ref != ref:
+            raise VolumeError("Staged intent changed ref")
+        if intent.has_field("base_version_id") or intent.has_field(
+            "base_sequence_number"
+        ):
+            raise VolumeError("Staged intent unexpectedly captured a base")
+        intent.volume.volume_id = response.volume.volume_id
+        intent.commit_id = commit_id
+        intent.base_sequence_number = expected_sequence
+        return _PreparedVolumeCommit(
+            server=self._client._chalk_server,
+            environment_id=environment_id,
+            intent_bytes=intent.to_binary(),
+        )
+
     def _commit_files(self, files: list[tuple[str, bytes]]) -> VersionInfo:
         self._ensure_mutable()
         self._ensure_ready()
@@ -1984,6 +2056,7 @@ def _proto_to_version_info(info: pb_v2.VersionInfo) -> VersionInfo:
         created_at=_timestamp_to_datetime(info.created_at),
         ref=_optional_str(info.ref),
         commit_id=_optional_str(info.commit_id),
+        sequence_number=info.sequence_number,
     )
 
 
@@ -1996,6 +2069,7 @@ def _proto_to_ref_info(info: pb_v2.RefInfo) -> ForkInfo:
         parent_version_id=(
             info.parent_version_id if info.has_field("parent_version_id") else None
         ),
+        sequence_number=info.sequence_number,
     )
 
 
@@ -2005,6 +2079,7 @@ def _ref_to_version_info(ref: ForkInfo) -> VersionInfo:
         created_at=ref.updated_at,
         ref=ref.name,
         commit_id=ref.commit_id,
+        sequence_number=ref.sequence_number,
     )
 
 
@@ -2035,6 +2110,7 @@ def _dict_to_version_info(info: dict[str, Any]) -> VersionInfo:
         created_at=_ms_to_datetime(info.get("created_at_ms")),
         ref=_optional_str(info.get("ref")),
         commit_id=_optional_str(info.get("commit_id")),
+        sequence_number=info.get("sequence_number"),
     )
 
 
