@@ -40,8 +40,12 @@ class VLLMAdapter:
             "--config",
         }
         if any(
-            arg.split("=", 1)[0].replace("_", "-") in protected
+            any(
+                option.startswith(arg.split("=", 1)[0].replace("_", "-"))
+                for option in protected
+            )
             for arg in self.engine_args
+            if arg.startswith("--")
         ):
             raise ValueError(
                 "Engine args cannot override managed model, network, or extension options"

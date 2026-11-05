@@ -196,9 +196,12 @@ class WeightSyncer:
                 self.architecture_hash = plan.manifests[-1].architecture_hash
                 self.metrics.apply_ms = (time.perf_counter() - apply_start) * 1000
                 self.metrics.pause_ms = (time.perf_counter() - pause_start) * 1000
-                self.metrics.bytes = sum(
-                    e.length for m in plan.manifests for e in m.tensors
-                )
+                payloads = {
+                    (m.version, e.file, e.offset, e.length)
+                    for m in plan.manifests
+                    for e in m.tensors
+                }
+                self.metrics.bytes = sum(length for _, _, _, length in payloads)
                 total = sum(
                     math.prod(e.shape) for m in plan.manifests for e in m.tensors
                 )

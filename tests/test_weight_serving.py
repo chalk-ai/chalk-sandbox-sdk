@@ -408,3 +408,21 @@ def test_adapter_rejects_missing_tensor_parallel_rank(tmp_path):
                 tmp_path, manifest
             )
         )
+
+
+def test_keyframe_metrics_count_shared_safetensors_file_once(tmp_path):
+    from dataclasses import replace
+
+    manifest = put(tmp_path, 0, None, keyframe=True)
+    shared = replace(manifest.tensors[0], name="other_weight")
+    manifest = replace(manifest, tensors=(*manifest.tensors, shared))
+    (tmp_path / version_dir(0) / "manifest.json").write_bytes(manifest.to_json())
+
+    async def run():
+        gate = AdmissionGate()
+        gate.version = 3
+        syncer = WeightSyncer(tmp_path, FakeAdapter(), gate)
+        await syncer.sync_once()
+        assert syncer.metrics.bytes == manifest.tensors[0].length
+
+    asyncio.run(run())
