@@ -137,10 +137,16 @@ class FullCheckpointSyncer(WeightSyncer):
         except BaseException:
             # Cancelling to_thread does not stop its writer. Join it before
             # deleting output so the background writer cannot leak/recreate it.
-            try:
-                await task
-            finally:
-                directory.cleanup()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue  # Repeated cancellation must not detach the writer.
+                except BaseException:
+                    break
+            if not task.cancelled():
+                task.exception()  # Consume a writer error while preserving cancellation.
+            directory.cleanup()
             raise
 
     def close(self) -> None:

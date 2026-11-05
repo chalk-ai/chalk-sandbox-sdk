@@ -379,6 +379,9 @@ def test_preparation_cancellation_joins_writer_before_cleanup(stream, monkeypatc
         task.cancel()
         await asyncio.sleep(0)
         assert not task.done() and outputs[0].exists()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and outputs[0].exists()
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
