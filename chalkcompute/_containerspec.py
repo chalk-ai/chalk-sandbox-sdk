@@ -35,6 +35,14 @@ class ComputeClass(Enum):
     HOST = "COMPUTE_CLASS_HOST"
 
 
+class Runtime(Enum):
+    """Runtime for host sandboxes. Not supported for Kubernetes workloads."""
+
+    GVISOR = "RUNTIME_GVISOR"
+    VM = "RUNTIME_VM"
+    RUNC = "RUNTIME_RUNC"
+
+
 class ExecutionBackend(Enum):
     """Cluster placement for a new workload, independent of its compute class."""
 
@@ -531,6 +539,7 @@ class ContainerSpec:
     security_policy: ContainerSecurityPolicy | None = None
     network_policy: NetworkPolicy | None = None
     compute_class: ComputeClass | None = None
+    runtime: Runtime | None = None
     execution_target: ExecutionBackend | None = None
     resource_detectors: Sequence[ResourceDetector] = ()
     host_pool_id: str | None = None
@@ -559,6 +568,7 @@ class ContainerSpec:
             security_policy=self.security_policy,
             network_policy=self.network_policy,
             compute_class=self.compute_class,
+            runtime=self.runtime,
             execution_target=self.execution_target,
             resource_detectors=self.resource_detectors,
             tags=self.tags,
@@ -618,6 +628,7 @@ class ContainerSpec:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        runtime: Runtime | None = None,
         execution_target: ExecutionBackend | None = None,
         resource_detectors: Sequence[ResourceDetector] | None = None,
         tags: Mapping[str, str] | None = None,
@@ -680,6 +691,8 @@ class ContainerSpec:
             raise TypeError("network_policy must be a NetworkPolicy")
         if compute_class is not None and not isinstance(compute_class, ComputeClass):
             raise TypeError("compute_class must be a ComputeClass")
+        if runtime is not None and not isinstance(runtime, Runtime):
+            raise TypeError("runtime must be a Runtime")
         if execution_target is not None and not isinstance(
             execution_target, ExecutionBackend
         ):
@@ -759,6 +772,8 @@ class ContainerSpec:
             spec["securityPolicy"] = self.security_policy.to_dict()
         if self.network_policy is not None:
             spec["networkPolicy"] = self.network_policy.to_dict()
+        if self.runtime is not None:
+            spec["runtime"] = self.runtime.value
         if self.compute_class is not None:
             spec["computeClass"] = self.compute_class.value
         if self.execution_target is not None:
@@ -874,6 +889,11 @@ class ContainerSpec:
                 None
                 if self.compute_class is None
                 else container_pb.ComputeClass[self.compute_class.name]
+            ),
+            runtime=(
+                container_pb.Runtime.UNSPECIFIED
+                if self.runtime is None
+                else container_pb.Runtime[self.runtime.name]
             ),
             execution_target=(
                 None

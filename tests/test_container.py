@@ -5,7 +5,13 @@ from typing import Any
 
 import pytest
 
-from chalkcompute import Container, ComputeClass, ExecutionBackend, NetworkPolicy
+from chalkcompute import (
+    Container,
+    ComputeClass,
+    ExecutionBackend,
+    NetworkPolicy,
+    Runtime,
+)
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 from chalkcompute._gen.chalk.container.v1 import service_pb as pb
 from chalkcompute._volume import VolumeMount
@@ -399,3 +405,22 @@ def test_container_execution_target(target) -> None:
     assert submitted.has_field("execution_target") == (target is not None)
     if target is not None:
         assert submitted.execution_target.backend == pb.ExecutionBackend[target.name]
+
+
+@pytest.mark.parametrize("runtime", [None, *Runtime])
+def test_container_runtime(runtime) -> None:
+    from chalkcompute._containerspec import ContainerSpec
+
+    spec = ContainerSpec(image="ubuntu:latest", runtime=runtime)
+    assert spec.to_dict().get("runtime") == (runtime.value if runtime else None)
+    assert (
+        pb.ChalkContainerSpec.from_json(json.dumps(spec.to_dict())) == spec.to_proto()
+    )
+
+    client = FakeConnectClient()
+    container = Container(image="ubuntu:latest", runtime=runtime)
+    container._client = client
+    container.run()
+    assert client.calls[0].request.container.spec.runtime == (
+        pb.Runtime[runtime.name] if runtime else pb.Runtime.UNSPECIFIED
+    )

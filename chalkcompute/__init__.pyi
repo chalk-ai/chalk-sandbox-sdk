@@ -47,6 +47,7 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._dataset import DatasetClient as DatasetClient
 from chalkcompute._dataset import DatasetError as DatasetError
 from chalkcompute._containerspec import ComputeClass as ComputeClass
+from chalkcompute._containerspec import Runtime as Runtime
 from chalkcompute._containerspec import ExecutionBackend as ExecutionBackend
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
@@ -237,6 +238,7 @@ __all__ = [
     "ContainerExecResult",
     "ImageBuildError",
     "ComputeClass",
+    "Runtime",
     "ExecutionBackend",
     "KernelPolicy",
     "NetworkPolicy",

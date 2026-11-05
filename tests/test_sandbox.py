@@ -1896,3 +1896,19 @@ def test_sandbox_client_create_forwards_execution_target(target) -> None:
     assert spec.has_field("execution_target") == (target is not None)
     if target is not None:
         assert spec.execution_target.backend == container_pb.ExecutionBackend[target]
+
+
+def test_sandbox_client_create_forwards_runtime() -> None:
+    from chalkcompute import Runtime
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", runtime=Runtime.RUNC, wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert stub.request.source.value.runtime == container_pb.Runtime.RUNC
