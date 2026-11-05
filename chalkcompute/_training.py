@@ -6,9 +6,7 @@ Usage:
     @chalkcompute.training(
         data="sms_spam_v3",
         image=Image.debian_slim().pip_install(["torch"]),
-        cpu="8",
-        memory="32Gi",
-        gpu="a10g",
+        cpu="1",  # One CPU for this small training job.
     )
     def train_spam(df, config):
         ...
@@ -221,7 +219,9 @@ class TrainingFunction:
     Unlike :class:`RemoteFunction`, this class does not deploy a scaling
     group or register Arrow schemas.  It stores the decorator arguments
     and a reference to the wrapped callable.  The actual RPC call happens
-    in :meth:`run_training`.
+    in :meth:`run_training`. Use the minimal configuration described by
+    :func:`training`, including omitting ``name`` and placement overrides
+    unless the workload requires them.
     """
 
     def __init__(
@@ -649,15 +649,33 @@ def training(
 ):
     """Decorator that marks a function as a Chalk training function.
 
-    Supports two forms::
+    Configure remote execution with a data source, image, and resources::
 
-        @training(data="my_dataset", image=Image(...), gpu="a10g")
+        @training(data="my_dataset", image=Image(...), cpu="1")
         def train(df, config):
             ...
 
-        @training
+    For in-process iteration, only a data source is needed::
+
+        @training(data="my_dataset")
         def train(df, config):
             ...
+
+    Start with the data source, image dependencies, and resources the workload
+    needs. Remote submission requires at least one of ``cpu``, ``memory``, or
+    ``gpu``; the example requests one CPU for a small workload. Call
+    ``.local(config=...)`` to iterate in-process using the configured dataset.
+
+    Omit ``name`` by default. The Python function name identifies the callable;
+    the service generates a run name when ``name`` is omitted. Set it only for
+    an intentional run naming or shared checkpoint storage contract, and keep
+    existing names that checkpoint consumers depend on.
+
+    Leave ``compute_class``, ``execution_target``, and ``network_policy`` unset
+    unless the workload requires specific placement, an execution backend, or
+    network rules. Add CPU/memory sizing, GPUs, ``max_retries``, environment
+    variables, secrets, and metadata only for a concrete workload requirement.
+    Optional parameters are overrides, not a configuration checklist.
 
     Inside a training container (detected via ``CHALK_TRAINING_RUN_ID``
     env var), the decorator is a no-op that returns the function body

@@ -30,9 +30,10 @@ the only one.
 
 When adding or updating SDK examples in the `examples/` directory, follow `examples/style_guide.md`.
 
-## Function and class configuration
+## Function, class, and training configuration
 
-Start with `@cc.function` or `@cc.cls` and add only options required by the task.
+Start with `@cc.function`, `@cc.cls`, or `@cc.training` and add only options required
+by the task.
 An optional parameter in the signature is not a recommendation to set it. Check
 the installed SDK's defaults and parameter documentation before overriding one;
 do not copy configuration wholesale from another example.
@@ -48,6 +49,20 @@ Use an override only for an intentional naming contract, such as preserving an
 existing deployed name after a Python rename or isolating an integration test.
 Keep existing overrides that callers depend on: changing or removing one changes
 the target deployment and does not rename the existing function.
+
+For `@cc.training`, also omit `name=` by default and choose a descriptive Python
+function name. The Python name identifies the callable; the service generates a
+run name when `name` is omitted. Set `name=` only for an intentional run naming
+or shared checkpoint storage contract. Explain that contract next to the option,
+and preserve existing names that checkpoint consumers depend on.
+
+Omit `compute_class`, `execution_target`, and `network_policy` unless the workload
+has a specific placement, backend, or network requirement. Leave platform defaults
+in control rather than pinning their current values. For training, keep the data
+source, dependencies, and at least one resource request (`cpu`, `memory`, or `gpu`)
+needed for remote submission. Do not infer CPU/memory sizes, a GPU, or a retry
+policy from the fact that the workload is training; add them only for a stated
+workload requirement.
 
 Leave `min_replicas`, `max_replicas`, and `concurrency` out of ordinary examples
 and evaluations. Functions and classes currently default to one replica
