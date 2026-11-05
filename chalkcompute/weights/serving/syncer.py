@@ -42,7 +42,7 @@ def reload_mount(root: Path) -> None:
         return  # Ordinary local directories support the identical stream format.
     with ctl.open("r+b", buffering=0) as handle:
         handle.write(b"reload\n")
-        reply = handle.read().decode("utf-8", errors="replace")
+        reply = handle.read(4096).decode("utf-8", errors="replace")
     status, _, message = reply.partition("\n")
     if status != "ok":
         raise StreamError(f"ChalkFS reload failed: {message.strip()}")
