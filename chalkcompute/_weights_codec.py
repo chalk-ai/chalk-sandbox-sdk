@@ -27,6 +27,8 @@ class TensorPatch:
     dtype: str
     values: torch.Tensor
     indices: torch.Tensor | None = None
+    # In-memory diff metric; absent for dense patches decoded from storage.
+    changed_elements: int | None = None
 
     @property
     def encoding(self) -> Literal["dense", "sparse"]:
@@ -80,8 +82,12 @@ def diff(
         return None
     shape, dtype = tuple(new.shape), str(new.dtype).removeprefix("torch.")
     if indices.numel() / max(new.numel(), 1) > density_threshold:
-        return TensorPatch(name, shape, dtype, values.clone())
-    return TensorPatch(name, shape, dtype, values[indices].clone(), indices)
+        return TensorPatch(
+            name, shape, dtype, values.clone(), changed_elements=indices.numel()
+        )
+    return TensorPatch(
+        name, shape, dtype, values[indices].clone(), indices, indices.numel()
+    )
 
 
 def encode_patch(patch: TensorPatch) -> bytes:

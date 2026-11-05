@@ -44,13 +44,17 @@ def main() -> None:
     try:
         stream = WeightStream(volume.name, "fixture/cpu", volume=volume).create()
         pub = stream.publisher(config={"model_type": "fixture"}, keyframe_every=2)
+        profiles = []
         state = {"fixture.weight": torch.zeros(100, dtype=torch.bfloat16)}
         assert pub.publish(state, step=0) == 0
+        profiles.append(pub.last_publish_stats)
         state["fixture.weight"][7] = 1
         assert pub.publish(state, step=1) == 1
+        profiles.append(pub.last_publish_stats)
         stream.pin(0)
         state["fixture.weight"][7] = 0
         assert pub.publish(state, step=2) == 2
+        profiles.append(pub.last_publish_stats)
         assert stream.current() == 2 and stream.pinned() == 0
         with tempfile.TemporaryDirectory() as root:
             folder = stream.materialize(2, Path(root) / "checkpoint")
@@ -68,6 +72,7 @@ def main() -> None:
         report.update(
             status="passed",
             versions=[m.version for m in stream.versions()],
+            publication_profiles=profiles,
             elapsed_seconds=time.monotonic() - started,
         )
     except Exception as error:

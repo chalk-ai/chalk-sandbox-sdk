@@ -250,3 +250,47 @@ def test_resume_rejects_shape_or_dtype_even_when_storage_bytes_match(stream, cha
     publisher(stream).publish({"w": torch.zeros(10)})
     with pytest.raises(WeightStreamError, match="does not match"):
         publisher(stream).resume({"w": changed(torch.zeros(10))})
+
+
+def test_publication_profile_reports_actual_changes_and_dense_transmission(stream):
+    pub = publisher(stream)
+    assert pub.last_publish_stats is None
+    state = {"w": torch.zeros(100), "unchanged": torch.ones(50)}
+    pub.publish(state)
+    seed = pub.last_publish_stats
+    assert seed["status"] == "published"
+    assert seed["changed_elements"] == seed["transmitted_elements"] == 150
+    assert seed["volume_version_id"] == 1
+    state["w"][:40] = 1
+    pub.publish(state)
+    stats = pub.last_publish_stats
+    assert stats["version"] == 1
+    assert stats["kind"] == "patch"
+    assert stats["total_elements"] == 150
+    assert stats["changed_elements"] == 40
+    assert stats["transmitted_elements"] == 100
+    assert stats["payload_bytes"] > 0
+    assert stats["input_devices"] == ["cpu"]
+    assert stats["torch_num_threads"] > 0
+    assert stats["torch_num_interop_threads"] > 0
+    assert stats["total_seconds"] >= sum(stats["phases_seconds"].values())
+    assert all(v >= 0 for v in stats["phases_seconds"].values())
+    json.dumps(stats)
+    stats["phases_seconds"]["diff"] = -1
+    assert pub.last_publish_stats["phases_seconds"]["diff"] >= 0
+    pub.publish(state)
+    assert pub.last_publish_stats["changed_elements"] == 0
+    assert pub.last_publish_stats["transmitted_elements"] == 0
+    pub.publish_keyframe(state)
+    assert pub.last_publish_stats["changed_elements"] is None
+    assert pub.last_publish_stats["transmitted_elements"] == 150
+
+
+def test_failed_commit_profile_is_not_reported_published(stream):
+    pub = publisher(stream)
+    stream._volume.fail_commit = True
+    with pytest.raises(RuntimeError, match="injected"):
+        pub.publish({"w": torch.zeros(10)})
+    assert pub.last_publish_stats["status"] == "failed"
+    assert pub.last_publish_stats["volume_version_id"] is None
+    assert pub.last_publish_stats["total_seconds"] >= 0
