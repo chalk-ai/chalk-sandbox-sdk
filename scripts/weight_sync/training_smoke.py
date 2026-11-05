@@ -803,6 +803,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     record = {
         "name": name,
+        "launcher_pid": os.getpid(),
         "status": "preparing",
         "started_at": time.time(),
         "training_container_released": False,
