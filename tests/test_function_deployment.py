@@ -176,9 +176,8 @@ def test_source_resolution_preserves_nested_and_duplicate_mounts(
         timeout=5,
     )
 
-    assert mounts == [*referenced, *sources]
-    if not with_source:
-        factory.assert_not_called()
+    assert mounts == referenced
+    factory.assert_not_called()
 
 
 def test_generated_function_sources_are_stable_between_runs(monkeypatch):
@@ -327,3 +326,74 @@ def test_function_deploy_forwards_execution_target(monkeypatch, target):
                 spec.execution_target.backend
                 == container_pb.ExecutionBackend[target.name]
             )
+
+
+def test_source_manifest_and_upload_use_server_allocation(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume
+
+    path = tmp_path / "main.py"
+    path.write_bytes(b"hello")
+    image = Image("python:3.11").add_local_file(str(path), "/app/main.py")
+    mounts, manifests, paths = deployment._source_manifests(image)
+    manifest = manifests[mounts[0].tree_digest]
+    digest = manifest.files[0].content_digest
+    assert paths[digest] == path
+    target = volume.VolumeRef(name="server-owned", volume_id="env/immutable")
+    intent = volume.CommitIntent(
+        uploaded_object_references=[],
+        deltas=Oneof(
+            "path_deltas",
+            volume.PathDeltaList(upserts=[volume.PathFileDelta(path=digest)]),
+        ),
+    )
+    driver = MagicMock()
+    driver._inner.staged_intent.return_value = intent.to_binary()
+    monkeypatch.setattr(deployment.VolumeClient, "from_connect", lambda client: driver)
+    client = Client(
+        [
+            pb.EnsureExternalFunctionResponse(
+                result=Oneof(
+                    "missing_inputs",
+                    pb.MissingFunctionDeploymentInputs(
+                        tree_digests=[manifest.tree_digest]
+                    ),
+                )
+            ),
+            pb.EnsureExternalFunctionResponse(
+                result=Oneof(
+                    "missing_inputs",
+                    pb.MissingFunctionDeploymentInputs(
+                        file_digests=[digest], upload_volume=target
+                    ),
+                )
+            ),
+            complete(),
+        ]
+    )
+    run(client, image)
+    assert client.requests[0].spec.sources == mounts
+    assert client.requests[0].spec.version_spec.volume_commits == []
+    assert client.requests[1].supplied_inputs.manifests == [manifest]
+    assert client.requests[2].supplied_inputs.upload_volume == target
+    assert client.requests[2].supplied_inputs.files[0].path == digest
+    driver._inner.stage_prepared_files.assert_called_once()
+    assert driver._inner.stage_prepared_files.call_args.args[0] == "server-owned"
+    driver.create.assert_not_called()
+    driver._resolve_lazy_files.assert_not_called()
+
+
+def test_function_source_identity_is_independent_of_local_path(tmp_path):
+    left = tmp_path / "left.py"
+    right = tmp_path / "right.py"
+    left.write_text("print(42)")
+    right.write_bytes(left.read_bytes())
+    left.chmod(0o644)
+    right.chmod(0o644)
+    first = deployment._source_manifests(
+        Image("python").add_local_file(str(left), "/app/main.py")
+    )
+    second = deployment._source_manifests(
+        Image("python").add_local_file(str(right), "/app/main.py")
+    )
+    assert first[:2] == second[:2]
