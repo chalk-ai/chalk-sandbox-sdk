@@ -526,7 +526,10 @@ def sample(group):
         },
         timeout=120,
     )
-    assert response.status == 200
+    if response.status != 200:
+        raise RuntimeError(
+            f"Inference HTTP {response.status}: {response.content[:500]!r}"
+        )
     return {
         "output": json.loads(response.content)["choices"][0]["text"],
         "version": response.headers["x-chalk-policy-version"],
@@ -752,6 +755,37 @@ def main():
         dataset = DatasetClient().upload(name, FIXTURES)
         guard.dataset_id = dataset.dataset_id
         record["dataset_id"] = guard.dataset_id
+        # Load the plain function module so the real decorator packages its source.
+        module_path = Path(__file__).with_name("remote_training.py")
+        spec = importlib.util.spec_from_file_location("remote_training", module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["remote_training"] = module
+        spec.loader.exec_module(module)
+        trainer = cc.training(
+            dataset=name,
+            image=image,
+            name=name,
+            gpu="nvidia-a100-80gb:1",
+            cpu="16",
+            memory="128Gi",
+            compute_class=cc.ComputeClass.HOST,
+            execution_target=cc.ExecutionBackend.SERVERLESS,
+            env=remote_env,
+            volumes=[
+                cc.VolumeMount(name=name, mount_path="/chalk/weights", ref_name="main")
+            ],
+            max_retries=0,
+        )(module.train_full_parameters)
+        # Build the actual packaged training entrypoint before claiming A100s.
+        # Reuse precisely this image spec when run_training submits the real RPC.
+        from chalkcompute._connect import build_image
+
+        deploy_image = trainer._build_deploy_image()
+        record["training_deploy_image_uri"] = build_image(
+            client, deploy_image, timeout=600
+        )
+        trainer._build_deploy_image = lambda: deploy_image
+        guard.save()
         record["status"] = "cpu_prepared"
         guard.save()
         if not args.execute:
@@ -795,37 +829,6 @@ def main():
             )
             guard.stop_sandbox(seed)
             guard.sandboxes.remove(seed)
-        # Load the plain function module so the real decorator packages its source.
-        module_path = Path(__file__).with_name("remote_training.py")
-        spec = importlib.util.spec_from_file_location("remote_training", module_path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["remote_training"] = module
-        spec.loader.exec_module(module)
-        trainer = cc.training(
-            dataset=name,
-            image=image,
-            name=name,
-            gpu="nvidia-a100-80gb:1",
-            cpu="16",
-            memory="128Gi",
-            compute_class=cc.ComputeClass.HOST,
-            execution_target=cc.ExecutionBackend.SERVERLESS,
-            env=remote_env,
-            volumes=[
-                cc.VolumeMount(name=name, mount_path="/chalk/weights", ref_name="main")
-            ],
-            max_retries=0,
-        )(module.train_full_parameters)
-        # Build the actual packaged training entrypoint before claiming A100s.
-        # Reuse precisely this image spec when run_training submits the real RPC.
-        from chalkcompute._connect import build_image
-
-        deploy_image = trainer._build_deploy_image()
-        record["training_deploy_image_uri"] = build_image(
-            client, deploy_image, timeout=600
-        )
-        trainer._build_deploy_image = lambda: deploy_image
-        guard.save()
         # Detached process survives an abrupt launcher exit or SIGKILL.
         record["gpu_budget_started_at"] = time.time()
         record["gpu_deadline_epoch"] = (
