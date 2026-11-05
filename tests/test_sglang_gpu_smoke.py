@@ -859,6 +859,9 @@ def test_diagnostic_plan_binds_actual_attestation_and_only_adapter_delta(
     monkeypatch.setattr(
         gpu, "DETERMINISTIC_ATTESTATION_SHA256", gpu.payload.digest(attestation)
     )
+    capacity = root / "profile_capacity.py"
+    capacity.write_text("# unchanged shared helper fixture\n")
+    monkeypatch.setattr(gpu, "CAPACITY_SOURCE_SHA256", gpu.payload.digest(capacity))
     target = root / "deterministic-plan"
     plan = gpu.prepare(
         target,
@@ -868,6 +871,7 @@ def test_diagnostic_plan_binds_actual_attestation_and_only_adapter_delta(
         root / "cpu",
         deterministic_triton=True,
         source_attestation=attestation,
+        capacity_source=capacity,
     )
     assert gpu.validate(target) == plan
     assert plan["lease_seconds"] == 900 and plan["cleanup_reserve_seconds"] == 120
@@ -944,3 +948,118 @@ def test_full_diagnostic_cache_cases_continue_after_numerical_failure(
         "fresh-start",
         "fresh-process-v0",
     ]
+
+
+def test_full_diagnostic_distinguishes_reached_failure_from_unreached(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    class Native:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def start(self, *args, **kwargs):
+            raise RuntimeError("native profile resolution failed")
+
+        async def stop(self):
+            pass
+
+    fixture = tmp_path / "fixture"
+    (fixture / "stream").mkdir(parents=True)
+    args = SimpleNamespace(
+        output=tmp_path / "output",
+        fixture=fixture,
+        deadline=time.time() + 900,
+        deterministic_triton=True,
+    )
+    monkeypatch.setattr(scenario, "Native", Native)
+    with pytest.raises(RuntimeError, match="profile resolution"):
+        asyncio.run(scenario.run(args))
+    proof = json.loads((args.output / "gpu-proof.json").read_bytes())
+    assert proof["status"] == "failed"
+    assert proof["scenarios"]["cold_v0"]["status"] == "failed"
+    assert proof["scenarios"]["same_weight_cache"]["status"] == "not_reached"
+    assert proof["scenarios"]["fresh_native_oracle_v2"]["status"] == "not_reached"
+    assert proof["native_groups_stopped"] is True
+
+
+def native_capacity():
+    return {
+        "memory": {"MemAvailable": 32 * 1024**3},
+        "cpu_affinity_count": 8,
+        "cgroup_v2": [
+            {
+                "memory.max": str(40 * 1024**3),
+                "memory.current": str(8 * 1024**3),
+                "cpu.max": "800000 100000",
+            }
+        ],
+        "filesystems": {
+            name: {"free_bytes": 8 * 1024**3} for name in ("/var/lib/docker", "/tmp")
+        },
+        "hypervisor_paths": {
+            name: {"free_bytes": 8 * 1024**3}
+            for name in ("/tmp", "/var/lib/chalk-hypervisor")
+        },
+    }
+
+
+def test_native_capacity_separate_small_gate_rejects_each_insufficient_resource():
+    import copy
+
+    original = native_capacity()
+    assert gpu.validate_small_capacity(original) == original
+    cases = [
+        lambda value: value["memory"].update(MemAvailable=32 * 1024**3 - 1),
+        lambda value: value.update(cpu_affinity_count=7),
+        lambda value: value["cgroup_v2"][0].update(
+            **{"memory.current": str(8 * 1024**3 + 1)}
+        ),
+        lambda value: value["cgroup_v2"][0].update(**{"cpu.max": "799999 100000"}),
+        lambda value: value["filesystems"]["/var/lib/docker"].update(
+            free_bytes=8 * 1024**3 - 1
+        ),
+        lambda value: value["hypervisor_paths"]["/tmp"].update(
+            free_bytes=8 * 1024**3 - 1
+        ),
+        lambda value: value.update(cgroup_v2=[]),
+    ]
+    for mutate in cases:
+        value = copy.deepcopy(original)
+        mutate(value)
+        with pytest.raises(RuntimeError):
+            gpu.validate_small_capacity(value)
+
+
+def test_execute_clock_starts_before_validation(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(gpu.time, "time", lambda: events.append("clock") or 1000)
+
+    def validate(out):
+        events.append("validate")
+        raise RuntimeError("stop before any auth or claim")
+
+    monkeypatch.setattr(gpu, "validate", validate)
+    with pytest.raises(RuntimeError, match="before any auth"):
+        gpu.execute(tmp_path, None)
+    assert events == ["clock", "validate"]
+
+
+def test_sampled_owned_disk_gate_retains_limitation_and_rejects_large_or_symlink(
+    tmp_path,
+):
+    file = tmp_path / "ordinary"
+    file.write_bytes(b"123")
+    assert scenario.check_owned_disk(tmp_path) == 3
+    proof = json.loads((tmp_path / "native-disk-usage.json").read_bytes())
+    assert proof["hard_quota"] is False
+    file.write_bytes(b"")
+    with file.open("wb") as handle:
+        handle.truncate(6 * 1024**3 + 1)
+    with pytest.raises(RuntimeError, match="exceed6GiB"):
+        scenario.check_owned_disk(tmp_path)
+    file.unlink()
+    file.symlink_to("/tmp")
+    with pytest.raises(RuntimeError, match="inventory"):
+        scenario.check_owned_disk(tmp_path)

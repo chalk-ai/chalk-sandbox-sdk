@@ -209,7 +209,8 @@ arguments still reject those flags and arbitrary backend overrides. Defaults,
 backend runtime catalog and FULL_WEIGHTS remain disabled/unchanged.
 
 Prepare a distinct candidate using `gpu_smoke.py --deterministic-triton
---source-attestation /path/to/exact/cached-attestation/stdout.json` plus the same
+--source-attestation /path/to/exact/cached-attestation/stdout.json
+--capacity-source /path/to/shared/reviewed/profile_capacity.py` plus the same
 four source/proof roots. It freezes the exact attestation, rechecks all13 native
 module hashes in the guest and permits only the experimental adapter overlay
 change from the successful CPU fixture proof. No new model or image is needed.
@@ -231,3 +232,19 @@ The combined phase may exhaust its fixed budget; that is a failed/incomplete run
 not permission to extend the lease or loosen checks. Review the exact new freeze
 and fresh host capacity before any claim; independently prove all release paths
 before another phase. The shared lifecycle sources are reused without a new fork.
+
+The absolute execution clock starts at the first line of execute(), before
+validation/import/auth/discovery, and includes fixture upload, native startup,
+scenario work and export. Immediately before sandbox create, reuse the exact
+shared capacity helper's read-only collect_raw() inventory and save it; require
+8CPU/32GiB host/ancestor-cgroup headroom and8GiB free at relevant host/hypervisor
+writable paths. The original full-model helper's120GiB gate remains unchanged.
+The tiny frozen fixture contract (<=20MiB unpacked, <=8MiB compressed), stream/
+checkpoint copies and bounded raw artifacts fit a128MiB fixed-data reserve;
+6GiB is reserved for native/JIT paths with about1.875GiB slack. Diagnostic Triton,
+Inductor, CUDA and XDG cache directories are bound to owned guest-local paths.
+Startup/prompt-boundary ordinary-path samples fail above6GiB; this is **not a
+hard quota** and cannot bound open-unlinked files or every native write outside
+those paths. Fresh API placement/one-free-A100 evidence and independent cleanup
+remain required parent execution gates. Reached structural failures are marked
+failed; later scenarios remain not_reached.

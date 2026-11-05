@@ -37,6 +37,9 @@ LOCAL_FILES = (
 DETERMINISTIC_ATTESTATION_SHA256 = (
     "c5e1fa95706622eb77c30f5ff886c79a5ff4f2fec51edb854850504eed9fdd65"
 )
+CAPACITY_SOURCE_SHA256 = (
+    "f3b5b737517ab78a6aaf64d260991d00cf2cc3371506cf92c250028f0a6bda7a"
+)
 DIAGNOSTIC_ADAPTER = "chalkcompute/weights/serving/adapters/sglang.py"
 
 
@@ -81,12 +84,18 @@ def prepare(
     cache_diagnostic=False,
     deterministic_triton=False,
     source_attestation=None,
+    capacity_source=None,
 ):
     if cache_diagnostic and deterministic_triton:
         raise ValueError("Select one fixed diagnostic scenario")
     attested = (
         deterministic_attestation(source_attestation) if deterministic_triton else {}
     )
+    if deterministic_triton and (
+        capacity_source is None
+        or payload.digest(capacity_source) != CAPACITY_SOURCE_SHA256
+    ):
+        raise ValueError("Require the exact shared reviewed capacity helper")
     previous = base.read_json(cpu_proof_root / "launcher.json")
     if (
         previous.get("status") != "released"
@@ -152,6 +161,8 @@ def prepare(
         (out / "deterministic-source-attestation.json").write_bytes(
             source_attestation.read_bytes()
         )
+        assert capacity_source is not None
+        (out / "profile_capacity.py").write_bytes(capacity_source.read_bytes())
     plan.update(
         kind="sglang_deterministic_triton_plan"
         if deterministic_triton
@@ -195,6 +206,14 @@ def prepare(
         plan["evidence_files"]["deterministic-source-attestation.json"] = (
             DETERMINISTIC_ATTESTATION_SHA256
         )
+        plan["evidence_files"]["profile_capacity.py"] = CAPACITY_SOURCE_SHA256
+        plan["native_capacity_gate"] = {
+            "cpu": 8,
+            "memory_bytes": 32 * 1024**3,
+            "minimum_free_disk_bytes": 8 * 1024**3,
+            "sampled_owned_guest_bytes_failure_threshold": 6 * 1024**3,
+            "hard_disk_quota": False,
+        }
         plan["deterministic_source_hashes"] = attested
         plan["diagnostic_overlay_delta"] = {
             DIAGNOSTIC_ADAPTER: {
@@ -270,7 +289,19 @@ def validate(out):
         "independent-host-cache-proof.json",
     }
     if deterministic:
-        expected_evidence.add("deterministic-source-attestation.json")
+        expected_evidence.update(
+            {"deterministic-source-attestation.json", "profile_capacity.py"}
+        )
+        if payload.digest(
+            out / "profile_capacity.py"
+        ) != CAPACITY_SOURCE_SHA256 or plan.get("native_capacity_gate") != {
+            "cpu": 8,
+            "memory_bytes": 32 * 1024**3,
+            "minimum_free_disk_bytes": 8 * 1024**3,
+            "sampled_owned_guest_bytes_failure_threshold": 6 * 1024**3,
+            "hard_disk_quota": False,
+        }:
+            raise ValueError("Reviewed native capacity contract changed")
         if deterministic_attestation(
             out / "deterministic-source-attestation.json"
         ) != plan.get("deterministic_source_hashes"):
@@ -542,7 +573,67 @@ def make_sandbox(cc, record, plan, program, upload_result):
     )
 
 
+def validate_small_capacity(value):
+    memory, disk = 32 * 1024**3, 8 * 1024**3
+    if value["memory"]["MemAvailable"] < memory or value["cpu_affinity_count"] < 8:
+        raise RuntimeError("Native host available memory/CPU below32GiB/8CPU")
+    groups = value.get("cgroup_v2")
+    if not isinstance(groups, list) or not groups:
+        raise RuntimeError("Native host cgroup proof missing")
+    for group in groups:
+        maximum, used = group.get("memory.max"), group.get("memory.current")
+        if (
+            maximum is not None
+            and maximum != "max"
+            and (used is None or int(maximum) - int(used) < memory)
+        ):
+            raise RuntimeError("Native ancestor memory headroom below32GiB")
+        if group.get("cpu.max"):
+            amount, period = group["cpu.max"].split()
+            if amount != "max" and int(amount) < 8 * int(period):
+                raise RuntimeError("Native ancestor CPU quota below8CPU")
+    for name in ("/var/lib/docker", "/tmp"):
+        if value["filesystems"][name]["free_bytes"] < disk:
+            raise RuntimeError("Native host disk below8GiB")
+    for name in ("/tmp", "/var/lib/chalk-hypervisor"):
+        if value["hypervisor_paths"][name]["free_bytes"] < disk:
+            raise RuntimeError("Native writable hypervisor disk below8GiB")
+    return value
+
+
+def fresh_native_capacity(record, out):
+    import importlib.util
+    import host_guard
+
+    if payload.digest(out / "profile_capacity.py") != CAPACITY_SOURCE_SHA256:
+        raise ValueError("Shared capacity source changed")
+    spec = importlib.util.spec_from_file_location(
+        "shared_native_capacity", out / "profile_capacity.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get("profile_host_guard")
+    sys.modules["profile_host_guard"] = host_guard
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            sys.modules.pop("profile_host_guard", None)
+        else:
+            sys.modules["profile_host_guard"] = previous
+    # Reuse raw inventory only; the original full-model120GiB gate is unchanged.
+    value = validate_small_capacity(module.collect_raw())
+    proof = {
+        "phase_id": record["cpu_phase_id"],
+        "collected_at": time.time(),
+        "capacity": value,
+        "capacity_source_sha256": CAPACITY_SOURCE_SHA256,
+    }
+    base.write_json(out / "native-capacity-before-create.json", proof)
+    return proof
+
+
 def execute(out, env_file):
+    began = time.time()
     plan = validate(out)
     descriptor = os.open(
         out / "execution.lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
@@ -581,7 +672,6 @@ def execute(out, env_file):
     )
     phase = uuid.uuid4().hex
     name = "sglang-gpu-smoke-" + phase[:10]
-    now = time.time()
     record = dict(
         name=name,
         seed_name=name,
@@ -592,8 +682,8 @@ def execute(out, env_file):
         kube_context=contexts[0],
         fallback_kube_context=contexts[-1],
         kube_contexts=contexts,
-        cpu_started_at=now,
-        cpu_deadline_epoch=now + plan["lease_seconds"],
+        cpu_started_at=began,
+        cpu_deadline_epoch=began + plan["lease_seconds"],
         status="preparing",
         compute_class="HOST",
         cpu="8",
@@ -645,9 +735,13 @@ def execute(out, env_file):
         record["guest_root"] = progress_root
         base.write_json(ledger, record)
         require_guard(record, out)
+        if plan["scenario"] == "deterministic_triton_full_diagnostic":
+            fresh_native_capacity(record, out)
+            require_guard(record, out)
         base.write_json(
             out / "host-membership-before-create.json", host_guard.membership()
         )
+        require_guard(record, out)
         sandbox = make_sandbox(cc, record, plan, program, immutable)
         guard.guarded_sandbox_client(record, ledger).run(
             sandbox, timeout=min(180, guard.remaining(record) - 120)
@@ -775,6 +869,7 @@ if __name__ == "__main__":
     parser.add_argument("--cache-diagnostic", action="store_true")
     parser.add_argument("--deterministic-triton", action="store_true")
     parser.add_argument("--source-attestation", type=Path)
+    parser.add_argument("--capacity-source", type=Path)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--env-file", type=Path)
     for option in (
@@ -810,4 +905,5 @@ if __name__ == "__main__":
             cache_diagnostic=args.cache_diagnostic,
             deterministic_triton=args.deterministic_triton,
             source_attestation=args.source_attestation,
+            capacity_source=args.capacity_source,
         )
