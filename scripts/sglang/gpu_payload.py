@@ -166,7 +166,17 @@ def managed_child(args):
 
     entry.asyncio.create_subprocess_exec = spawn
 
-    class LostAckAdapter(SGLangAdapter):
+    class DiagnosticAdapter(SGLangAdapter):
+        def __init__(self, *positional, **keywords):
+            super().__init__(
+                *positional,
+                diagnostic_profile="deterministic-triton"
+                if args.deterministic_triton
+                else None,
+                **keywords,
+            )
+
+    class LostAckAdapter(DiagnosticAdapter):
         async def _post(self, path, body, *, json_result=True):
             response = await super()._post(path, body, json_result=json_result)
             if path == "/update_weights_from_disk" and response.get("success") is True:
@@ -178,8 +188,7 @@ def managed_child(args):
                 )
             return response
 
-    if args.lost_ack:
-        entry.SGLangAdapter = LostAckAdapter
+    entry.SGLangAdapter = LostAckAdapter if args.lost_ack else DiagnosticAdapter
     os.environ.update(
         CHALK_LISTEN_ADDR="127.0.0.1:8000",
         CHALK_WEIGHT_SYNC_POLL_S="0.1",
@@ -204,8 +213,9 @@ def managed_child(args):
 
 
 class Native:
-    def __init__(self, root, deadline):
+    def __init__(self, root, deadline, *, deterministic_triton=False):
         self.root, self.deadline = root, deadline
+        self.deterministic_triton = deterministic_triton
         self.process = None
         self.log = None
         self.directory = None
@@ -238,12 +248,18 @@ class Native:
             ]
             if lost_ack:
                 command.append("--lost-ack")
+            if self.deterministic_triton:
+                command.append("--deterministic-triton")
             port = 8000
         else:
             from chalkcompute.weights.serving.adapters.sglang import SGLangAdapter
 
             command = SGLangAdapter(
-                8001, ["--context-length", "8192", "--mem-fraction-static", "0.5"]
+                8001,
+                ["--context-length", "8192", "--mem-fraction-static", "0.5"],
+                diagnostic_profile="deterministic-triton"
+                if self.deterministic_triton
+                else None,
             ).launch_cmd(model, 8001)
             port = 8001
         self.log = (self.directory / "native.log").open("wb")
@@ -284,6 +300,11 @@ class Native:
                         f"http://127.0.0.1:{port}" + health_path
                     ) as response:
                         if response.status == 200:
+                            if self.deterministic_triton:
+                                state = await cache_state(
+                                    client, self.directory, "resolved-ready"
+                                )
+                                require_deterministic_config(state)
                             return
                 except (aiohttp.ClientError, TimeoutError):
                     pass
@@ -473,16 +494,73 @@ async def wait_version(client, native, version, *, port=8000):
     raise TimeoutError("Update exceeded fixed 30-second budget")
 
 
+async def same_weight_cache(client, native, args, cold, evaluate):
+    for repeat in (1, 2):
+        warm = await samples(
+            client, version=0, out=args.output, label=f"warm-v0-{repeat}"
+        )
+        evaluate(
+            warm,
+            cold,
+            out=args.output,
+            label=f"warm-{repeat}-vs-cold",
+        )
+    async with client.post("http://127.0.0.1:8001/flush_cache", json={}) as response:
+        acknowledgement = {
+            "status": response.status,
+            "body": (await response.text())[:4096],
+        }
+        write_json(args.output / "native-flush-ack.json", acknowledgement)
+        if response.status != 200:
+            raise RuntimeError("Explicit native cache flush not acknowledged")
+    flushed = await samples(client, version=0, out=args.output, label="flushed-cold-v0")
+    evaluate(flushed, cold, out=args.output, label="flushed-vs-cold")
+    await native.stop()
+    await native.start(args.output / "stream")
+    fresh = await samples(client, version=0, out=args.output, label="fresh-process-v0")
+    evaluate(fresh, cold, out=args.output, label="fresh-process-vs-cold")
+
+
 async def run(args):
     import aiohttp
 
     args.output.mkdir(parents=True, exist_ok=False)
     stream = args.output / "stream"
     shutil.copytree(args.fixture / "stream", stream)
-    native = Native(args.output, args.deadline)
-    proof = {
+    native = Native(
+        args.output,
+        args.deadline,
+        **(
+            {"deterministic_triton": True}
+            if getattr(args, "deterministic_triton", False)
+            else {}
+        ),
+    )
+    deterministic = getattr(args, "deterministic_triton", False)
+    proof: dict = {
         "status": "running",
-        "scenarios": {},
+        "diagnostic_profile": "deterministic-triton" if deterministic else None,
+        "comparisons": {},
+        "scenarios": {
+            name: {"status": "not_reached"}
+            for name in (
+                "cold_v0",
+                "same_weight_cache",
+                "stream_drain_update_v1",
+                "disconnect_drain_update_v2",
+                "measurable_changes",
+                "noop_v2",
+                "pin_rollback_v0",
+                "corrupt_payload_before_mutation",
+                "lost_reload_ack_after_native_mutation",
+                "restart_after_lost_ack",
+                "fresh_native_oracle_v0",
+                "fresh_native_oracle_v1",
+                "fresh_native_oracle_v2",
+            )
+        }
+        if deterministic
+        else {},
         "tolerance": TOLERANCE,
         "minimum_change": MINIMUM_CHANGE,
         "scope": "native supervisor correctness; immutable fixture copied locally; CURRENT/PIN changes guest-local",
@@ -492,6 +570,18 @@ async def run(args):
     def mark(name, result):
         proof["scenarios"][name] = result
         write_json(args.output / "gpu-proof.json", proof)
+
+    def evaluate(actual, expected, *, out, label):
+        try:
+            maximum = compare(actual, expected, out=out, label=label)
+            result = {"passed": True, "maximum_logprob_error": maximum}
+        except NativeComparisonError as error:
+            if not deterministic:
+                raise
+            result = {"passed": False, **error.details}
+        proof["comparisons"][label] = result
+        write_json(args.output / "gpu-proof.json", proof)
+        return result
 
     try:
         async with aiohttp.ClientSession(
@@ -504,6 +594,17 @@ async def run(args):
             models, _ = await request(client, "/v1/models")
             model = models["data"][0]["id"]
             mark("cold_v0", "passed")
+            if deterministic:
+                await same_weight_cache(client, native, args, captured[0], evaluate)
+                mark(
+                    "same_weight_cache",
+                    {
+                        "completed": True,
+                        "passed": all(
+                            value["passed"] for value in proof["comparisons"].values()
+                        ),
+                    },
+                )
             # Hold a real admitted stream while publishing. Its first response
             # header binds v0; final data is consumed before v1 is accepted.
             async with client.post(
@@ -587,13 +688,13 @@ async def run(args):
             mark("noop_v2", "passed")
             pointer(stream, "PIN", 0)
             await wait_version(client, native, 0)
-            compare(
+            evaluation = evaluate(
                 await samples(client, version=0, out=args.output, label="rollback-v0"),
                 captured[0],
                 out=args.output,
                 label="rollback-vs-cold-v0",
             )
-            mark("pin_rollback_v0", "passed")
+            mark("pin_rollback_v0", evaluation if deterministic else "passed")
             # Corrupt one existing payload; keep old native policy healthy.
             async with client.get("http://127.0.0.1:8000" + METRICS_ROUTE) as response:
                 prior_metrics = await response.text()
@@ -631,7 +732,7 @@ async def run(args):
                     "Corrupt fixture did not reach verification failure"
                 )
             await wait_version(client, native, 0)
-            compare(
+            evaluation = evaluate(
                 await samples(
                     client, version=0, out=args.output, label="corruption-v0"
                 ),
@@ -639,7 +740,10 @@ async def run(args):
                 out=args.output,
                 label="corruption-vs-cold-v0",
             )
-            mark("corrupt_payload_before_mutation", "passed")
+            mark(
+                "corrupt_payload_before_mutation",
+                evaluation if deterministic else "passed",
+            )
             pointer(stream, "CURRENT", 0)
             patch.write_bytes(original)
             await native.stop()
@@ -658,30 +762,34 @@ async def run(args):
             await native.stop()
             mark("lost_reload_ack_after_native_mutation", "passed")
             await native.start(stream)
-            compare(
+            evaluation = evaluate(
                 await samples(client, version=1, out=args.output, label="restart-v1"),
                 captured[1],
                 out=args.output,
                 label="restart-vs-updated-v1",
             )
-            mark("restart_after_lost_ack", "passed")
+            mark("restart_after_lost_ack", evaluation if deterministic else "passed")
             await native.stop()
             for version in (0, 1, 2):
                 await native.start(args.fixture / f"oracle-v{version}", managed=False)
                 reference = await samples(
                     client, port=8001, out=args.output, label=f"fresh-v{version}"
                 )
-                error = compare(
+                evaluation = evaluate(
                     captured[version],
                     reference,
                     out=args.output,
                     label=f"updated-vs-fresh-v{version}",
                 )
-                mark(
-                    f"fresh_native_oracle_v{version}", {"maximum_logprob_error": error}
-                )
+                mark(f"fresh_native_oracle_v{version}", evaluation)
                 await native.stop()
         proof["status"] = "passed"
+        if deterministic and not all(
+            value["passed"] for value in proof["comparisons"].values()
+        ):
+            raise AssertionError(
+                "Deterministic profile retained numerical failures at fixed1e-3"
+            )
     except BaseException as error:
         proof.update(
             status="failed", error_type=type(error).__name__, error=str(error)[:2048]
@@ -763,7 +871,37 @@ async def cache_state(client, out, label):
             (out / ("cache-state-" + label + ".json")).read_bytes()
         ).hexdigest(),
         "config": state["config"],
+        "internal_states": state["internal_states"],
     }
+
+
+def require_deterministic_config(state):
+    expected = {
+        "enable_deterministic_inference": True,
+        "attention_backend": "triton",
+        "sampling_backend": "pytorch",
+        "disable_radix_cache": False,
+        "disable_cuda_graph": True,
+        "weight_cache_mode": "off",
+    }
+    configs = [state["config"], *state.get("internal_states", [])]
+    if not any(
+        all(
+            config.get(key) == value and type(config.get(key)) is type(value)
+            for key, value in expected.items()
+        )
+        for config in configs
+    ):
+        raise RuntimeError(
+            "Native resolved deterministic/triton/pytorch/radix contract differs"
+        )
+    for config in configs:
+        if any(
+            key in config
+            and (config[key] != value or type(config[key]) is not type(value))
+            for key, value in expected.items()
+        ):
+            raise RuntimeError("Native resolved diagnostic configs disagree")
 
 
 async def run_cache_diagnostic(args):
@@ -771,7 +909,15 @@ async def run_cache_diagnostic(args):
     import aiohttp
 
     args.output.mkdir(parents=True, exist_ok=False)
-    native = Native(args.output, args.deadline)
+    native = Native(
+        args.output,
+        args.deadline,
+        **(
+            {"deterministic_triton": True}
+            if getattr(args, "deterministic_triton", False)
+            else {}
+        ),
+    )
     proof = {
         "status": "running",
         "scope": "same native v0: warm-prefix repeat vs explicit flush cold vs fresh process; no weight updates",
@@ -864,6 +1010,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--managed", action="store_true")
     parser.add_argument("--cache-diagnostic", action="store_true")
+    parser.add_argument("--deterministic-triton", action="store_true")
     parser.add_argument("--lost-ack", action="store_true")
     parser.add_argument("--stream", type=Path)
     parser.add_argument("--fixture", type=Path)

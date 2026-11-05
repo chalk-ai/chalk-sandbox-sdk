@@ -34,6 +34,43 @@ LOCAL_FILES = (
 )
 
 
+DETERMINISTIC_ATTESTATION_SHA256 = (
+    "c5e1fa95706622eb77c30f5ff886c79a5ff4f2fec51edb854850504eed9fdd65"
+)
+DIAGNOSTIC_ADAPTER = "chalkcompute/weights/serving/adapters/sglang.py"
+
+
+def check_overlay(current, previous, deterministic):
+    if deterministic:
+        if set(current) != set(previous) or {
+            name for name in current if current[name] != previous[name]
+        } != {DIAGNOSTIC_ADAPTER}:
+            raise ValueError(
+                "Diagnostic permits only the reviewed experimental adapter overlay delta"
+            )
+    elif current != previous:
+        raise ValueError("GPU runtime differs from successful CPU HOST proof")
+
+
+def deterministic_attestation(path):
+    if path is None or payload.digest(path) != DETERMINISTIC_ATTESTATION_SHA256:
+        raise ValueError(
+            "Require the exact independently reviewed 13-module image attestation"
+        )
+    proof = base.read_json(path)
+    sources = proof["result"]["sources"]
+    if (
+        proof.get("passed") is not True
+        or len(sources) != 13
+        or not all(item["match"] for item in sources)
+    ):
+        raise ValueError("Incomplete deterministic image source attestation")
+    return {
+        item["path"]: {"sha256": item["sha256"], "bytes": item["bytes"]}
+        for item in sources
+    }
+
+
 def prepare(
     out,
     source_root,
@@ -42,7 +79,14 @@ def prepare(
     cpu_proof_root,
     *,
     cache_diagnostic=False,
+    deterministic_triton=False,
+    source_attestation=None,
 ):
+    if cache_diagnostic and deterministic_triton:
+        raise ValueError("Select one fixed diagnostic scenario")
+    attested = (
+        deterministic_attestation(source_attestation) if deterministic_triton else {}
+    )
     previous = base.read_json(cpu_proof_root / "launcher.json")
     if (
         previous.get("status") != "released"
@@ -83,10 +127,10 @@ def prepare(
     plan = base.prepare(
         out, source_root, guard_root, audited_source_root, host_prewarm=True
     )
-    if (
-        plan["overlay_files"] != cpu_plan["overlay_files"]
-        or plan["source_hashes"] != proof["source_sha256"]
-    ):
+    check_overlay(
+        plan["overlay_files"], cpu_plan["overlay_files"], deterministic_triton
+    )
+    if plan["source_hashes"] != proof["source_sha256"]:
         raise ValueError(
             "GPU runtime/native source differs from successful CPU HOST proof"
         )
@@ -103,12 +147,22 @@ def prepare(
         "independent-host-cache-proof.json",
     ):
         (out / name).write_bytes((cpu_proof_root / name).read_bytes())
+    if deterministic_triton:
+        (out / "deterministic-source-attestation.json").write_bytes(
+            source_attestation.read_bytes()
+        )
     plan.update(
-        kind="sglang_cache_diagnostic_plan"
+        kind="sglang_deterministic_triton_plan"
+        if deterministic_triton
+        else "sglang_cache_diagnostic_plan"
         if cache_diagnostic
         else "sglang_gpu_smoke_plan",
         lease_seconds=600 if cache_diagnostic else 900,
-        scenario="native_cache_diagnostic" if cache_diagnostic else "full_smoke",
+        scenario="deterministic_triton_full_diagnostic"
+        if deterministic_triton
+        else "native_cache_diagnostic"
+        if cache_diagnostic
+        else "full_smoke",
         cpu="8",
         memory="32Gi",
         gpu="nvidia-a100-80gb:1",
@@ -136,6 +190,17 @@ def prepare(
         },
         local_files={name: payload.digest(out / name) for name in LOCAL_FILES},
     )
+    if deterministic_triton:
+        plan["evidence_files"]["deterministic-source-attestation.json"] = (
+            DETERMINISTIC_ATTESTATION_SHA256
+        )
+        plan["deterministic_source_hashes"] = attested
+        plan["diagnostic_overlay_delta"] = {
+            DIAGNOSTIC_ADAPTER: {
+                "cpu_proof": cpu_plan["overlay_files"][DIAGNOSTIC_ADAPTER],
+                "candidate": plan["overlay_files"][DIAGNOSTIC_ADAPTER],
+            }
+        }
     base.write_json(out / "plan.json", plan)
     return plan
 
@@ -143,13 +208,26 @@ def prepare(
 def validate(out):
     plan = base.read_json(out / "plan.json")
     diagnostic = plan["kind"] == "sglang_cache_diagnostic_plan"
-    if plan["kind"] not in {"sglang_gpu_smoke_plan", "sglang_cache_diagnostic_plan"}:
+    deterministic = plan["kind"] == "sglang_deterministic_triton_plan"
+    if plan["kind"] not in {
+        "sglang_gpu_smoke_plan",
+        "sglang_cache_diagnostic_plan",
+        "sglang_deterministic_triton_plan",
+    }:
         raise ValueError("Unknown fixed GPU test kind")
     exact = dict(
-        kind="sglang_cache_diagnostic_plan" if diagnostic else "sglang_gpu_smoke_plan",
+        kind="sglang_deterministic_triton_plan"
+        if deterministic
+        else "sglang_cache_diagnostic_plan"
+        if diagnostic
+        else "sglang_gpu_smoke_plan",
         image=payload.IMAGE,
         lease_seconds=600 if diagnostic else 900,
-        scenario="native_cache_diagnostic" if diagnostic else "full_smoke",
+        scenario="deterministic_triton_full_diagnostic"
+        if deterministic
+        else "native_cache_diagnostic"
+        if diagnostic
+        else "full_smoke",
         cpu="8",
         memory="32Gi",
         gpu="nvidia-a100-80gb:1",
@@ -183,13 +261,20 @@ def validate(out):
         raise ValueError("Frozen local controller/payload/guard changed")
     if payload.digest(Path(__file__)) != plan["local_files"]["gpu_smoke.py"]:
         raise ValueError("Execute the exact frozen GPU controller")
-    if set(plan["evidence_files"]) != {
+    expected_evidence = {
         "cpu-proof.json",
         "cpu-plan.json",
         "cpu-launcher.json",
         "independent-cleanup-proof.json",
         "independent-host-cache-proof.json",
-    } or any(
+    }
+    if deterministic:
+        expected_evidence.add("deterministic-source-attestation.json")
+        if deterministic_attestation(
+            out / "deterministic-source-attestation.json"
+        ) != plan.get("deterministic_source_hashes"):
+            raise ValueError("Diagnostic source attestation changed")
+    if set(plan["evidence_files"]) != expected_evidence or any(
         payload.digest(out / name) != expected
         for name, expected in plan["evidence_files"].items()
     ):
@@ -201,11 +286,16 @@ def validate(out):
         raise ValueError("Reviewed lifecycle source changed")
     if payload.digest(out / "overlay.tar.gz") != plan["overlay_sha256"]:
         raise ValueError("Frozen runtime overlay changed")
-    if (
-        plan["source_hashes"] != base.read_json(out / "cpu-proof.json")["source_sha256"]
-        or plan["overlay_files"]
-        != base.read_json(out / "cpu-plan.json")["overlay_files"]
-    ):
+    previous_overlay = base.read_json(out / "cpu-plan.json")["overlay_files"]
+    check_overlay(plan["overlay_files"], previous_overlay, deterministic)
+    if deterministic and plan.get("diagnostic_overlay_delta") != {
+        DIAGNOSTIC_ADAPTER: {
+            "cpu_proof": previous_overlay[DIAGNOSTIC_ADAPTER],
+            "candidate": plan["overlay_files"][DIAGNOSTIC_ADAPTER],
+        }
+    }:
+        raise ValueError("Diagnostic overlay delta changed")
+    if plan["source_hashes"] != base.read_json(out / "cpu-proof.json")["source_sha256"]:
         raise ValueError("GPU runtime/source hashes differ from frozen CPU proof")
     return plan
 
@@ -381,6 +471,10 @@ audited.validate_versions({name:version(name) for name in ('sglang','torch','tra
 import importlib.util
 package=Path(next(iter(importlib.util.find_spec('sglang').submodule_search_locations)))
 audited.verify_sources(package,CONFIG['source_hashes']);audited.verify_native_schemas(package)
+for relative,expected in CONFIG.get('deterministic_source_hashes',{}).items():
+ path=package/relative
+ data=path.read_bytes()
+ if len(data)!=expected['bytes'] or hashlib.sha256(data).hexdigest()!=expected['sha256']: raise RuntimeError('Deterministic module differs from actual cached attestation: '+relative)
 bundle=Path('/fixture/fixture.tar.gz').read_bytes()
 if len(bundle)!=CONFIG['fixture_bytes'] or hashlib.sha256(bundle).hexdigest()!=CONFIG['fixture_sha256']: raise RuntimeError('Mounted fixture differs')
 fixture=root/'fixture'; fixture.mkdir()
@@ -389,7 +483,7 @@ script=root/'gpu_payload.py'; script.write_bytes(base64.b64decode(CONFIG['gpu_pa
 import importlib.util
 spec=importlib.util.spec_from_file_location('native_gpu_payload',script); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 from argparse import Namespace
-args=Namespace(output=root/'output',fixture=fixture,deadline=CONFIG['deadline'])
+args=Namespace(output=root/'output',fixture=fixture,deadline=CONFIG['deadline'],deterministic_triton=CONFIG.get('deterministic_triton',False))
 try: asyncio.run(module.run_cache_diagnostic(args) if CONFIG['cache_diagnostic'] else module.run(args))
 finally:
  if (root/'output'/'gpu-proof.json').exists(): print((root/'output'/'gpu-proof.json').read_text(),flush=True)
@@ -536,6 +630,9 @@ def execute(out, env_file):
             fixture_sha256=plan["fixture_sha256"],
             deadline=record["cpu_deadline_epoch"],
             cache_diagnostic=plan["scenario"] == "native_cache_diagnostic",
+            deterministic_triton=plan["scenario"]
+            == "deterministic_triton_full_diagnostic",
+            deterministic_source_hashes=plan.get("deterministic_source_hashes", {}),
         )
         # Include CPU audit module in the runtime overlay without importing GPU kernels locally.
         program, _, progress_root = guard.make_guest_program(
@@ -675,6 +772,8 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--cache-diagnostic", action="store_true")
+    parser.add_argument("--deterministic-triton", action="store_true")
+    parser.add_argument("--source-attestation", type=Path)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--env-file", type=Path)
     for option in (
@@ -708,4 +807,6 @@ if __name__ == "__main__":
             args.audited_source_root,
             args.cpu_proof_root,
             cache_diagnostic=args.cache_diagnostic,
+            deterministic_triton=args.deterministic_triton,
+            source_attestation=args.source_attestation,
         )
