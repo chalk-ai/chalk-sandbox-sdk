@@ -404,14 +404,19 @@ class WeightPublisher:
                     "Resume state does not match current checkpoint"
                 )
             self._config = (folder / "config.json").read_bytes()
-            self.stream.base_model = (
-                self.stream.base_model
-                or WeightManifest.from_json(
-                    self.stream._snapshot().read_file(
-                        f"{version_dir(current)}/manifest.json"
-                    )
-                ).base_model
+            manifest = WeightManifest.from_json(
+                self.stream._snapshot().read_file(
+                    f"{version_dir(current)}/manifest.json"
+                )
             )
+            if (
+                self.stream.base_model is not None
+                and self.stream.base_model != manifest.base_model
+            ):
+                raise WeightStreamError(
+                    "Stream base_model does not match the stored manifest"
+                )
+            self.stream.base_model = manifest.base_model
         self._previous = {n: t.detach().clone() for n, t in state.items()}
         self._version = current
         self._architecture = architecture_hash(self._config, state.items())
