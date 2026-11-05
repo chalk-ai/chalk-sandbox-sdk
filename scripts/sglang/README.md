@@ -113,3 +113,81 @@ without GPUs. Review frozen hashes and use the copied controller's explicit
 completed mounted rootfs cache on the same host. Keeping an idle image cache does
 not retain running compute. A later GPU test still requires a separate budget and
 approval; cache eviction never authorizes extending that GPU lease.
+
+## One-A100 native smoke
+
+`gpu_smoke.py` prepares a new plan locally using the exact successful CPU HOST
+fixture, CPU launcher/plan/proof, independent cleanup proof and mounted image-cache
+proof. It verifies unchanged runtime files/native source hashes. Review the frozen
+plan/controller/payload/guards before explicit `--execute`; preparation claims
+nothing. The fixed contract is one NVIDIA A10080GB, 8 CPU/32GiB HOST/GVISOR,
+900 seconds including fixture upload and startup, explicit identity disabled,
+180 seconds without native/test progress, and 120 seconds reserved for cleanup.
+Cold startup is bounded by300seconds, restarts180seconds, and updates30seconds.
+
+```bash
+python scripts/sglang/gpu_smoke.py --out /tmp/sglang-gpu-plan \
+  --source-root /path/to/this/sdk \
+  --guard-root /path/to/reviewed/scripts/weight_sync \
+  --audited-source-root /path/to/audited/sglang-source-files \
+  --cpu-proof-root /path/to/successful/released/cpu-host-plan
+python /tmp/sglang-gpu-plan/gpu_smoke.py --execute \
+  --out /tmp/sglang-gpu-plan --env-file /path/to/ftqa.env
+```
+
+The detached guard is armed before any unique fixture-volume metadata/upload.
+An upload subprocess is born inert, then bound by phase/PID/process group/start
+identity before authorization. Metadata creation uses one explicit30second RPC with no retry interceptor. A
+durable create-inflight marker precedes the RPC; an ambiguous response keeps the
+guard armed through its deadline plus60seconds of repeated unique-name deletion
+and absence checks after the upload writer has stopped. A successful create ACK
+uses the fast cleanup path. No create marker means no deletion of the planned
+name, so a pre-existing random-name collision is protected. The <=8MiB fixture is mounted at
+an immutable volume version and checked against the exact CPU guest bundle hash.
+Every pointer/corruption change happens in a guest-local copy. This smoke validates
+native SGLang and supervisor behavior; live ChalkFS ref-follow evidence belongs
+to the separate end-to-end workload tests.
+
+The payload attempts managed cold v0, real stream drain into v1, actual client
+disconnect/drain into v2, no-op, PIN rollback to0, corrupt payload rejection before
+mutation, an injected lost acknowledgement after actual successful native disk
+mutation, fail-closed restart, and separate fresh native v0/v1/v2 oracle instances
+on the same GPU. Eight declared token-ID prompts use deterministic generation and
+top-five logprobs; oracle tolerance stays1e-3 and both consecutive version changes
+must exceed0.01. Test-only gate observations require genuine active requests before
+drain and zero after; no artificial native delay creates the overlap. Product code
+contains no fault hooks. An unavailable native image/device/kernel contract fails
+this attempt; there is no in-lease package/model/image troubleshooting.
+
+`gpu-proof.json` and bounded guest/log progress retain completed scenarios if the
+budget is insufficient or any scenario fails. Partial scenarios never imply a full
+pass. Managed/native process groups are identity-bound, stopped and checked,
+including orphaned members; preparation processes are joined before checkpoint
+cleanup. Compute teardown verifies API, retained CR UID pods, exact HOST runsc and
+hypervisor-containerd absence. The upload writer is stopped before its unique
+volume is deleted. Cleanup uncertainty leaves the detached guard armed.
+
+After release, `verify_host_release.py --out /path/to/frozen/plan` performs fresh
+read-only exact CR/owner-UID pod/native/process checks and, for GPU plans, confirms
+the unique fixture volume and upload writer are absent. It writes a new independent
+proof without replacing a prior proof.
+
+### Fixed cache diagnostic after a numerical failure
+
+Prepare a separate `--cache-diagnostic` plan to isolate the same-model native cache
+baseline. Its fixed lease is600seconds including upload/startup/export, with the
+same one-A100/8CPU32Gi contract and120seconds reserved for cleanup. It loads only
+oracle-v0 and compares its initial prompt sequence against two warm-prefix repeats,
+an explicitly acknowledged native cache flush followed by the cold sequence, and
+a separately started fresh native process. No weight reload occurs in this mode.
+The1e-3 threshold stays fixed. All four comparison results are retained even when
+a warm repeat fails; this diagnostic cannot imply that native weight sync passed.
+
+Every comparison saves raw observed/reference values per prompt before raising,
+plus the exact maximum logprob error and prompt/generated-token/token location.
+Native response usage/cache fields, bounded cache configuration/state and the
+flush acknowledgment are retained separately. The <=2MiB compressed diagnostic
+bundle is hash-bound in the proof and exported with the same bounded reads before
+compute teardown, even after a numerical failure. Health-poll access-log growth
+does not count as meaningful progress. No new lease is claimed until its separate
+frozen diagnostic plan has been reviewed after previous cleanup.
