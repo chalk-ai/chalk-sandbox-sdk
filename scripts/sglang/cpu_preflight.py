@@ -13,6 +13,7 @@ import importlib
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -189,6 +190,104 @@ def make_sandbox(cc, name, image, program, *, host_prewarm=False):
     )
 
 
+def export_guest_file(sandbox, path, *, max_bytes, record, out):
+    """Read bounded chunks; retain transport diagnostics without file contents."""
+    from pathlib import PurePosixPath
+
+    parsed = PurePosixPath(path)
+    if not parsed.is_absolute() or ".." in parsed.parts:
+        raise ValueError("Export requires an absolute safe guest path")
+    if not 0 <= max_bytes <= payload.MAX_BUNDLE_BYTES:
+        raise ValueError("Export exceeds fixed fixture bound")
+    chunk_bytes = 32 * 1024  # Base64 remains below 44 KiB per exec response.
+    stage, offset = "stat", 0
+    response = None
+
+    def redacted(value):
+        text = str(value or "")[:4096]
+        # Credentials are disabled, but transport errors may include endpoint URLs.
+        text = re.sub(r"https?://[^\s]+", "[redacted-url]", text)
+        text = re.sub(
+            r"(?i)(bearer\s+|(?:token|secret|password|api[_-]?key)\s*[=:]\s*)[^\s,;]+",
+            r"\1[redacted]",
+            text,
+        )
+        return text
+
+    def command(code):
+        nonlocal response
+        response = None
+        budget = record["cpu_deadline_epoch"] - time.time() - 120
+        if budget <= 0:
+            raise TimeoutError("Fixture export reached cleanup reserve")
+        response = sandbox.exec(
+            "/opt/sglang/bin/python",
+            "-c",
+            code,
+            timeout_secs=min(20, max(1, int(budget))),
+        )
+        if response.error is not None or response.exit_code not in (0, None):
+            raise RuntimeError("Read-only fixture export command failed")
+        return response.stdout_text
+
+    try:
+        size = int(
+            command(
+                "from pathlib import Path; print(Path("
+                + repr(path)
+                + ").stat().st_size)"
+            )
+        )
+        if not 0 <= size <= max_bytes:
+            raise ValueError("Guest file exceeds authorized export bound")
+        chunks = []
+        stage = "chunk"
+        for offset in range(0, size, chunk_bytes):
+            count = min(chunk_bytes, size - offset)
+            code = (
+                "import base64\nfrom pathlib import Path\nwith Path("
+                + repr(path)
+                + ').open("rb") as handle:\n handle.seek('
+                + str(offset)
+                + ")\n print(base64.b64encode(handle.read("
+                + str(count)
+                + ")).decode())\n"
+            )
+            chunk = base64.b64decode(command(code).strip(), validate=True)
+            if len(chunk) != count:
+                raise RuntimeError("Guest file returned a short export chunk")
+            chunks.append(chunk)
+            write_json(
+                out / "export-progress.json",
+                {
+                    "exported_bytes": offset + count,
+                    "total_bytes": size,
+                    "recorded_at": time.time(),
+                },
+            )
+        return b"".join(chunks)
+    except BaseException as error:
+        write_json(
+            out / "export-failure.json",
+            {
+                "stage": stage,
+                "offset": offset,
+                "chunk_bytes": chunk_bytes,
+                "error_type": type(error).__name__,
+                "error": redacted(error),
+                "response_error": redacted(response.error)
+                if response is not None
+                else None,
+                "exit_code": response.exit_code if response is not None else None,
+                "signal": getattr(response, "signal", None),
+                "stderr": redacted(getattr(response, "stderr_text", "")),
+                "stdout_bytes": len(getattr(response, "stdout_text", "").encode()),
+                "recorded_at": time.time(),
+            },
+        )
+        raise
+
+
 def execute(out, env_file):
     plan = validate_prepared(out)
     # The exclusive ledger prevents accidental repeat execution of one plan.
@@ -321,11 +420,12 @@ def execute(out, env_file):
         progress = guard.poll_guest_until_complete(sandbox, record, ledger, poll)
         proof = progress["proof"]
         write_json(out / "cpu-proof.json", proof)
-        bundle = guard.read_guest_file(
+        bundle = export_guest_file(
             sandbox,
             root + "/output/fixture.tar.gz",
             max_bytes=payload.MAX_BUNDLE_BYTES,
             record=record,
+            out=out,
         )
         if (
             len(bundle) != proof["bundle"]["bytes"]

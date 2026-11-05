@@ -63,7 +63,11 @@ oracles and bitwise materialization checks. The v1 patch changes one output-head
 row; v2 changes an attention row and doubles the final norm (covering sparse and
 dense patches). Both consecutive CPU logit changes must exceed0.01 before device
 testing with the fixed1e-3 fresh-reference tolerance. The <=20MiB bundle is exported with
-short read-only64KiB reads and verified against the durable guest proof.
+short read-only32KiB reads (base64 responses remain below44KiB) and verified against
+the durable guest proof. Each chunk must have its exact expected length; export
+stops with120seconds reserved for cleanup. Progress records byte counts only.
+Failures retain bounded, credential-redacted command error/exit/signal/stderr
+diagnostics without the command, environment or exported data.
 
 Finally, the launcher stops/verifies the exact CPU sandbox/container CR/pods,
 deletes no external volumes, disarms the guard only after verified cleanup, and
