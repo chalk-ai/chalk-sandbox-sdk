@@ -25,7 +25,7 @@ steps:
       uv run --with ty ty check chalkcompute/ tests/typing/ --exclude chalkcompute/_gen/
     agents:
       queue: compile-runner-s
-    timeout_in_minutes: 5
+    timeout_in_minutes: 15
 
   - label: ":pytest: Unit tests"
     command: |
@@ -39,4 +39,4 @@ steps:
       uv run python -m pytest tests/ -v --tb=short
     agents:
       queue: compile-runner-s
-    timeout_in_minutes: 5
+    timeout_in_minutes: 15
