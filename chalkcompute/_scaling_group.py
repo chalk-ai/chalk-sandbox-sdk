@@ -47,7 +47,6 @@ from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import (
     ComputeClass,
-    Runtime,
     ContainerSpec,
     NetworkPolicy,
     ExecutionBackend,
@@ -354,7 +353,6 @@ class ScalingGroup:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
-        runtime: Runtime | None = None,
         network_policy: NetworkPolicy | None = None,
         execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
@@ -399,7 +397,6 @@ class ScalingGroup:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
-            runtime=runtime,
             network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,
@@ -429,7 +426,6 @@ class ScalingGroup:
         self._name = name
         self._cpu = cpu
         self._compute_class = compute_class
-        self._runtime = runtime
         self._network_policy = network_policy
         self._execution_target = execution_target
         self._memory = memory
@@ -553,7 +549,6 @@ class ScalingGroup:
         sg._name = None
         sg._cpu = None
         sg._compute_class = None
-        sg._runtime = None
         sg._network_policy = None
         sg._execution_target = None
         sg._memory = None
@@ -715,7 +710,6 @@ class ScalingGroup:
             entrypoint=self._entrypoint,
             cpu=self._cpu,
             compute_class=self._compute_class,
-            runtime=self._runtime,
             network_policy=self._network_policy,
             execution_target=self._execution_target,
             memory=self._memory,

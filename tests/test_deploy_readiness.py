@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from protobuf import Oneof
-from chalkcompute import ComputeClass, NetworkPolicy, Runtime
+from chalkcompute import ComputeClass, NetworkPolicy
 from chalkcompute._image import Image
 
 import chalkcompute._function as function_mod
@@ -160,11 +160,7 @@ def test_remote_function_deploy_waits_for_ready_replicas(
 
     client = _RemoteFunctionReadinessClient()
     fn = RemoteFunction(
-        add,
-        name="fn-ready",
-        compute_class=compute_class,
-        network_policy=network_policy,
-        runtime=Runtime.RUNC,
+        add, name="fn-ready", compute_class=compute_class, network_policy=network_policy
     )
     fn._client = client  # type: ignore[assignment]
 
@@ -187,7 +183,6 @@ def test_remote_function_deploy_waits_for_ready_replicas(
         assert spec.network_policy == container_pb.NetworkPolicy(
             denied_routes=network_policy.denied_routes
         )
-    assert spec.runtime == container_pb.Runtime.RUNC
     assert spec.compute_class == (
         container_pb.ComputeClass.UNSPECIFIED
         if compute_class is None
@@ -291,7 +286,6 @@ def test_remote_class_deploy_waits_for_ready_replicas(
     rc = RemoteClass(
         Adder,
         name="cls-ready",
-        runtime=Runtime.RUNC,
         compute_class=compute_class,
         network_policy=network_policy,
     )
@@ -316,7 +310,6 @@ def test_remote_class_deploy_waits_for_ready_replicas(
         assert spec.network_policy == container_pb.NetworkPolicy(
             denied_routes=network_policy.denied_routes
         )
-    assert spec.runtime == container_pb.Runtime.RUNC
     assert spec.compute_class == (
         container_pb.ComputeClass.UNSPECIFIED
         if compute_class is None
