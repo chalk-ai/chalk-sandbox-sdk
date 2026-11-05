@@ -136,7 +136,11 @@ def verify_reconciliation(record, out):
     return proof
 
 
-def verify(out):
+def verify(out, *, proof_name=None):
+    if proof_name is not None and (
+        Path(proof_name).name != proof_name or not proof_name.endswith(".json")
+    ):
+        raise ValueError("proof_name must be a JSON filename without directories")
     record = json.loads((out / "launcher.json").read_bytes())
     if (
         record.get("status") != "released"
@@ -191,9 +195,12 @@ def verify(out):
             raise RuntimeError("Upload writer remains after controller cleanup")
         proof["upload_writer_verified_absent"] = True
     target = out / (
-        "independent-gpu-cleanup-proof.json"
-        if record.get("gpu_claimed")
-        else "independent-cleanup-proof.json"
+        proof_name
+        or (
+            "independent-gpu-cleanup-proof.json"
+            if record.get("gpu_claimed")
+            else "independent-cleanup-proof.json"
+        )
     )
     with target.open("x") as handle:
         json.dump(proof, handle, indent=2)
@@ -204,6 +211,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--env-file", type=Path)
+    parser.add_argument(
+        "--proof-name", help="Distinct JSON basename; never overwrites evidence"
+    )
     args = parser.parse_args()
     if args.env_file:
         import sys
@@ -212,4 +222,4 @@ if __name__ == "__main__":
         from ftqa_smoke import load_env
 
         load_env(args.env_file)
-    print(json.dumps(verify(args.out), indent=2))
+    print(json.dumps(verify(args.out, proof_name=args.proof_name), indent=2))

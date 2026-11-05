@@ -648,6 +648,13 @@ def test_release_verifier_rejects_early_sandbox_reconciliation(tmp_path, monkeyp
     )
 
 
+@pytest.mark.parametrize("name", ["../other.json", "/tmp/other.json", "proof.txt"])
+def test_release_verifier_rejects_unsafe_proof_name_before_reads(tmp_path, name):
+    verifier = importlib.import_module("verify_host_release")
+    with pytest.raises(ValueError, match="without directories"):
+        verifier.verify(tmp_path, proof_name=name)
+
+
 def test_cache_state_bounds_realistic_full_internal_config(tmp_path, monkeypatch):
     import asyncio
 
