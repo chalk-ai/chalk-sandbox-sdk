@@ -5,6 +5,15 @@ import importlib
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    "LivePolicy": ("chalkcompute._live_policy", "LivePolicy"),
+    "LivePolicyError": ("chalkcompute._live_policy", "LivePolicyError"),
+    "LivePolicyDeploymentError": (
+        "chalkcompute._live_policy",
+        "LivePolicyDeploymentError",
+    ),
+    "PolicyGeneration": ("chalkcompute._live_policy", "PolicyGeneration"),
+    "PolicyChatGeneration": ("chalkcompute._live_policy", "PolicyChatGeneration"),
+    "PolicyReplica": ("chalkcompute._live_policy", "PolicyReplica"),
     "WeightStream": ("chalkcompute._weights", "WeightStream"),
     "WeightMetadataPending": (
         "chalkcompute._weight_stream_metadata",

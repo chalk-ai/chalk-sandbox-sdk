@@ -292,6 +292,9 @@ class ScalingGroupInfo:
     current_revision_id: str | None = None
     """Immutable revision currently selected to serve traffic."""
 
+    weight_stream_id: str | None = None
+    """Immutable control-plane weight stream association, when registered."""
+
 
 @dataclass(frozen=True)
 class ScalingGroupRevisionInfo:
@@ -379,11 +382,15 @@ class ScalingGroup:
         chalk_identity: bool | ChalkIdentity = False,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
+        weight_stream_id: str | None = None,
     ) -> None:
         if image is None:
             raise TypeError(
                 "image must be an Image or image reference string, got None"
             )
+        if weight_stream_id is not None and not weight_stream_id:
+            raise ValueError("weight_stream_id must not be empty")
+        self._weight_stream_id = weight_stream_id
         env, secrets = normalize_env(env, secrets)
         self._tracing = normalize_workload_tracing(tracing)
         env = merge_workload_tracing_env(env, self._tracing)
@@ -579,6 +586,7 @@ class ScalingGroup:
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
+        sg._weight_stream_id = None
         sg._client = ConnectClient(chalk_client=chalk_client)
         return sg
 
@@ -760,7 +768,9 @@ class ScalingGroup:
             if self._scaling_group_id is None:
                 response = self._client.call(
                     stub.create_scaling_group,
-                    sg_pb.CreateScalingGroupRequest(spec=spec),
+                    sg_pb.CreateScalingGroupRequest(
+                        spec=spec, weight_stream_id=self._weight_stream_id
+                    ),
                     timeout=60,
                 )
                 operation = "CreateScalingGroup"
@@ -1268,6 +1278,9 @@ def _parse_scaling_group_response(data: sg_pb.ScalingGroupResponse) -> ScalingGr
         ready_replicas=data.ready_replicas,
         available_replicas=data.available_replicas,
         current_revision_id=data.revision_id or None,
+        weight_stream_id=data.weight_stream_id
+        if data.has_field("weight_stream_id")
+        else None,
     )
 
 

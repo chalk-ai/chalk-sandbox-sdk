@@ -1,3 +1,11 @@
+from chalkcompute._live_policy import LivePolicy as LivePolicy
+from chalkcompute._live_policy import LivePolicyError as LivePolicyError
+from chalkcompute._live_policy import (
+    LivePolicyDeploymentError as LivePolicyDeploymentError,
+)
+from chalkcompute._live_policy import PolicyGeneration as PolicyGeneration
+from chalkcompute._live_policy import PolicyChatGeneration as PolicyChatGeneration
+from chalkcompute._live_policy import PolicyReplica as PolicyReplica
 from chalkcompute._weight_stream_metadata import (
     WeightMetadataPending as WeightMetadataPending,
 )
@@ -212,6 +220,12 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "LivePolicy",
+    "LivePolicyError",
+    "LivePolicyDeploymentError",
+    "PolicyGeneration",
+    "PolicyChatGeneration",
+    "PolicyReplica",
     "WeightStream",
     "WeightPublisher",
     "WeightStreamError",

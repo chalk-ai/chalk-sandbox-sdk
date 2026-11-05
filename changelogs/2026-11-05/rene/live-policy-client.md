@@ -1,0 +1,1 @@
+Add LivePolicy deployments using catalog-resolved immutable runtime images and immutable stream linkage, strict version-stamped completion/chat results, per-replica applied versions, and explicit failed-deployment cleanup handles.
