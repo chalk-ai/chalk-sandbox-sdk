@@ -191,3 +191,60 @@ bundle is hash-bound in the proof and exported with the same bounded reads befor
 compute teardown, even after a numerical failure. Health-poll access-log growth
 does not count as meaningful progress. No new lease is claimed until its separate
 frozen diagnostic plan has been reviewed after previous cleanup.
+
+## Explicit deterministic/triton diagnostic candidate
+
+The previous default BF16/flashinfer/radix same-v0 diagnostic **failed**: both warm
+repeats differed by0.004029750823974609 at the fixed1e-3 threshold; explicit flush
+and fresh process comparisons were0.0. Keep those attempts unchanged.
+
+The separately reviewed read-only pinned-image attestation matched all13 audited
+configuration/attention/invariance source modules at build commit
+`297e54fd105e974cdf401e5b4d20253a22c16f90`. Its exact proof SHA256 is
+`c5e1fa95706622eb77c30f5ff886c79a5ff4f2fec51edb854850504eed9fdd65`.
+This supports testing the explicit experimental adapter profile
+`diagnostic_profile="deterministic-triton"`, which adds only
+`--enable-deterministic-inference --attention-backend triton`. Ordinary engine
+arguments still reject those flags and arbitrary backend overrides. Defaults,
+backend runtime catalog and FULL_WEIGHTS remain disabled/unchanged.
+
+Prepare a distinct candidate using `gpu_smoke.py --deterministic-triton
+--source-attestation /path/to/exact/cached-attestation/stdout.json
+--capacity-source /path/to/shared/reviewed/profile_capacity.py` plus the same
+four source/proof roots. It freezes the exact attestation, rechecks all13 native
+module hashes in the guest and permits only the experimental adapter overlay
+change from the successful CPU fixture proof. No new model or image is needed.
+Use `preview_gpu_plan.py` to validate/compile the exact frozen command before
+parent review. Preparation and tests claim nothing.
+
+This combined native diagnostic retains the900second one-A100/8CPU/32GiB ceiling,
+120second cleanup reserve, fixed1e-3 comparisons and unchanged lifecycle guards.
+Every managed/fresh native startup must report deterministic=True,
+attention=triton, sampling=pytorch, radix enabled, graphs disabled and weight
+cache off before samples are accepted; absent/conflicting settings fail closed.
+The same-v0 cold/two warm/flush/fresh comparisons precede full updates/drain,
+disconnect, no-op, PIN rollback, corruption refusal, lost ACK after actual native
+mutation, restart and fresh v0/v1/v2 oracles. Numerical failures retain raw errors
+and allow remaining diagnostic cases to run; structural/native/lease failures
+stop safely. Unreached scenarios remain explicit and never count as passes.
+This profile has not yet proved native kernel compatibility or determinism.
+The combined phase may exhaust its fixed budget; that is a failed/incomplete run,
+not permission to extend the lease or loosen checks. Review the exact new freeze
+and fresh host capacity before any claim; independently prove all release paths
+before another phase. The shared lifecycle sources are reused without a new fork.
+
+The absolute execution clock starts at the first line of execute(), before
+validation/import/auth/discovery, and includes fixture upload, native startup,
+scenario work and export. Immediately before sandbox create, reuse the exact
+shared capacity helper's read-only collect_raw() inventory and save it; require
+8CPU/32GiB host/ancestor-cgroup headroom and8GiB free at relevant host/hypervisor
+writable paths. The original full-model helper's120GiB gate remains unchanged.
+The tiny frozen fixture contract (<=20MiB unpacked, <=8MiB compressed), stream/
+checkpoint copies and bounded raw artifacts fit a128MiB fixed-data reserve;
+6GiB is reserved for native/JIT paths with about1.875GiB slack. Diagnostic Triton,
+Inductor, CUDA and XDG cache directories are bound to owned guest-local paths.
+Startup/prompt-boundary ordinary-path samples fail above6GiB; this is **not a
+hard quota** and cannot bound open-unlinked files or every native write outside
+those paths. Fresh API placement/one-free-A100 evidence and independent cleanup
+remain required parent execution gates. Reached structural failures are marked
+failed; later scenarios remain not_reached.

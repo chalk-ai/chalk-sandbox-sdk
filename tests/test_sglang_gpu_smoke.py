@@ -774,3 +774,292 @@ def test_cache_diagnostic_finishes_flush_and_fresh_cases_after_warm_failure(
 def test_health_access_logs_do_not_count_as_native_progress():
     text = "[time] Load weight end\n[time] INFO GET /health HTTP/1.1 503\n[time] INFO GET /chalk/health HTTP/1.1 503\n"
     assert scenario.meaningful_log_lines(text) == ["[time] Load weight end"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("enable_deterministic_inference", False),
+        ("attention_backend", "flashinfer"),
+        ("sampling_backend", "flashinfer"),
+        ("disable_radix_cache", True),
+        ("disable_cuda_graph", False),
+        ("weight_cache_mode", "auto"),
+        ("enable_deterministic_inference", 1),
+    ],
+)
+def test_diagnostic_requires_exact_actual_resolved_config(field, value):
+    config = dict(
+        enable_deterministic_inference=True,
+        attention_backend="triton",
+        sampling_backend="pytorch",
+        disable_radix_cache=False,
+        disable_cuda_graph=True,
+        weight_cache_mode="off",
+    )
+    scenario.require_deterministic_config(
+        {"config": config, "internal_states": [dict(config)]}
+    )
+    bad = {**config, field: value}
+    with pytest.raises(RuntimeError, match="contract differs"):
+        scenario.require_deterministic_config({"config": bad})
+    with pytest.raises(RuntimeError, match="configs disagree"):
+        scenario.require_deterministic_config(
+            {"config": config, "internal_states": [bad]}
+        )
+    with pytest.raises(RuntimeError):
+        scenario.require_deterministic_config({"config": {}})
+
+
+def test_diagnostic_overlay_delta_is_only_experimental_adapter():
+    original = {gpu.DIAGNOSTIC_ADAPTER: "old", "other.py": "unchanged"}
+    current = {**original, gpu.DIAGNOSTIC_ADAPTER: "new"}
+    gpu.check_overlay(current, original, True)
+    with pytest.raises(ValueError):
+        gpu.check_overlay(current, original, False)
+    with pytest.raises(ValueError):
+        gpu.check_overlay({**current, "other.py": "changed"}, original, True)
+    with pytest.raises(ValueError):
+        gpu.check_overlay({**current, "extra.py": "new"}, original, True)
+
+
+def test_diagnostic_plan_binds_actual_attestation_and_only_adapter_delta(
+    prepared, monkeypatch
+):
+    out, _ = prepared
+    root = out.parent
+    adapter = root / "sdk" / gpu.DIAGNOSTIC_ADAPTER
+    adapter.parent.mkdir(parents=True)
+    adapter.write_text("# previous adapter\n")
+    old = gpu.base.overlay_archive(root / "sdk")[1]
+    cpu_plan = root / "cpu" / "plan.json"
+    gpu.base.write_json(cpu_plan, {"overlay_files": old})
+    ledger = gpu.base.read_json(root / "cpu" / "launcher.json")
+    ledger["plan_sha256"] = gpu.payload.digest(cpu_plan)
+    gpu.base.write_json(root / "cpu" / "launcher.json", ledger)
+    adapter.write_text("# diagnostic adapter\n")
+    attestation = root / "attestation.json"
+    gpu.base.write_json(
+        attestation,
+        {
+            "passed": True,
+            "result": {
+                "sources": [
+                    {
+                        "path": f"module-{index}.py",
+                        "sha256": "f" * 64,
+                        "bytes": 1,
+                        "match": True,
+                    }
+                    for index in range(13)
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        gpu, "DETERMINISTIC_ATTESTATION_SHA256", gpu.payload.digest(attestation)
+    )
+    capacity = root / "profile_capacity.py"
+    capacity.write_text("# unchanged shared helper fixture\n")
+    monkeypatch.setattr(gpu, "CAPACITY_SOURCE_SHA256", gpu.payload.digest(capacity))
+    target = root / "deterministic-plan"
+    plan = gpu.prepare(
+        target,
+        root / "sdk",
+        root / "guards",
+        root / "upstream",
+        root / "cpu",
+        deterministic_triton=True,
+        source_attestation=attestation,
+        capacity_source=capacity,
+    )
+    assert gpu.validate(target) == plan
+    assert plan["lease_seconds"] == 900 and plan["cleanup_reserve_seconds"] == 120
+    assert plan["scenario"] == "deterministic_triton_full_diagnostic"
+    assert plan["tolerance"] == 1e-3 and len(plan["deterministic_source_hashes"]) == 13
+    assert set(plan["diagnostic_overlay_delta"]) == {gpu.DIAGNOSTIC_ADAPTER}
+    (target / "deterministic-source-attestation.json").write_text("changed")
+    with pytest.raises(ValueError, match="exact independently reviewed"):
+        gpu.validate(target)
+
+
+def test_full_diagnostic_cache_cases_continue_after_numerical_failure(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    calls, comparisons = [], {}
+
+    class Response:
+        status = 200
+
+        async def text(self):
+            return "flushed"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class Client:
+        def post(self, url, **kwargs):
+            calls.append("flush")
+            return Response()
+
+    class Native:
+        async def start(self, *args):
+            calls.append("fresh-start")
+
+        async def stop(self):
+            calls.append("stop")
+
+    values = iter([0.02, 0.03, 0.0, 0.0])
+
+    async def samples(*args, **kwargs):
+        calls.append(kwargs["label"])
+        return sample(next(values))
+
+    def evaluate(observed, expected, *, out, label):
+        try:
+            scenario.compare(observed, expected, out=out, label=label)
+            comparisons[label] = True
+        except scenario.NativeComparisonError:
+            comparisons[label] = False
+
+    monkeypatch.setattr(scenario, "samples", samples)
+    asyncio.run(
+        scenario.same_weight_cache(
+            Client(), Native(), SimpleNamespace(output=tmp_path), sample(), evaluate
+        )
+    )
+    assert comparisons == {
+        "warm-1-vs-cold": False,
+        "warm-2-vs-cold": False,
+        "flushed-vs-cold": True,
+        "fresh-process-vs-cold": True,
+    }
+    assert calls == [
+        "warm-v0-1",
+        "warm-v0-2",
+        "flush",
+        "flushed-cold-v0",
+        "stop",
+        "fresh-start",
+        "fresh-process-v0",
+    ]
+
+
+def test_full_diagnostic_distinguishes_reached_failure_from_unreached(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    class Native:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def start(self, *args, **kwargs):
+            raise RuntimeError("native profile resolution failed")
+
+        async def stop(self):
+            pass
+
+    fixture = tmp_path / "fixture"
+    (fixture / "stream").mkdir(parents=True)
+    args = SimpleNamespace(
+        output=tmp_path / "output",
+        fixture=fixture,
+        deadline=time.time() + 900,
+        deterministic_triton=True,
+    )
+    monkeypatch.setattr(scenario, "Native", Native)
+    with pytest.raises(RuntimeError, match="profile resolution"):
+        asyncio.run(scenario.run(args))
+    proof = json.loads((args.output / "gpu-proof.json").read_bytes())
+    assert proof["status"] == "failed"
+    assert proof["scenarios"]["cold_v0"]["status"] == "failed"
+    assert proof["scenarios"]["same_weight_cache"]["status"] == "not_reached"
+    assert proof["scenarios"]["fresh_native_oracle_v2"]["status"] == "not_reached"
+    assert proof["native_groups_stopped"] is True
+
+
+def native_capacity():
+    return {
+        "memory": {"MemAvailable": 32 * 1024**3},
+        "cpu_affinity_count": 8,
+        "cgroup_v2": [
+            {
+                "memory.max": str(40 * 1024**3),
+                "memory.current": str(8 * 1024**3),
+                "cpu.max": "800000 100000",
+            }
+        ],
+        "filesystems": {
+            name: {"free_bytes": 8 * 1024**3} for name in ("/var/lib/docker", "/tmp")
+        },
+        "hypervisor_paths": {
+            name: {"free_bytes": 8 * 1024**3}
+            for name in ("/tmp", "/var/lib/chalk-hypervisor")
+        },
+    }
+
+
+def test_native_capacity_separate_small_gate_rejects_each_insufficient_resource():
+    import copy
+
+    original = native_capacity()
+    assert gpu.validate_small_capacity(original) == original
+    cases = [
+        lambda value: value["memory"].update(MemAvailable=32 * 1024**3 - 1),
+        lambda value: value.update(cpu_affinity_count=7),
+        lambda value: value["cgroup_v2"][0].update(
+            **{"memory.current": str(8 * 1024**3 + 1)}
+        ),
+        lambda value: value["cgroup_v2"][0].update(**{"cpu.max": "799999 100000"}),
+        lambda value: value["filesystems"]["/var/lib/docker"].update(
+            free_bytes=8 * 1024**3 - 1
+        ),
+        lambda value: value["hypervisor_paths"]["/tmp"].update(
+            free_bytes=8 * 1024**3 - 1
+        ),
+        lambda value: value.update(cgroup_v2=[]),
+    ]
+    for mutate in cases:
+        value = copy.deepcopy(original)
+        mutate(value)
+        with pytest.raises(RuntimeError):
+            gpu.validate_small_capacity(value)
+
+
+def test_execute_clock_starts_before_validation(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(gpu.time, "time", lambda: events.append("clock") or 1000)
+
+    def validate(out):
+        events.append("validate")
+        raise RuntimeError("stop before any auth or claim")
+
+    monkeypatch.setattr(gpu, "validate", validate)
+    with pytest.raises(RuntimeError, match="before any auth"):
+        gpu.execute(tmp_path, None)
+    assert events == ["clock", "validate"]
+
+
+def test_sampled_owned_disk_gate_retains_limitation_and_rejects_large_or_symlink(
+    tmp_path,
+):
+    file = tmp_path / "ordinary"
+    file.write_bytes(b"123")
+    assert scenario.check_owned_disk(tmp_path) == 3
+    proof = json.loads((tmp_path / "native-disk-usage.json").read_bytes())
+    assert proof["hard_quota"] is False
+    file.write_bytes(b"")
+    with file.open("wb") as handle:
+        handle.truncate(6 * 1024**3 + 1)
+    with pytest.raises(RuntimeError, match="exceed6GiB"):
+        scenario.check_owned_disk(tmp_path)
+    file.unlink()
+    file.symlink_to("/tmp")
+    with pytest.raises(RuntimeError, match="inventory"):
+        scenario.check_owned_disk(tmp_path)

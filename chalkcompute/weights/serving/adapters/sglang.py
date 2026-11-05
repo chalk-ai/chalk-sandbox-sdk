@@ -45,9 +45,18 @@ def validate_config(config: bytes) -> None:
 
 
 class SGLangAdapter:
-    def __init__(self, port: int = 8001, engine_args: list[str] | None = None):
+    def __init__(
+        self,
+        port: int = 8001,
+        engine_args: list[str] | None = None,
+        *,
+        diagnostic_profile: str | None = None,
+    ):
         self.url = f"http://127.0.0.1:{port}"
-        self.engine_args = engine_args or []
+        if diagnostic_profile not in (None, "deterministic-triton"):
+            raise ValueError("Unsupported experimental SGLang diagnostic profile")
+        self.diagnostic_profile = diagnostic_profile
+        self.engine_args = list(engine_args or [])
         # A narrow allowlist also rejects argparse abbreviations, parallelism,
         # quantization, remote code, shared/derived caches and environment files.
         index = 0
@@ -103,6 +112,11 @@ class SGLangAdapter:
             "--weight-cache-mode",
             "off",
             "--disable-cuda-graph",
+            *(
+                ["--enable-deterministic-inference", "--attention-backend", "triton"]
+                if self.diagnostic_profile == "deterministic-triton"
+                else []
+            ),
             *self.engine_args,
         ]
 

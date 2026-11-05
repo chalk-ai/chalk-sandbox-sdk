@@ -31,6 +31,9 @@ def preview(out, source_head, env_file):
         "fixture_sha256": plan["fixture_sha256"],
         "deadline": 0,
         "cache_diagnostic": plan["scenario"] == "native_cache_diagnostic",
+        "deterministic_triton": plan["scenario"]
+        == "deterministic_triton_full_diagnostic",
+        "deterministic_source_hashes": plan.get("deterministic_source_hashes", {}),
     }
     program, _, progress_root = guard.make_guest_program(
         phase, gpu.guest_code(), config

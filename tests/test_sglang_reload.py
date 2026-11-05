@@ -635,3 +635,40 @@ def test_native_http_protocol_is_strict(stream, failure):
                 assert "/continue_generation" not in [path for path, _ in calls]
 
     asyncio.run(run())
+
+
+def test_deterministic_triton_is_explicit_diagnostic_profile_only(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "model_type": "llama",
+                "dtype": "bfloat16",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "chalkcompute.weights.serving.adapters.sglang.version", lambda _: "0.5.23"
+    )
+    default = SGLangAdapter().launch_cmd(tmp_path, 8001)
+    assert "--enable-deterministic-inference" not in default
+    assert "--attention-backend" not in default
+    diagnostic = SGLangAdapter(diagnostic_profile="deterministic-triton").launch_cmd(
+        tmp_path, 8001
+    )
+    assert diagnostic.count("--enable-deterministic-inference") == 1
+    assert diagnostic[diagnostic.index("--attention-backend") + 1] == "triton"
+    assert "--disable-cuda-graph" in diagnostic
+    for profile in ("flashinfer", "deterministic", "DETERMINISTIC-TRITON", True):
+        with pytest.raises(ValueError, match="diagnostic profile"):
+            SGLangAdapter(diagnostic_profile=profile)  # ty: ignore[invalid-argument-type]
+    for options in (
+        ["--enable-deterministic-inference"],
+        ["--attention-backend", "triton"],
+        ["--sampling-backend", "pytorch"],
+    ):
+        for profile in (None, "deterministic-triton"):
+            with pytest.raises(ValueError, match="Unsupported"):
+                SGLangAdapter(engine_args=options, diagnostic_profile=profile)
