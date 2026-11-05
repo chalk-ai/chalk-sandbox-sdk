@@ -830,6 +830,23 @@ class Observer:
             raise RuntimeError("Visibility observer did not stop")
 
 
+def cleanup_data_and_disarm(guard):
+    """A disarm proves successful data release, including explicit lease ownership."""
+    if guard.record.get("cpu_seed_ledger") and not isinstance(
+        guard.record.get("owns_source_volume"), bool
+    ):
+        raise RuntimeError(
+            "Source volume ownership is uncertain; watchdog remains armed"
+        )
+    errors = cleanup_data(guard)
+    guard.record["cleanup_errors"] = errors
+    guard.record["finished_at"] = time.time()
+    guard.save()
+    if errors:
+        raise RuntimeError("Data cleanup incomplete; watchdog remains armed")
+    (guard.out / "watchdog-disarmed").write_text(str(time.time()))
+
+
 def arm_resource_watchdog(guard, budget_seconds):
     record = guard.record
     # Detached process survives an abrupt launcher exit or SIGKILL.
@@ -1363,6 +1380,10 @@ def main():
         observed = {int(row["version"]) for row in observer.rows if "version" in row}
         published = {step["version"] for step in report["steps"]}
         record["observer_skipped_versions"] = sorted(published - observed)
+        record["all_published_versions_observed"] = not (published - observed)
+        record["version_visibility_contract"] = (
+            "Final version must be visible and match fresh reconstruction; intermediate observations are reported explicitly."
+        )
         record["publish_to_first_response_s"] = {
             str(step["version"]): min(
                 row["response_received_at"]
@@ -1446,13 +1467,7 @@ def main():
                 raise RuntimeError(
                     "Ambiguous create RPC: detached watchdog remains armed"
                 )
-            cleanup_errors.extend(cleanup_data(guard))
-            (args.out / "watchdog-disarmed").write_text(str(time.time()))
-            record["finished_at"] = time.time()
-            record["cleanup_errors"] = cleanup_errors
-            guard.save()
-            if cleanup_errors:
-                raise RuntimeError("Cleanup incomplete; inspect launcher.json")
+            cleanup_data_and_disarm(guard)
 
 
 if __name__ == "__main__":

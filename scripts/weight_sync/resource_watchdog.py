@@ -130,7 +130,12 @@ def main():
             "Watchdog cleanup had errors; inspect watchdog-cleanup evidence"
         )
     retain_trainer_evidence(guard)
-    data_errors = cleanup_data(guard)
+    for data_attempt in range(6):
+        data_errors = cleanup_data(guard)
+        if not data_errors:
+            break
+        if data_attempt != 5:
+            time.sleep(10)
     guard.record["cleanup_errors"] = data_errors
     guard.save()
     if data_errors:

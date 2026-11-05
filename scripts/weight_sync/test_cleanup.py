@@ -143,3 +143,31 @@ def test_ambiguous_dataset_finalize_recovers_only_exact_owned_name(
     assert cleanup_data(guard) == []
     assert deleted == ["owned-id"]
     assert guard.record["dataset_deleted"] is True
+
+
+def test_data_error_keeps_guard_armed_until_a_successful_retry(monkeypatch, tmp_path):
+    import pytest
+    import training_smoke
+
+    class Guard:
+        out = tmp_path
+        record = {"cpu_seed_ledger": "exact-ledger", "owns_source_volume": True}
+
+        def save(self):
+            pass
+
+    guard = Guard()
+    attempts = []
+
+    def cleanup(_guard):
+        attempts.append("attempt")
+        return ["volume deletion unconfirmed"] if len(attempts) == 1 else []
+
+    monkeypatch.setattr(training_smoke, "cleanup_data", cleanup)
+    with pytest.raises(RuntimeError, match="watchdog remains armed"):
+        training_smoke.cleanup_data_and_disarm(guard)
+    assert not (tmp_path / "watchdog-disarmed").exists()
+    assert guard.record["cleanup_errors"]
+    training_smoke.cleanup_data_and_disarm(guard)
+    assert (tmp_path / "watchdog-disarmed").exists()
+    assert guard.record["cleanup_errors"] == []

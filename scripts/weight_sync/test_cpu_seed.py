@@ -293,3 +293,28 @@ def test_filtered_hf_cache_proves_seed_without_excluded_readme_or_license(
     )
     assert proof["snapshot_id"] == 42 and proof["elements"] == 1
     assert proof["files"]["model.safetensors"]["bytes"] == 2
+
+
+def test_create_uses_scoped_single_attempt_callback_not_retrying_stub(tmp_path):
+    record, _ = handoff()
+    ledger = tmp_path / "launcher.json"
+    write_json(
+        tmp_path / "cpu-watchdog-ready.json",
+        {"phase_id": record["cpu_phase_id"], "pid": os.getpid()},
+    )
+    calls = []
+
+    class RetryingStub:
+        def create_sandbox(self, *args, **kwargs):
+            raise AssertionError("retrying stub must not receive the mutating create")
+
+    def single_attempt(*args, **kwargs):
+        calls.append("one create")
+        raise ConnectionError("response lost")
+
+    with pytest.raises(ConnectionError):
+        GuardedSandboxStub(
+            RetryingStub(), record, ledger, create_once=single_attempt
+        ).create_sandbox("request")
+    assert calls == ["one create"]
+    assert json.loads(ledger.read_text())["submission_inflight"] is True

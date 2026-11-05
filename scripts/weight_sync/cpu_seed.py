@@ -69,8 +69,9 @@ def valid_handoff(record, authorization):
 class GuardedSandboxStub:
     """Refuse claims until the independently ready, live watchdog is recorded."""
 
-    def __init__(self, stub, record, ledger):
+    def __init__(self, stub, record, ledger, *, create_once=None):
         self.stub, self.record, self.ledger = stub, record, ledger
+        self.create_once = create_once or stub.create_sandbox
 
     def __getattr__(self, name):
         return getattr(self.stub, name)
@@ -90,7 +91,7 @@ class GuardedSandboxStub:
         )
         self.record["submission_inflight"] = True
         write_json(self.ledger, self.record)
-        response = self.stub.create_sandbox(
+        response = self.create_once(
             request, timeout_ms=max(1, int(rpc_seconds * 1000)), **kwargs
         )
         if response.sandbox:
@@ -437,7 +438,20 @@ def main():
     transferred = False
     try:
         sandbox_client = SandboxClient.from_env()
-        sandbox_client._stub = GuardedSandboxStub(sandbox_client._stub, record, ledger)
+        # This launcher sends exactly one create; it reconciles ambiguous
+        # responses rather than replaying a mutating RPC. SDK policy is unchanged.
+        from chalkcompute import _sandbox as sandbox_module
+
+        create_stub = sandbox_module.pb_connect.SandboxServiceClientSync(
+            sandbox_client._address,
+            protocol=sandbox_module.ProtocolType.GRPC,
+            interceptors=(),
+            http_client=sandbox_module.SYNC_HTTP_CLIENT,
+            read_max_bytes=sandbox_module.RPC_READ_MAX_BYTES,
+        )
+        sandbox_client._stub = GuardedSandboxStub(
+            sandbox_client._stub, record, ledger, create_once=create_stub.create_sandbox
+        )
         env_keys = {
             "CHALK_API_SERVER",
             "CHALK_CLIENT_ID",
@@ -452,10 +466,32 @@ def main():
         remote_env.update(
             {"PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
         )
+        guest_source = Path(__file__).with_name("cpu_seed_guest.py").read_text()
+        guest_root = "/tmp/weight-cpu-seed-" + record["cpu_phase_id"]
+        model, revision = MODELS["8b"]
+        guest_program = (
+            guest_source
+            + "\nrun_seed_once(Path("
+            + repr(guest_root)
+            + "),"
+            + repr(record["cpu_phase_id"])
+            + ","
+            + repr(SEED_CODE)
+            + ","
+            + repr((name, model, revision))
+            + ")\nwhile True: time.sleep(5)\n"
+        )
+        (args.out / "guest-entrypoint-executed.py").write_text(guest_program)
+        record["guest_entrypoint_sha256"] = hashlib.sha256(
+            guest_program.encode()
+        ).hexdigest()
+        record["guest_root"] = guest_root
+        write_json(ledger, record)
         seed = cc.Sandbox(
             name=record["seed_name"],
             image=cc.Image.from_json(args.prepared_image.read_text()),
-            entrypoint=["sleep", "infinity"],
+            entrypoint=["python3", "-u", "-c", guest_program],
+            restart_policy=cc.RestartPolicy.NEVER,
             cpu="2",
             memory="32Gi",
             compute_class=cc.ComputeClass.K8S,
@@ -467,44 +503,47 @@ def main():
         record["cpu_ready_at"] = time.time()
         record["status"] = "seeding"
         write_json(ledger, record)
-        model, revision = MODELS["8b"]
-        code = "CONFIG=" + repr((name, model, revision)) + "\n" + SEED_CODE
-        import shlex
-
-        record["seed_command_started_at"] = time.time()
-        write_json(ledger, record)
-        result = seed.exec(
-            "bash",
-            "-lc",
-            "python3 -c " + shlex.quote(code),
-            timeout_secs=max(1, int(remaining(record) - 60)),
+        poll_code = (
+            guest_source
+            + "\nprint(json.dumps(read_progress(Path("
+            + repr(guest_root)
+            + "))))\n"
         )
-        (args.out / "seed-stdout.txt").write_text(result.stdout_text[-1024 * 1024 :])
-        (args.out / "seed-stderr.txt").write_text(result.stderr_text[-1024 * 1024 :])
-        record["seed_command_finished_at"] = time.time()
-        atomic = next(
-            (
-                line.removeprefix("CPU_SEED_ATOMIC=")
-                for line in result.stdout_text.splitlines()
-                if line.startswith("CPU_SEED_ATOMIC=")
-            ),
-            None,
-        )
-        if atomic is not None:
-            record["atomic_seed"] = json.loads(atomic)
-        write_json(ledger, record)
-        if result.error is not None or result.exit_code not in (0, None):
-            raise RuntimeError(
-                f"CPU seed/proof command failed (exit={result.exit_code}); see retained seed-stderr.txt"
-            )
-        output = result.stdout_text
-        proof = json.loads(
-            next(
-                line.removeprefix("CPU_SEED_PROOF=")
-                for line in output.splitlines()
-                if line.startswith("CPU_SEED_PROOF=")
-            )
-        )
+        while remaining(record) > 60:
+            # A replay/lost response only repeats this short read. The seed
+            # process belongs to PID1, independent of any exec/RPC lifetime.
+            response = seed.exec("python3", "-c", poll_code, timeout_secs=20)
+            if response.error is not None or response.exit_code not in (0, None):
+                raise RuntimeError("Read-only CPU progress poll failed")
+            progress = json.loads(response.stdout_text)
+            (args.out / "seed-progress.json").write_text(json.dumps(progress, indent=2))
+            (args.out / "seed-stdout.txt").write_text(progress["stdout"])
+            (args.out / "seed-stderr.txt").write_text(progress["stderr"])
+            if progress.get("started"):
+                if progress["started"]["phase_id"] != record["cpu_phase_id"]:
+                    raise RuntimeError("Guest entrypoint phase mismatch")
+                record["seed_command_started_at"] = progress["started"]["started_at"]
+            if progress.get("atomic_seed"):
+                record["atomic_seed"] = progress["atomic_seed"]
+                record["status"] = "proving"
+            record["last_progress_at"] = time.time()
+            completed = progress.get("completed")
+            if completed:
+                if completed["phase_id"] != record["cpu_phase_id"]:
+                    raise RuntimeError("Guest completion phase mismatch")
+                record["seed_command_finished_at"] = completed["finished_at"]
+                record["guest_completion"] = completed
+                write_json(ledger, record)
+                if completed["status"] != "passed":
+                    raise RuntimeError(
+                        "CPU entrypoint seed/proof failed; see retained seed-stderr.txt"
+                    )
+                proof = progress["proof"]
+                break
+            write_json(ledger, record)
+            time.sleep(min(5, max(0, remaining(record) - 60)))
+        else:
+            raise TimeoutError("CPU proof did not finish before cleanup reserve")
         write_json(args.out / "cpu-proof.json", proof)
         record["snapshot_id"] = proof["snapshot_id"]
         record["proof_sha256"] = hashlib.sha256(
