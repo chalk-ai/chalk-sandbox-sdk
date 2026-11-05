@@ -394,7 +394,9 @@ class WeightPublisher:
             folder = self.stream.materialize(current, Path(parent) / "checkpoint")
             expected = load_file(str(folder / "model.safetensors"))
             if state.keys() != expected.keys() or any(
-                not torch.equal(
+                state[n].shape != expected[n].shape
+                or state[n].dtype != expected[n].dtype
+                or not torch.equal(
                     state[n].detach().cpu().contiguous().reshape(-1).view(torch.uint8),
                     expected[n].contiguous().reshape(-1).view(torch.uint8),
                 )
@@ -417,9 +419,14 @@ class WeightPublisher:
                     "Stream base_model does not match the stored manifest"
                 )
             self.stream.base_model = manifest.base_model
+            resumed_architecture = architecture_hash(self._config, state.items())
+            if resumed_architecture != manifest.architecture_hash:
+                raise WeightStreamError(
+                    "Resume architecture does not match the stored manifest"
+                )
         self._previous = {n: t.detach().clone() for n, t in state.items()}
         self._version = current
-        self._architecture = architecture_hash(self._config, state.items())
+        self._architecture = resumed_architecture
 
     def publish(
         self,
