@@ -39,6 +39,35 @@ def main():
     proof = {"checked_at": time.time(), "name": guard.name, "cleanup_errors": []}
     owners_path = args.ledger.parent / "placement-watchdog" / "owners.json"
     owners = json.loads(owners_path.read_text()) if owners_path.exists() else {}
+    # Detached cleanup can recover a create after its response was lost. Merge
+    # those immutable IDs before asking whether all owned resources are absent.
+    for recovery in (
+        "watchdog-cleanup/launcher.json",
+        "placement-watchdog/launcher.json",
+    ):
+        path = args.ledger.parent / recovery
+        if path.exists():
+            recovered = json.loads(path.read_text())
+            if recovered["name"] != record["name"]:
+                raise RuntimeError("Cleanup recovery ledger belongs to another run")
+            record.setdefault("group_ids", {}).update(recovered.get("group_ids", {}))
+            record.setdefault("group_resources", {}).update(
+                recovered.get("group_resources", {})
+            )
+            if recovered.get("training_run_id"):
+                record["training_run_id"] = recovered["training_run_id"]
+            if recovered.get("training_resources"):
+                record["training_resources"] = recovered["training_resources"]
+    guard.run_id = record.get("training_run_id")
+    for name, resource in record.get("group_resources", {}).items():
+        record.setdefault("group_ids", {})[name] = resource["id"]
+        if name not in owners:
+            if len(resource["owners"]) != 1:
+                raise RuntimeError("Scaling group has ambiguous retained owner UIDs")
+            owners[name] = {
+                "uid": resource["owners"][0],
+                "context": resource["context"],
+            }
     groups = []
     for name, group_id in record.get("group_ids", {}).items():
         owner = owners[name]
@@ -71,10 +100,64 @@ def main():
             }
         )
     proof["groups"] = groups
-    assert not guard.recover_run(client), (
-        "Training run was submitted; inspect its exact CR before release proof"
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tp
+    from chalkcompute._gen.chalk.container.v1 import (
+        service_connect as cs,
+        service_pb as cp,
     )
-    proof["training_runs"] = []
+
+    runs = guard.recover_run(client)
+    training = []
+    if guard.run_id and not any(run.id == guard.run_id for run in runs):
+        raise RuntimeError(
+            "Known training run absent from exact-name list; cannot prove release"
+        )
+    resources = record.get("training_resources", [])
+    if runs and not resources:
+        raise RuntimeError(
+            "Training owner UID evidence missing; cannot verify owned pod absence"
+        )
+    for run in runs:
+        if run.status not in {
+            tp.TrainingRunStatus.COMPLETED,
+            tp.TrainingRunStatus.FAILED,
+            tp.TrainingRunStatus.CANCELED,
+        }:
+            raise RuntimeError("Owned training run is still active")
+        for context in guard.kube_contexts:
+            assert not guard.kube_items(
+                "chalkcontainers", name="cc-" + run.id, context=context
+            ), "Training CR still exists"
+        for resource in resources:
+            pods = guard.kube_items("pods", context=resource["context"])
+            assert not any(
+                any(
+                    owner.get("uid") == resource["uid"]
+                    for owner in pod["metadata"].get("ownerReferences", [])
+                )
+                for pod in pods
+            ), "Owned training pod remains"
+        container = client.call(
+            client.stub(cs.ContainerServiceClientSync).get_container,
+            cp.GetContainerRequest(id=run.id, include_stopped=True),
+        ).container
+        if container is not None and container.status.lower() not in {
+            "succeeded",
+            "failed",
+            "terminated",
+            "error",
+        }:
+            raise RuntimeError("Training container API is not terminal")
+        training.append(
+            {
+                "id": run.id,
+                "status": run.status.name,
+                "cr_absent": True,
+                "owned_pods_absent": True,
+                "container_terminal_or_absent": True,
+            }
+        )
+    proof["training_runs"] = training
     if guard.dataset_id:
         stub = client.stub(dc.DatasetMetadataServiceClientSync)
         response = client.call(
@@ -92,6 +175,8 @@ def main():
         "training-data-" + guard.name,
         "training-ckpt-" + guard.name,
     ]:
+        if name == guard.name and not record.get("owns_source_volume", True):
+            continue
         try:
             cc.Volume(name, create_if_missing=False).reload()
         except VolumeNotFoundError:
@@ -124,11 +209,11 @@ def main():
         text=True,
         timeout=30,
     )
-    group_ids = record.get("group_ids", {}).values()
+    owned_ids = list(record.get("group_ids", {}).values()) + [run.id for run in runs]
     owned = [
         item
         for item in json.loads(result.stdout)
-        if any(group_id in item.get("id", "") for group_id in group_ids)
+        if any(owned_id in item.get("id", "") for owned_id in owned_ids)
     ]
     assert not owned, "Owned host runtime still exists"
     proof["owned_host_runtimes"] = owned
