@@ -9,11 +9,13 @@ change. Legacy `ws_apply_dir` and upstream checkpoint-loader fallback are exclud
 The minimal overlay uses real SDK package initializers and only the pure Python
 worker/codec modules needed here; this is not full installed SDK integration.
 
-Run CPU checks with an existing Torch/NumPy/pytest/xxhash/zstandard environment:
+Run CPU checks with an existing Torch/NumPy/pytest/xxhash/zstandard environment.
+The strict serialization regressions additionally use msgspec:
 
 ```sh
 python -m pytest -q tests/test_vllm_sparse_experiment.py
 python -m pytest -q tests/test_vllm_sparse_result_summary.py
+python -m pytest -q tests/test_vllm_sparse_rpc_metadata.py
 python -m ruff check scripts/vllm_sparse tests/test_vllm_sparse_experiment.py
 ```
 
@@ -58,6 +60,19 @@ keeps stream drain and fresh native B oracle explicitly unproven. Generation aft
 an inverse update does not replace a separate fresh-B reference.
 
 No native/AMD compatibility result is claimed by these source/CPU tests.
+
+Audit RPC metadata contains exact built-in scalars, lists and string-keyed
+dictionaries. Torch's `TorchVersion` string subclass is explicitly converted to
+`str`; unknown objects fail before the strict msgpack boundary, without a pickle
+fallback. A later pinned native attempt reached a loaded, healthy Kimi server and
+passed the effective worker profile, then failed the first snapshot's original
+TorchVersion serialization before baseline generation or sparse writes. The CPU
+regression reproduces that rejection with actual TorchVersion/msgspec and checks
+the corrected full snapshot response. Native sparse proof still requires a new run.
+
+Future harness exceptions preserve an explicit `failure.json` and update the new
+attempt's scope to `failed`, retaining partial evidence and unproven fields. Earlier
+attempt receipts remain as recorded, including their partial `running` scopes.
 
 After exporting a completed `sparse-proof` directory, the stdlib-only offline
 summarizer checks exact norm bytes, selected head bytes and unchanged-head hash

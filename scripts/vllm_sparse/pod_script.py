@@ -367,6 +367,33 @@ def main():
         "sparse-runtime-validation" if args.validate_runtime_only else "sparse-proof"
     )
     directory.mkdir()
+    try:
+        run_experiment(args, directory)
+    except BaseException as error:
+        failure = {
+            "error_type": type(error).__name__,
+            "error": str(error)[:2000],
+            "failed_at": time.time(),
+        }
+        write(directory / "failure.json", failure)
+        scope_path = directory / "scope.json"
+        scope = (
+            json.loads(scope_path.read_text())
+            if scope_path.exists()
+            else {
+                "status": "not_started",
+                "generation_repeatability": "not_reached",
+                "stream_drain": "not_proven",
+                "fresh_B_native_oracle": "not_proven",
+            }
+        )
+        previous = scope["status"]
+        scope.update(status="failed", previous_status=previous, failure=failure)
+        write(scope_path, scope)
+        raise
+
+
+def run_experiment(args, directory):
     config_bytes = args.model_config.read_bytes()
     if hashlib.sha256(config_bytes).hexdigest() != args.expected_config_sha256:
         raise ValueError("Actual loaded model config differs from frozen config")

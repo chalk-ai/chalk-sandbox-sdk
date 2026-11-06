@@ -26,6 +26,21 @@ MAX_PATCH_NNZ = 64
 MAX_TEMPORARY_BYTES = 4096
 
 
+def rpc_metadata(value):
+    """Reject non-builtin metadata before vLLM's strict msgpack boundary."""
+    if type(value) in (str, int, bool, float, type(None)):
+        return value
+    if type(value) is list:
+        for item in value:
+            rpc_metadata(item)
+        return value
+    if type(value) is dict and all(type(key) is str for key in value):
+        for item in value.values():
+            rpc_metadata(item)
+        return value
+    raise TypeError(f"Unsupported audit RPC metadata type: {type(value).__name__}")
+
+
 def tensor_record(tensor, indices=None):
     """Read one explicitly bounded tensor; never copy a full model to CPU."""
     if tensor.numel() * tensor.element_size() > MAX_INSPECTED_BYTES:
@@ -229,7 +244,7 @@ class SparseAuditExtension(WeightSyncExtension):
         }
         if actual != expected:
             raise ValueError(f"Effective worker runtime config differs: {actual}")
-        return {**super().ws_sparse_probe(), "effective_config": actual}
+        return rpc_metadata({**super().ws_sparse_probe(), "effective_config": actual})
 
     def ws_audit_snapshot(self, targets):
         from .proof import local_indices
@@ -241,29 +256,33 @@ class SparseAuditExtension(WeightSyncExtension):
         model = self.model_runner.get_model()
         parameters = dict(model.named_parameters())
         props = torch.cuda.get_device_properties(self.device)
-        return {
-            "rank": torch.distributed.get_rank(),
-            "world_size": torch.distributed.get_world_size(),
-            "pid": os.getpid(),
-            "process_start_ticks": Path("/proc/self/stat")
-            .read_text()
-            .rsplit(")", 1)[1]
-            .split()[19],
-            "device": str(self.device),
-            "device_uuid": str(getattr(props, "uuid", "unavailable")),
-            "model_id": id(model),
-            "torch_version": torch.__version__,
-            "torch_hip": torch.version.hip,
-            "tensors": {
-                name: tensor_record(
-                    parameters[name],
-                    local_indices(name, indices, torch.distributed.get_rank())
-                    if indices
-                    else None,
-                )
-                for name, indices in targets.items()
-            },
-        }
+        return rpc_metadata(
+            {
+                "rank": torch.distributed.get_rank(),
+                "world_size": torch.distributed.get_world_size(),
+                "pid": os.getpid(),
+                "process_start_ticks": Path("/proc/self/stat")
+                .read_text()
+                .rsplit(")", 1)[1]
+                .split()[19],
+                "device": str(self.device),
+                "device_uuid": str(getattr(props, "uuid", "unavailable")),
+                "model_id": id(model),
+                "torch_version": str(torch.__version__),
+                "torch_hip": str(torch.version.hip)
+                if torch.version.hip is not None
+                else None,
+                "tensors": {
+                    name: tensor_record(
+                        parameters[name],
+                        local_indices(name, indices, torch.distributed.get_rank())
+                        if indices
+                        else None,
+                    )
+                    for name, indices in targets.items()
+                },
+            }
+        )
 
     def ws_audit_prepare_dir(self, directory, expected_version, transaction_id):
         from chalkcompute._weights_codec import verify_payloads
@@ -287,15 +306,17 @@ class SparseAuditExtension(WeightSyncExtension):
         result = super().ws_sparse_prepare_dir(
             directory, expected_version, transaction_id
         )
-        return {
-            **result,
-            "prepare_verify_and_stage_seconds": time.perf_counter() - started,
-            "compressed_payload_bytes": sum(e.length for e in manifest.tensors),
-            "global_sparse_values_bytes": sum(e.nnz * 2 for e in manifest.tensors),
-            "global_logical_int64_index_bytes": sum(
-                e.nnz * 8 for e in manifest.tensors
-            ),
-        }
+        return rpc_metadata(
+            {
+                **result,
+                "prepare_verify_and_stage_seconds": time.perf_counter() - started,
+                "compressed_payload_bytes": sum(e.length for e in manifest.tensors),
+                "global_sparse_values_bytes": sum(e.nnz * 2 for e in manifest.tensors),
+                "global_logical_int64_index_bytes": sum(
+                    e.nnz * 8 for e in manifest.tensors
+                ),
+            }
+        )
 
     def ws_audit_commit(
         self, transaction_id, expected_version, rank_identities, manifest_sha256
@@ -335,13 +356,15 @@ class SparseAuditExtension(WeightSyncExtension):
             )
         if replay and guard.sparse_writes:
             raise RuntimeError("Exact transaction replay performed a native mutation")
-        return {
-            "result": result,
-            "idempotent_no_write_replay": replay,
-            "commit_and_sync_seconds": commit_seconds,
-            "rank": torch.distributed.get_rank(),
-            "pid": os.getpid(),
-            "sparse_writes": guard.sparse_writes,
-            "maximum_new_storage_bytes": guard.max_new_storage_bytes,
-            "full_loaders_forbidden": True,
-        }
+        return rpc_metadata(
+            {
+                "result": result,
+                "idempotent_no_write_replay": replay,
+                "commit_and_sync_seconds": commit_seconds,
+                "rank": torch.distributed.get_rank(),
+                "pid": os.getpid(),
+                "sparse_writes": guard.sparse_writes,
+                "maximum_new_storage_bytes": guard.max_new_storage_bytes,
+                "full_loaders_forbidden": True,
+            }
+        )
