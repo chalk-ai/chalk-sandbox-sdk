@@ -1,0 +1,1 @@
+- Add a read-only PR status script for checking stacked changes: current head SHA and latest check attempts, preserving canceled/pending/failing states.
