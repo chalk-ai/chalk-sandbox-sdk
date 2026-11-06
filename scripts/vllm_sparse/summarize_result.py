@@ -64,6 +64,67 @@ def head_bytes(record):
     return result
 
 
+def verify_prepare(root, rpc, baseline, version):
+    """Bind every prepared rank to the exported manifest and original resident."""
+    label = ("B", "C", "inverse_A")[version - 1]
+    request = rpc["request"]["args"]
+    if len(request) != 3 or request[1] != version or Path(request[0]).name != label:
+        raise ValueError("Prepare order/version/directory differs")
+    manifest_path = root / label / "manifest.json"
+    manifest = read(manifest_path)
+    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if manifest["version"] != version or manifest["parent_version"] != version - 1:
+        raise ValueError("Prepared manifest version differs")
+    records = rpc["response"]["results"]
+    if len(records) != 8 or {r["rank"] for r in records} != set(range(8)):
+        raise ValueError("Missing eight prepared ranks")
+    identities = {}
+    for record in records:
+        before = baseline[record["rank"]]
+        expected = {
+            "profile": "kimi-k3-bf16-tp8-v1",
+            "tp_rank": record["rank"],
+            "tp_world_size": 8,
+            "pid": before["pid"],
+            "pid_start_ticks": int(before["process_start_ticks"]),
+            "device": before["device"],
+            "model_id": before["model_id"],
+            "transaction_id": request[2],
+            "version": version,
+            "parent_version": version - 1,
+            "manifest_sha256": digest,
+            "architecture_hash": manifest["architecture_hash"],
+            "local_nnz": {NORM: 4, HEAD: 4},
+            "compressed_payload_bytes": sum(t["length"] for t in manifest["tensors"]),
+            "global_sparse_values_bytes": 72,
+            "global_logical_int64_index_bytes": 288,
+        }
+        if (
+            type(record["rank"]) is not int
+            or record.get("prepared") is not True
+            or record.get("ok") is not True
+            or any(record.get(key) != value for key, value in expected.items())
+        ):
+            raise ValueError(
+                "Prepared worker/manifest identity or sparse counts differ"
+            )
+        if set(record["targets"]) != {NORM, HEAD}:
+            raise ValueError("Prepared target set differs")
+        for name, target in record["targets"].items():
+            if any(
+                target[key] != before["tensors"][name][key]
+                for key in ("storage_ptr", "data_ptr", "shape")
+            ):
+                raise ValueError("Prepared target storage differs")
+        elapsed = record["prepare_verify_and_stage_seconds"]
+        if not math.isfinite(elapsed) or elapsed < 0:
+            raise ValueError("Invalid prepare timing")
+        identities[str(record["rank"])] = record["identity_sha256"]
+    if len(set(identities.values())) != 8:
+        raise ValueError("Prepared rank identities are not distinct")
+    return [request[2], version, identities, digest]
+
+
 def verify_sparse(root):
     scope = read(root / "scope.json")
     if scope.get("status") != "passed":
@@ -76,6 +137,13 @@ def verify_sparse(root):
     if read(root / "A.json") != read(root / "A-unchanged-repeat.json"):
         raise ValueError("Baseline was not exactly repeatable")
     for record in baseline.values():
+        pointers = [record["tensors"][name]["storage_ptr"] for name in (NORM, HEAD)]
+        if len(set(pointers)) != 2 or any(
+            type(p) is not int or p <= 0 for p in pointers
+        ):
+            raise ValueError(
+                "Inspected resident storage pointers must be distinct and positive"
+            )
         for name, shape in ((NORM, [WIDTH]), (HEAD, [HEAD_ROWS, WIDTH])):
             tensor = record["tensors"][name]
             if tensor["shape"] != shape or tensor["dtype"] != "bfloat16":
@@ -145,12 +213,20 @@ def verify_sparse(root):
     commit_calls = []
     errors = []
     previous_request = None
+    prepares = []
     for path in sorted(root.glob("rpc-*.json")):
         value = read(path)
         if path.name.endswith("-error.json"):
             errors.append(value)
             continue
-        if value["request"].get("method") != "ws_audit_commit":
+        method = value["request"].get("method")
+        if method == "ws_audit_prepare_dir":
+            version = len(prepares) + 1
+            if version > 3 or len(commit_calls) != (version - 1) * 2:
+                raise ValueError("Prepare barrier order differs")
+            prepares.append(verify_prepare(root, value, baseline, version))
+            continue
+        if method != "ws_audit_commit":
             continue
         workers = value["response"]["results"]
         if (
@@ -164,6 +240,8 @@ def verify_sparse(root):
         request = value["request"]["args"]
         if len(request) != 4 or request[1] != expected_version:
             raise ValueError("Commit order/version differs")
+        if len(prepares) != expected_version or request != prepares[-1]:
+            raise ValueError("Commit lacks matching all-rank prepare barrier")
         if (
             set(request[2]) != {str(rank) for rank in range(8)}
             or len(set(request[2].values())) != 8
@@ -212,7 +290,7 @@ def verify_sparse(root):
                     for name in (NORM, HEAD)
                 }
                 if {w["storage_ptr"] for w in writes} != pointers or any(
-                    "index_copy_" not in w["op"] for w in writes
+                    w["op"] != "aten.index_copy_.default" for w in writes
                 ):
                     raise ValueError(
                         "Native sparse operation did not target expected resident storage"
@@ -227,7 +305,7 @@ def verify_sparse(root):
                 "controller_rpc_seconds": rpc_seconds,
             }
         )
-    if len(commit_calls) != 6:
+    if len(commit_calls) != 6 or len(prepares) != 3:
         raise ValueError("Missing six commit/replay control calls")
     if len(errors) != 1 or not all(
         v.get("error") == "HTTPError"
@@ -243,6 +321,7 @@ def verify_sparse(root):
         "rank_count": 8,
         "snapshot_checks": checks,
         "commit_calls": commit_calls,
+        "all_rank_prepare_barriers": len(prepares),
         "scope_record": scope,
         "limits": [
             "Trusts exported worker instrumentation; does not authenticate image/source or allocation",

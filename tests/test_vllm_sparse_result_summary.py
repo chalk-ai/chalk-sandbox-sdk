@@ -22,6 +22,10 @@ def mutate(path, update):
     write(path, value)
 
 
+def commit_path(root, call):
+    return root / f"rpc-{call + call // 2 + 1:03d}.json"
+
+
 @pytest.fixture
 def exported(tmp_path):
     """Tiny BF16 norm bytes and head samples; never materialize the large head."""
@@ -99,6 +103,63 @@ def exported(tmp_path):
     for call in range(6):
         version, replay = call // 2 + 1, bool(call % 2)
         identities = {str(rank): f"identity-{rank}" for rank in range(8)}
+        label = ("B", "C", "inverse_A")[version - 1]
+        manifest_path = tmp_path / label / "manifest.json"
+        if not replay:
+            manifest_path.parent.mkdir()
+            write(
+                manifest_path,
+                {
+                    "version": version,
+                    "parent_version": version - 1,
+                    "architecture_hash": "synthetic-architecture",
+                    "tensors": [{"length": 101}, {"length": 105}],
+                },
+            )
+        digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if not replay:
+            prepared = []
+            for rank, before in enumerate(baseline):
+                prepared.append(
+                    {
+                        "rank": rank,
+                        "profile": "kimi-k3-bf16-tp8-v1",
+                        "tp_rank": rank,
+                        "tp_world_size": 8,
+                        "pid": before["pid"],
+                        "pid_start_ticks": int(before["process_start_ticks"]),
+                        "device": before["device"],
+                        "model_id": before["model_id"],
+                        "targets": copy.deepcopy(before["tensors"]),
+                        "ok": True,
+                        "prepared": True,
+                        "transaction_id": f"transaction-{version}",
+                        "version": version,
+                        "parent_version": version - 1,
+                        "manifest_sha256": digest,
+                        "architecture_hash": "synthetic-architecture",
+                        "identity_sha256": identities[str(rank)],
+                        "local_nnz": {summary.NORM: 4, summary.HEAD: 4},
+                        "compressed_payload_bytes": 206,
+                        "global_sparse_values_bytes": 72,
+                        "global_logical_int64_index_bytes": 288,
+                        "prepare_verify_and_stage_seconds": 0.02,
+                    }
+                )
+            write(
+                tmp_path / f"rpc-{call + call // 2:03d}.json",
+                {
+                    "request": {
+                        "method": "ws_audit_prepare_dir",
+                        "args": [
+                            f"/remote/sparse-proof/{label}",
+                            version,
+                            f"transaction-{version}",
+                        ],
+                    },
+                    "response": {"results": prepared},
+                },
+            )
         workers = []
         for rank in range(8):
             workers.append(
@@ -112,7 +173,7 @@ def exported(tmp_path):
                         "transaction_id": f"transaction-{version}",
                         "version": version,
                         "parent_version": version - 1,
-                        "manifest_sha256": f"manifest-{version}",
+                        "manifest_sha256": digest,
                         "identity_sha256": identities[str(rank)],
                     },
                     "full_loaders_forbidden": True,
@@ -131,7 +192,7 @@ def exported(tmp_path):
                 }
             )
         write(
-            tmp_path / f"rpc-{call:03d}.json",
+            commit_path(tmp_path, call),
             {
                 "request": {
                     "method": "ws_audit_commit",
@@ -139,7 +200,7 @@ def exported(tmp_path):
                         f"transaction-{version}",
                         version,
                         identities,
-                        f"manifest-{version}",
+                        digest,
                     ],
                 },
                 "response": {"results": workers},
@@ -148,7 +209,7 @@ def exported(tmp_path):
             },
         )
     write(
-        tmp_path / "rpc-007-error.json",
+        tmp_path / "rpc-009-error.json",
         {
             "error": "HTTPError",
             "request": {
@@ -165,6 +226,7 @@ def test_valid_export_checks_bytes_controls_and_retains_scope_limits(exported):
     result = summary.verify_sparse(exported)
     assert result["passed"] is True
     assert result["rank_count"] == 8
+    assert result["all_rank_prepare_barriers"] == 3
     assert len(result["snapshot_checks"]) == 7
     assert [(v["version"], v["replay"]) for v in result["commit_calls"]] == [
         (1, False),
@@ -233,7 +295,7 @@ def test_reject_worker_replacement(exported, key):
 )
 def test_reject_unproven_commit_or_replay(exported, call, key, value):
     mutate(
-        exported / f"rpc-{call:03d}.json",
+        commit_path(exported, call),
         lambda rpc: rpc["response"]["results"][0].update({key: value}),
     )
     with pytest.raises(ValueError):
@@ -242,10 +304,10 @@ def test_reject_unproven_commit_or_replay(exported, call, key, value):
 
 def test_reject_replay_transaction_change(exported):
     mutate(
-        exported / "rpc-001.json",
+        commit_path(exported, 1),
         lambda rpc: rpc["request"]["args"].__setitem__(0, "other"),
     )
-    with pytest.raises(ValueError, match="transaction identity"):
+    with pytest.raises(ValueError, match="prepare barrier"):
         summary.verify_sparse(exported)
 
 
@@ -254,7 +316,7 @@ def test_reject_replay_transaction_change(exported):
 )
 def test_commit_ack_must_match_requested_version_and_identities(exported, key):
     mutate(
-        exported / "rpc-000.json",
+        commit_path(exported, 0),
         lambda rpc: rpc["response"]["results"][0]["result"].update({key: "conflict"}),
     )
     with pytest.raises(ValueError, match="acknowledgement"):
@@ -263,17 +325,17 @@ def test_commit_ack_must_match_requested_version_and_identities(exported, key):
 
 def test_commit_requires_complete_distinct_rank_identity_map(exported):
     mutate(
-        exported / "rpc-000.json", lambda rpc: rpc["request"]["args"].__setitem__(2, {})
+        commit_path(exported, 0), lambda rpc: rpc["request"]["args"].__setitem__(2, {})
     )
-    with pytest.raises(ValueError, match="rank identities"):
+    with pytest.raises(ValueError, match="prepare barrier"):
         summary.verify_sparse(exported)
 
 
 def test_reject_missing_rank_and_missing_rpc(exported):
-    mutate(exported / "rpc-000.json", lambda rpc: rpc["response"]["results"].pop())
+    mutate(commit_path(exported, 0), lambda rpc: rpc["response"]["results"].pop())
     with pytest.raises(ValueError, match="rank coverage"):
         summary.verify_sparse(exported)
-    (exported / "rpc-000.json").unlink()
+    commit_path(exported, 0).unlink()
     with pytest.raises(ValueError):
         summary.verify_sparse(exported)
 
@@ -284,7 +346,7 @@ def test_reject_loosened_criterion_and_generic_corruption_error(exported):
     with pytest.raises(ValueError, match="criterion"):
         summary.verify_sparse(exported)
     mutate(criterion, lambda v: v.update(logprob_tolerance=0.001))
-    mutate(exported / "rpc-007-error.json", lambda v: v.update(error="TimeoutError"))
+    mutate(exported / "rpc-009-error.json", lambda v: v.update(error="TimeoutError"))
     with pytest.raises(ValueError, match="checksum refusal"):
         summary.verify_sparse(exported)
 
@@ -298,7 +360,11 @@ def test_running_or_absent_scope_cannot_become_success(exported):
 
 
 def test_cli_writes_new_output_only_and_preserves_inputs(exported):
-    before = {p.name: p.read_bytes() for p in exported.iterdir()}
+    before = {
+        str(p.relative_to(exported)): p.read_bytes()
+        for p in exported.rglob("*")
+        if p.is_file()
+    }
     out = exported.parent / "offline-summary.json"
     command = [
         sys.executable,
@@ -311,7 +377,11 @@ def test_cli_writes_new_output_only_and_preserves_inputs(exported):
     subprocess.run(command, check=True, capture_output=True)
     original_output = out.read_bytes()
     assert json.loads(original_output)["passed"] is True
-    assert {p.name: p.read_bytes() for p in exported.iterdir()} == before
+    assert {
+        str(p.relative_to(exported)): p.read_bytes()
+        for p in exported.rglob("*")
+        if p.is_file()
+    } == before
     second = subprocess.run(command, capture_output=True)
     assert second.returncode != 0
     assert out.read_bytes() == original_output
@@ -329,6 +399,88 @@ def test_cli_reports_incomplete_scope_with_nonzero_exit(exported):
 
 
 def test_unexpected_rpc_error_cannot_be_hidden_by_checksum_refusal(exported):
-    write(exported / "rpc-008-error.json", {"error": "TimeoutError"})
+    write(exported / "rpc-010-error.json", {"error": "TimeoutError"})
     with pytest.raises(ValueError, match="checksum refusal"):
+        summary.verify_sparse(exported)
+
+
+def test_missing_prepare_barriers_cannot_pass_with_complete_commits(exported):
+    for sequence in (0, 3, 6):
+        (exported / f"rpc-{sequence:03d}.json").unlink()
+    with pytest.raises(ValueError, match="prepare barrier"):
+        summary.verify_sparse(exported)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("prepared", False),
+        ("pid", 999),
+        ("pid_start_ticks", 999),
+        ("device", "cuda:7"),
+        ("model_id", 999),
+        ("manifest_sha256", "conflict"),
+        ("identity_sha256", "other-identity"),
+        ("local_nnz", {summary.NORM: 4, summary.HEAD: 0}),
+        ("prepare_verify_and_stage_seconds", float("nan")),
+    ],
+)
+def test_prepare_must_bind_all_rank_resident_identity_and_sparse_counts(
+    exported, key, value
+):
+    mutate(
+        exported / "rpc-000.json",
+        lambda rpc: rpc["response"]["results"][0].update({key: value}),
+    )
+    with pytest.raises(ValueError):
+        summary.verify_sparse(exported)
+
+
+def test_prepare_requires_every_rank_and_exact_target_storage(exported):
+    prepare = exported / "rpc-000.json"
+    original = prepare.read_bytes()
+    mutate(prepare, lambda rpc: rpc["response"]["results"].pop())
+    with pytest.raises(ValueError, match="prepared ranks"):
+        summary.verify_sparse(exported)
+    prepare.write_bytes(original)
+    mutate(
+        prepare,
+        lambda rpc: rpc["response"]["results"][0]["targets"][summary.HEAD].update(
+            storage_ptr=999
+        ),
+    )
+    with pytest.raises(ValueError, match="target storage"):
+        summary.verify_sparse(exported)
+
+
+def test_prepare_manifest_digest_must_match_exported_manifest(exported):
+    mutate(
+        exported / "B/manifest.json",
+        lambda manifest: manifest.update(architecture_hash="other"),
+    )
+    with pytest.raises(ValueError, match="manifest identity"):
+        summary.verify_sparse(exported)
+
+
+@pytest.mark.parametrize("pointer", [0, -1, 1000])
+def test_baseline_requires_positive_distinct_norm_and_head_storage(exported, pointer):
+    for name in ("A", "A-unchanged-repeat"):
+        mutate(
+            exported / f"{name}.json",
+            lambda rows: rows[0]["tensors"][summary.HEAD].update(
+                storage_ptr=pointer, data_ptr=pointer
+            ),
+        )
+    with pytest.raises(ValueError, match="distinct and positive"):
+        summary.verify_sparse(exported)
+
+
+def test_substring_index_copy_name_is_not_native_indexed_write_evidence(exported):
+    mutate(
+        commit_path(exported, 0),
+        lambda rpc: rpc["response"]["results"][0]["sparse_writes"][0].update(
+            op="fake.index_copy_.default"
+        ),
+    )
+    with pytest.raises(ValueError, match="Native sparse operation"):
         summary.verify_sparse(exported)

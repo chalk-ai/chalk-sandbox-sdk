@@ -56,8 +56,10 @@ No native/AMD compatibility result is claimed by these source/CPU tests.
 
 After exporting a completed `sparse-proof` directory, the stdlib-only offline
 summarizer checks exact norm bytes, selected head bytes and unchanged-head hash
-consistency across all eight ranks, plus resident identity, commit/replay order,
-write instrumentation and explicit checksum refusal:
+consistency across all eight ranks, plus resident identity, three all-rank prepare
+barriers bound to exported manifests and matching commits, commit/replay order,
+exact indexed-write instrumentation and explicit checksum refusal. The inspected
+norm and head must have distinct positive resident storage pointers:
 
 ```sh
 python -m scripts.vllm_sparse.summarize_result --root /path/to/exported/sparse-proof --out /path/to/new-summary.json
