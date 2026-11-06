@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -25,6 +26,39 @@ class Clock:
         self.now += delay
 
 
+class StreamResponse:
+    """Track body reads and cleanup without opening a network connection."""
+
+    def __init__(
+        self,
+        status: int,
+        chunks: Iterable[bytes | bytearray | memoryview | Exception],
+    ) -> None:
+        self.status = status
+        self.chunks = chunks
+        self.content_accesses = 0
+        self.chunks_read = 0
+        self.closed = False
+
+    @property
+    def content(self) -> Iterator[bytes | bytearray | memoryview]:
+        self.content_accesses += 1
+        return self._read_chunks()
+
+    def _read_chunks(self) -> Iterator[bytes | bytearray | memoryview]:
+        for chunk in self.chunks:
+            self.chunks_read += 1
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
+
+    def __enter__(self) -> StreamResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     clock = Clock()
@@ -34,83 +68,199 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
 
 
 @pytest.fixture
+def route_transport(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    constructor = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SyncHTTPTransport", constructor)
+    return constructor
+
+
+@pytest.fixture
+def route_client(
+    monkeypatch: pytest.MonkeyPatch, route_transport: MagicMock
+) -> MagicMock:
+    constructor = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SyncClient", constructor)
+    return constructor.return_value
+
+
+@pytest.fixture
 def http_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     client = MagicMock()
     monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", client)
     return client
 
 
-def response(status: int, body: bytes) -> MagicMock:
-    return MagicMock(status=status, content=body)
-
-
 @pytest.mark.parametrize("authenticated", [False, True])
-@pytest.mark.parametrize(
-    ("status", "body"),
-    [
-        (200, b"ok"),
-        (404, b"no such path"),
-        (401, b""),
-        (500, b"error"),
-        (503, b"maintenance"),
-    ],
-)
-def test_deploy_waits_for_route_then_allows_first_call(
-    clock: Clock, http_client: MagicMock, authenticated: bool, status: int, body: bytes
+def test_deploy_retries_gateway_errors_then_allows_first_call(
+    clock: Clock,
+    route_client: MagicMock,
+    route_transport: MagicMock,
+    http_client: MagicMock,
+    authenticated: bool,
 ) -> None:
-    """Application responses establish routing even if the root path fails."""
-    http_client.execute.side_effect = [
-        response(404, b""),
-        TimeoutError("connection timed out"),
-        response(503, b"upstream connect error"),
-        response(status, body),
-        response(200, b"first real call"),
-    ]
+    unavailable = StreamResponse(503, [b"upstream connect error"])
+    ready = StreamResponse(200, [b"root body need not be read"])
+    route_client.stream.side_effect = [TimeoutError("offline"), unavailable, ready]
     group = ScalingGroup(image="nginx:alpine", authenticated=authenticated)
     group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
 
     assert group.deploy() is group
-    assert http_client.execute.call_count == 4
-    assert clock.delays == [0.25, 0.5, 1.0]
-    for call in http_client.execute.call_args_list:
+
+    assert clock.delays == [0.25, 0.5]
+    assert route_client.stream.call_count == 3
+    for call in route_client.stream.call_args_list:
         assert call.args == ("GET", "https://example.com/")
         assert call.kwargs["headers"] == (
             {"Authorization": "Bearer test-token"} if authenticated else None
         )
+        assert call.kwargs["timeout"] == 5
+    assert unavailable.closed and ready.closed
+    assert ready.content_accesses == 0
+    route_transport.assert_called_once_with(
+        http_version=scaling_group_mod.SYNC_HTTP_VERSION,
+        tls_include_system_certs=True,
+        follow_redirects=False,
+    )
+    cast(MagicMock, scaling_group_mod.SyncClient).assert_called_once_with(
+        transport=route_transport.return_value.__enter__.return_value
+    )
+    route_transport.return_value.__exit__.assert_called_once()
+
+    # The deployment probe must leave ordinary calls on the shared client.
+    http_client.execute.assert_not_called()
+    http_client.execute.return_value = MagicMock(status=200, content=b"first real call")
     assert group.call("/work", method="GET", cold_start_timeout=0).content == (
         b"first real call"
     )
+    http_client.execute.assert_called_once()
+    assert http_client.execute.call_args.args == ("GET", "https://example.com/work")
+
+
+@pytest.mark.parametrize("status", [200, 301, 302, 401, 404, 405, 500])
+def test_application_headers_finish_without_reading_the_body(
+    clock: Clock, route_client: MagicMock, status: int
+) -> None:
+    response = StreamResponse(status, [TimeoutError("body never finishes")])
+    route_client.stream.return_value = response
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 1
+    assert response.content_accesses == 0
+    assert response.closed
+    assert clock.now == 0
+    assert clock.delays == []
+
+
+def test_empty_application_404_finishes_immediately(
+    clock: Clock, route_client: MagicMock
+) -> None:
+    response = StreamResponse(404, [])
+    route_client.stream.return_value = response
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 1
+    assert response.content_accesses == 0
+    assert response.closed
+    assert clock.now == 0
+
+
+def test_gateway_marker_split_across_chunks_is_retried(
+    clock: Clock, route_client: MagicMock
+) -> None:
+    first = b"upstream con"
+    second = bytearray(b"nect error".ljust(512 - len(first), b" "))
+    unavailable = StreamResponse(503, [memoryview(first), second, b"do not read"])
+    ready = StreamResponse(200, [])
+    route_client.stream.side_effect = [unavailable, ready]
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 2
+    assert unavailable.chunks_read == 2
+    assert unavailable.closed and ready.closed
+    assert clock.delays == [0.25]
 
 
 @pytest.mark.parametrize(
-    "result",
+    "chunks",
     [
-        response(404, b""),
-        response(503, b"no healthy upstream"),
-        ConnectionError("offline"),
+        [],
+        [b"maintenance"],
+        [b"x" * 512, b"upstream connect error"],
+        [b"x" * 512 + b"upstream connect error", b"do not read"],
     ],
 )
+def test_unrecognized_503_reads_only_a_bounded_prefix_then_returns(
+    clock: Clock, route_client: MagicMock, chunks: list[bytes]
+) -> None:
+    response = StreamResponse(503, chunks)
+    route_client.stream.return_value = response
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 1
+    assert response.chunks_read == min(1, len(chunks))
+    assert response.closed
+    assert clock.now == 0
+    assert clock.delays == []
+
+
+@pytest.mark.parametrize("error", [TimeoutError("slow body"), ConnectionError("reset")])
+def test_503_body_read_error_returns_without_restarting_the_retry_budget(
+    clock: Clock, route_client: MagicMock, error: Exception
+) -> None:
+    response = StreamResponse(503, [error])
+    route_client.stream.return_value = response
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 1
+    assert response.closed
+    assert clock.now == 0
+    assert clock.delays == []
+
+
+@pytest.mark.parametrize("failure", ["gateway", "connection", "timeout"])
+@pytest.mark.parametrize("request_seconds", [0.0, 5.0])
 @pytest.mark.parametrize(
     "readiness_probe", [None, ReadinessProbe.http("/health", timeout_seconds=5)]
 )
-def test_route_wait_warns_and_returns_at_deadline(
+def test_route_wait_warns_and_returns_at_twenty_second_deadline(
     clock: Clock,
-    http_client: MagicMock,
+    route_client: MagicMock,
+    route_transport: MagicMock,
     caplog: pytest.LogCaptureFixture,
-    result: MagicMock | Exception,
+    failure: str,
+    request_seconds: float,
     readiness_probe: ReadinessProbe | None,
 ) -> None:
     requests: list[tuple[float, float]] = []
+    responses: list[StreamResponse] = []
 
-    def request(*args: Any, timeout: float, **kwargs: Any) -> MagicMock:
-        # A slow request must fit within the remaining overall deadline too.
+    def request(*args: Any, timeout: float, **kwargs: Any) -> StreamResponse:
         requests.append((clock.now, timeout))
-        clock.now += timeout
-        if isinstance(result, Exception):
-            raise result
-        return result
+        clock.now += min(request_seconds, timeout)
+        if failure == "connection":
+            raise ConnectionError("offline")
+        if failure == "timeout":
+            raise TimeoutError("offline")
+        response = StreamResponse(503, [b"no healthy upstream"])
+        responses.append(response)
+        return response
 
-    http_client.execute.side_effect = request
+    route_client.stream.side_effect = request
     group = ScalingGroup(
         image="nginx:alpine", name="route-timeout", readiness_probe=readiness_probe
     )
@@ -118,14 +268,49 @@ def test_route_wait_warns_and_returns_at_deadline(
 
     assert group.deploy() is group
 
-    assert all(0 < timeout <= min(5, 60 - started) for started, timeout in requests)
-    assert clock.now == 60
+    assert all(0 < timeout <= min(5, 20 - started) for started, timeout in requests)
+    assert clock.now == 20
     assert max(clock.delays) <= 2
-    assert "route-timeout route was not ready after 60.0s" in caplog.text
-    expected_status = (
-        type(result).__name__ if isinstance(result, Exception) else str(result.status)
-    )
-    assert f"last status={expected_status}" in caplog.text
+    assert all(response.closed for response in responses)
+    route_transport.return_value.__exit__.assert_called_once()
+    assert "route-timeout route was not ready after 20.0s" in caplog.text
+
+
+def test_route_transport_setup_failure_warns_and_returns(
+    clock: Clock,
+    route_client: MagicMock,
+    route_transport: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    route_transport.side_effect = ValueError("transport unavailable")
+    group = ScalingGroup(image="nginx:alpine", name="route-setup-error")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    assert group.deploy() is group
+
+    route_client.stream.assert_not_called()
+    assert clock.now == 0
+    assert clock.delays == []
+    assert "route-setup-error route check skipped (ValueError)" in caplog.text
+
+
+def test_unexpected_request_error_warns_without_retrying(
+    clock: Clock,
+    route_client: MagicMock,
+    route_transport: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    route_client.stream.side_effect = ValueError("invalid request")
+    group = ScalingGroup(image="nginx:alpine", name="route-request-error")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    assert group.deploy() is group
+
+    assert route_client.stream.call_count == 1
+    route_transport.return_value.__exit__.assert_called_once()
+    assert clock.now == 0
+    assert clock.delays == []
+    assert "route-request-error route check skipped (ValueError)" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -139,11 +324,17 @@ def test_route_wait_warns_and_returns_at_deadline(
     ],
 )
 def test_deploy_skips_unnecessary_route_wait(
-    http_client: MagicMock, options: dict[str, Any], web_url: str | None
+    route_client: MagicMock,
+    route_transport: MagicMock,
+    http_client: MagicMock,
+    options: dict[str, Any],
+    web_url: str | None,
 ) -> None:
     group = ScalingGroup(image="nginx:alpine", **options)
     group._client = cast(Any, ScalingGroupClient(web_url=web_url))
 
     group.deploy()
 
+    route_transport.assert_not_called()
+    route_client.stream.assert_not_called()
     http_client.execute.assert_not_called()

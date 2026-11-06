@@ -56,7 +56,14 @@ from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import scaling_spec as build_scaling_spec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
-from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
+from chalkcompute._http import (
+    HTTPResponse,
+    HTTP_TRANSPORT_ERRORS,
+    SYNC_HTTP_CLIENT,
+    SYNC_HTTP_VERSION,
+    SyncClient,
+    SyncHTTPTransport,
+)
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
@@ -90,7 +97,7 @@ _GATEWAY_UNAVAILABLE_MARKERS = (
 _COLD_START_INITIAL_BACKOFF_SECONDS = 0.25
 _COLD_START_MAX_BACKOFF_SECONDS = 5.0
 _COLD_START_STATUS_CHECK_SECONDS = 10.0
-_ROUTE_READY_TIMEOUT_SECONDS = 60.0
+_ROUTE_READY_TIMEOUT_SECONDS = 20.0
 _ROUTE_READY_REQUEST_TIMEOUT_SECONDS = 5.0
 _ROUTE_READY_INITIAL_BACKOFF_SECONDS = 0.25
 _ROUTE_READY_MAX_BACKOFF_SECONDS = 2.0
@@ -326,7 +333,7 @@ class ScalingGroup:
     ``readiness_probe`` checks each replica. ``startup_probe`` checks the public
     endpoint before ``deploy()`` returns.
 
-    HTTP deployments may also wait up to 60 extra seconds for the public URL.
+    HTTP deployments may also wait up to 20 extra seconds for the public URL.
     If the route check times out, deployment logs a warning and returns normally.
 
     ``network_policy`` configures host egress. Omit it for the server default;
@@ -598,7 +605,7 @@ class ScalingGroup:
     ) -> ScalingGroup:
         """Build the image, upload local files, and create the scaling group.
 
-        HTTP deployments may wait up to 60 extra seconds for the public URL.
+        HTTP deployments may wait up to 20 extra seconds for the public URL.
         If the route check times out, log a warning and return normally.
 
         Parameters
@@ -818,39 +825,47 @@ class ScalingGroup:
             and self._scaling_group_info.web_url is not None
         ):
             progress_update(key, detail="Waiting for route")
-            self._wait_for_route()
+            try:
+                self._wait_for_route()
+            except Exception as exc:
+                logger.warning(
+                    "Scaling group %s route check skipped (%s)",
+                    self._name or self._scaling_group_id,
+                    type(exc).__name__,
+                )
 
         return self
 
     def _wait_for_route(self) -> None:
-        """Best-effort fallback when no routed startup probe is configured."""
+        """Briefly retry transient HTTP gateway failures after replica readiness."""
         deadline = time.monotonic() + _ROUTE_READY_TIMEOUT_SECONDS
         delay = _ROUTE_READY_INITIAL_BACKOFF_SECONDS
         last_status = "unknown"
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                response = self.call(
-                    "/",
-                    method="GET",
-                    timeout=min(_ROUTE_READY_REQUEST_TIMEOUT_SECONDS, remaining),
-                    # This loop owns the retry budget, including gateway 503s.
-                    cold_start_timeout=0,
-                )
-                last_status = str(response.status)
-                route_missing = response.status == 404 and not response.content
-                if not route_missing and not _is_gateway_unavailable(response):
-                    return
-            except Exception as exc:
-                last_status = type(exc).__name__
+        with SyncHTTPTransport(
+            http_version=SYNC_HTTP_VERSION,
+            tls_include_system_certs=True,
+            follow_redirects=False,
+        ) as transport:
+            client = SyncClient(transport=transport)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    ready, last_status = self._probe_route(
+                        client,
+                        min(_ROUTE_READY_REQUEST_TIMEOUT_SECONDS, remaining),
+                    )
+                    if ready:
+                        return
+                except (TimeoutError, *HTTP_TRANSPORT_ERRORS) as exc:
+                    last_status = type(exc).__name__
 
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(delay, remaining))
-            delay = min(delay * 2, _ROUTE_READY_MAX_BACKOFF_SECONDS)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, _ROUTE_READY_MAX_BACKOFF_SECONDS)
 
         logger.warning(
             "Scaling group %s route was not ready after %.1fs (last status=%s)",
@@ -858,6 +873,27 @@ class ScalingGroup:
             _ROUTE_READY_TIMEOUT_SECONDS,
             last_status,
         )
+
+    def _probe_route(self, client: SyncClient, timeout: float) -> tuple[bool, str]:
+        url, headers = self._prepare_http_request("/", None)
+        with client.stream("GET", url, headers=headers, timeout=timeout) as response:
+            status = str(response.status)
+            # Accept non-503 responses without reading their body.
+            if response.status != 503:
+                return True, status
+
+            prefix = bytearray()
+            try:
+                for chunk in response.content:
+                    prefix.extend(memoryview(chunk)[: 512 - len(prefix)])
+                    if _has_gateway_unavailable_marker(prefix):
+                        return False, status
+                    if len(prefix) == 512:
+                        break
+            except (TimeoutError, *HTTP_TRANSPORT_ERRORS):
+                # An inconclusive application response must not hold up deployment.
+                return True, status
+            return True, status
 
     def revisions(
         self,
@@ -1052,23 +1088,7 @@ class ScalingGroup:
         ScalingGroupError
             If the scaling group has no ``web_url`` yet.
         """
-        if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
-            raise ScalingGroupError(
-                "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
-            )
-        url = f"{self._scaling_group_info.web_url}{path}"
-        request_headers = dict(headers) if headers is not None else None
-        has_authorization = any(
-            key.lower() == "authorization" for key in request_headers or {}
-        )
-        if self._authenticated and not has_authorization:
-            self._client._ensure_auth()
-            if not self._client._access_token:
-                raise ScalingGroupError("Unable to authenticate scaling-group request.")
-            request_headers = {
-                **(request_headers or {}),
-                "Authorization": f"Bearer {self._client._access_token}",
-            }
+        url, request_headers = self._prepare_http_request(path, headers)
         content = data if data is not None else json
         deadline = time.monotonic() + cold_start_timeout
         next_status_check = time.monotonic() + _COLD_START_STATUS_CHECK_SECONDS
@@ -1098,6 +1118,27 @@ class ScalingGroup:
             )
             time.sleep(retry_delay)
             delay = min(delay * 2, _COLD_START_MAX_BACKOFF_SECONDS)
+
+    def _prepare_http_request(
+        self, path: str, headers: dict[str, str] | None
+    ) -> tuple[str, dict[str, str] | None]:
+        if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
+            raise ScalingGroupError(
+                "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
+            )
+        request_headers = dict(headers) if headers is not None else None
+        has_authorization = any(
+            key.lower() == "authorization" for key in request_headers or {}
+        )
+        if self._authenticated and not has_authorization:
+            self._client._ensure_auth()
+            if not self._client._access_token:
+                raise ScalingGroupError("Unable to authenticate scaling-group request.")
+            request_headers = {
+                **(request_headers or {}),
+                "Authorization": f"Bearer {self._client._access_token}",
+            }
+        return f"{self._scaling_group_info.web_url}{path}", request_headers
 
     def _has_failed(self) -> bool:
         try:
@@ -1351,7 +1392,11 @@ def _scaling_group_response_is_authenticated(data: sg_pb.ScalingGroupResponse) -
 def _is_gateway_unavailable(response: HTTPResponse[bytes]) -> bool:
     if response.status != 503:
         return False
-    body = bytes(response.content[:512]).lower()
+    return _has_gateway_unavailable_marker(response.content)
+
+
+def _has_gateway_unavailable_marker(body: bytes | bytearray) -> bool:
+    body = body[:512].lower()
     return any(marker in body for marker in _GATEWAY_UNAVAILABLE_MARKERS)
 
 
