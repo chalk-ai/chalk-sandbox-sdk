@@ -12,6 +12,36 @@ class WeightSyncExtension:
     model_runner: Any
     device: Any
 
+    def ws_sparse_probe(self) -> dict[str, object]:
+        from chalkcompute.weights.serving.vllm_resident_sparse import probe
+
+        return probe(self)
+
+    def ws_sparse_prepare_dir(
+        self, directory: str, expected_version: int, transaction_id: str
+    ) -> dict[str, object]:
+        from chalkcompute.weights.serving.vllm_resident_sparse import prepare
+
+        return prepare(self, directory, expected_version, transaction_id)
+
+    def ws_sparse_commit(
+        self,
+        transaction_id: str,
+        expected_version: int,
+        rank_identities: dict[str, str],
+        manifest_sha256: str,
+    ) -> dict[str, object]:
+        from chalkcompute.weights.serving.vllm_resident_sparse import commit
+
+        return commit(
+            self, transaction_id, expected_version, rank_identities, manifest_sha256
+        )
+
+    def ws_sparse_abort(self, transaction_id: str) -> dict[str, object]:
+        from chalkcompute.weights.serving.vllm_resident_sparse import abort
+
+        return abort(self, transaction_id)
+
     def ws_apply_dir(
         self, directory: str, expected_version: int | str
     ) -> dict[str, object]:
