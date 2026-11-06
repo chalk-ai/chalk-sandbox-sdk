@@ -22,10 +22,10 @@ steps:
       echo "--- :rotating_light: Ruff lint gate"
       uv run --with ruff ruff check chalkcompute tests e2etests
       echo "--- :mag: Ty type gate"
-      uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
+      uv run --with ty ty check chalkcompute/ tests/typing/ --exclude chalkcompute/_gen/
     agents:
-      queue: default
-    timeout_in_minutes: 5
+      queue: compile-runner-s
+    timeout_in_minutes: 15
 
   - label: ":pytest: Unit tests"
     command: |
@@ -38,5 +38,5 @@ steps:
       echo "--- :pytest: Unit test gate"
       uv run python -m pytest tests/ -v --tb=short
     agents:
-      queue: default
-    timeout_in_minutes: 5
+      queue: compile-runner-s
+    timeout_in_minutes: 15

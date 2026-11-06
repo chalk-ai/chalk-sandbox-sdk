@@ -1,0 +1,1 @@
+- Define a versioned weight manifest and lossless sparse absolute patch format, with zstd compression, delta-encoded indices, xxh3 payload checksums, and dense fallback. Install `chalkcompute[weights]` to use the optional tensor and checkpoint dependencies.

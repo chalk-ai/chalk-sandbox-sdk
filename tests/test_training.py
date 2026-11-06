@@ -702,3 +702,35 @@ def test_run_training_forwards_placement(compute_class, execution_target) -> Non
 def test_training_validates_compute_options(field, value, message) -> None:
     with pytest.raises(TypeError, match=message):
         TrainingFunction(lambda: None, data="ds", **{field: value})
+
+
+def test_training_mounts_user_volume_alongside_source_files() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+    from chalkcompute._volume import VolumeMount
+
+    mount = VolumeMount("policy-weights", "/chalk/weights", ref_name="main")
+    tf = TrainingFunction(lambda df, config: None, data="ds", volumes=[mount])
+    client = MagicMock()
+    client.call.return_value = tr_pb.CreateTrainingRunResponse(
+        training_run=tr_pb.TrainingRun(id="run-volumes")
+    )
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+        patch(
+            "chalkcompute._training.referenced_volume_mount", return_value=mount
+        ) as resolve,
+    ):
+        tf.run_training(client=client)
+    resolve.assert_called_once_with(client, mount)
+    request = client.call.call_args.args[1]
+    assert [
+        (m.name, m.mount_path, m.ref_name, m.type) for m in request.volume_mounts
+    ] == [("policy-weights", "/chalk/weights", "main", "versioned_chalkfs")]
+
+
+def test_training_rejects_malformed_volume_reference() -> None:
+    with pytest.raises(ValueError, match="Each volumes entry"):
+        TrainingFunction(lambda: None, data="ds", volumes=[123])

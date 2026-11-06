@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import weakref
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from chalkcompute._volume import (
     VolumeNotFoundError,
 )
 from chalkcompute import _volume as vv
+from chalkcompute._volume_commit import _PreparedVolumeCommit
 from chalkcompute._volume import (
     CommitStatus,
     ForkInfo,
@@ -168,7 +170,7 @@ def test_put_dir_propagates_upload_failure(tmp_path, monkeypatch):
     assert volume.version.id == 10
 
 
-def test_upload_lazy_files_preserves_mutable_mount(tmp_path, monkeypatch):
+def test_upload_lazy_files_pins_uploaded_version(tmp_path, monkeypatch):
     from chalkcompute import Image
 
     client = _make_client(monkeypatch)
@@ -182,9 +184,9 @@ def test_upload_lazy_files_preserves_mutable_mount(tmp_path, monkeypatch):
         Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
     )
     assert len(mounts) == 1
-    assert mounts[0].version_id is None
+    assert mounts[0].version_id == 12
     assert mounts[0].ref_name is None
-    assert "versionId" not in mounts[0].to_spec_dict()
+    assert mounts[0].to_spec_dict()["versionId"] == 12
 
 
 def test_volume_client_from_env(monkeypatch):
@@ -744,6 +746,7 @@ def test_fork_creates_ref_from_pinned_version(
         id=7,
         ref="sandbox-a",
         commit_id="base-commit",
+        sequence_number=0,
     )
 
 
@@ -806,6 +809,7 @@ def test_forks_and_delete_fork_delegate_to_native(
             name="sandbox-a",
             version_id=7,
             parent_version_id=4,
+            sequence_number=0,
         )
     ]
     volume.delete_fork()
@@ -997,6 +1001,188 @@ def test_signed_download_translates_timeout(
 
     with pytest.raises(VolumeError, match="Timed out downloading signed file URL"):
         vv._read_file_from_signed_uri("https://storage/chunk")
+
+
+@pytest.mark.parametrize("sequence", [0, 3])
+def test_version_sequence_survives_metadata_sources(sequence: int) -> None:
+    # Snapshot IDs and a fork's commit sequence are separate counters.
+    version = vv._proto_to_version_info(
+        pb_v2.VersionInfo(version_id=42, sequence_number=sequence)
+    )
+    ref = vv._proto_to_ref_info(
+        pb_v2.RefInfo(name="training", version_id=42, sequence_number=sequence)
+    )
+    native = vv._dict_to_commit_status(
+        {
+            "commit_id": "attempt-1",
+            "result": "committed",
+            "version": {"version_id": 42, "sequence_number": sequence},
+            "latest_version": {"version_id": 43, "sequence_number": sequence + 1},
+        }
+    )
+
+    assert version.id == 42
+    assert version.sequence_number == sequence
+    assert ref.sequence_number == sequence
+    assert vv._ref_to_version_info(ref).sequence_number == sequence
+    assert native.version is not None
+    assert native.version.sequence_number == sequence
+    assert native.latest_version is not None
+    assert native.latest_version.sequence_number == sequence + 1
+
+
+def test_legacy_native_version_without_sequence_is_unknown() -> None:
+    assert vv._dict_to_version_info({"version_id": 42}).sequence_number is None
+
+
+def _staged_path_intent(**overrides: Any) -> pb_v2.CommitIntent:
+    fields: dict[str, Any] = {
+        "volume": pb_v2.VolumeRef(name="models"),
+        "commit_id": "native-generated-id",
+        "ref": "main",
+        "deltas": Oneof(
+            "path_deltas",
+            pb_v2.PathDeltaList(removes=[pb_v2.PathRemoveDelta(path="obsolete")]),
+        ),
+    }
+    fields.update(overrides)
+    return pb_v2.CommitIntent(**fields)
+
+
+@pytest.mark.parametrize("sequence", [0, 7])
+def test_private_prepared_commit_freezes_one_request_without_publication(
+    monkeypatch: pytest.MonkeyPatch, sequence: int
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    native = _staged_path_intent()
+    client._inner.staged_intent.return_value = native.to_binary()
+    volume = Volume("models", client=client)
+
+    prepared = volume._prepare_commit(
+        [("weights", b"payload"), ("CURRENT", b"v1")],
+        commit_id="training-attempt-1",
+        expected_sequence=sequence,
+    )
+    restored = _PreparedVolumeCommit.from_bytes(prepared.to_bytes())
+    intent = restored.intent()
+
+    assert restored == prepared
+    assert intent.volume == pb_v2.VolumeRef(name="models", volume_id="vol-123")
+    assert intent.commit_id == "training-attempt-1"
+    assert intent.has_field("base_sequence_number")
+    assert intent.base_sequence_number == sequence
+    assert not intent.has_field("base_version_id")
+    assert intent.deltas == native.deltas
+    assert prepared.server == "go-api"
+    assert prepared.environment_id == "env-1"
+    frozen = prepared.intent_bytes
+    intent.commit_id = "mutated"
+    assert prepared.intent_bytes == frozen
+    assert prepared.intent().commit_id == "training-attempt-1"
+    client._inner.stage.assert_called_once()
+    client._inner.upload.assert_not_called()
+    client._inner.commit_staged.assert_not_called()
+    client._rpc.commit_version.assert_not_called()
+    client._rpc.create_volume.assert_not_called()
+
+
+def test_private_prepare_does_not_create_missing_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.side_effect = ConnectRpcError(Code.NOT_FOUND, "missing")
+    with pytest.raises(VolumeNotFoundError):
+        Volume("models", client=client)._prepare_commit(
+            [("CURRENT", b"v1")], commit_id="attempt", expected_sequence=0
+        )
+    client._rpc.create_volume.assert_not_called()
+    client._inner.stage.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"base_version_id": 0},
+        {"base_sequence_number": 0},
+        {"ref": "other"},
+        {"volume": pb_v2.VolumeRef(name="other")},
+        {"volume": pb_v2.VolumeRef(name="models", volume_id="other-id")},
+        {"deltas": Oneof("inode_deltas", pb_v2.InodeDeltaList())},
+        {"deltas": Oneof("uploaded_deltas", pb_v2.UploadedObjectReference())},
+    ],
+)
+def test_private_prepare_rejects_changed_native_provenance(
+    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._inner.staged_intent.return_value = _staged_path_intent(
+        **overrides
+    ).to_binary()
+    with pytest.raises((VolumeError, ValueError)):
+        Volume("models", client=client)._prepare_commit(
+            [("CURRENT", b"v1")], commit_id="attempt", expected_sequence=0
+        )
+    client._rpc.commit_version.assert_not_called()
+
+
+@pytest.mark.parametrize("sequence", [-1, 2**64, True, "0"])
+def test_private_prepare_rejects_invalid_sequence_before_network(
+    monkeypatch: pytest.MonkeyPatch, sequence: Any
+) -> None:
+    client = _make_client(monkeypatch)
+    with pytest.raises(ValueError):
+        Volume("models", client=client)._prepare_commit(
+            [("CURRENT", b"v1")], commit_id="attempt", expected_sequence=sequence
+        )
+    client._rpc.get_volume.assert_not_called()
+    client._inner.stage.assert_not_called()
+
+
+def test_prepared_envelope_binds_identity_and_owns_bytes() -> None:
+    intent = _staged_path_intent(
+        volume=pb_v2.VolumeRef(name="models", volume_id="vol-123"),
+        base_sequence_number=0,
+    )
+    original = intent.to_binary()
+    buffer = bytearray(original)
+    prepared = _PreparedVolumeCommit("server", "env-1", buffer)  # type: ignore[arg-type]
+    buffer[:] = b"changed"
+    assert prepared.intent_bytes == original
+    for field in ("server", "environment_id", "intent"):
+        envelope = json.loads(prepared.to_bytes())
+        envelope[field] += "changed"
+        with pytest.raises(ValueError):
+            _PreparedVolumeCommit.from_bytes(json.dumps(envelope).encode())
+
+
+@pytest.mark.parametrize("count", [0, _BATCH_MAX_FILES + 1])
+def test_private_prepare_never_splits_batches(
+    monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    client = _make_client(monkeypatch)
+    with pytest.raises(ValueError, match="bounded nonempty"):
+        Volume("models", client=client)._prepare_commit(
+            [(f"file-{index}", b"data") for index in range(count)],
+            commit_id="attempt",
+            expected_sequence=0,
+        )
+    client._rpc.get_volume.assert_not_called()
+    client._inner.stage.assert_not_called()
+
+
+def test_private_prepare_requires_environment_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._connect._env_id = ""
+    with pytest.raises(VolumeError, match="environment identity"):
+        Volume("models", client=client)._prepare_commit(
+            [("CURRENT", b"v1")], commit_id="attempt", expected_sequence=0
+        )
+    client._rpc.get_volume.assert_not_called()
+    client._inner.stage.assert_not_called()
 
 
 def test_dict_commit_status_conversion() -> None:

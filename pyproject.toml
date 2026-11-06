@@ -34,7 +34,12 @@ python-source = "."
 include = ["chalkcompute/**", "README.md"]
 exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
+[project.scripts]
+chalk-live-serve = "chalkcompute.weights.serving.__main__:main"
+
 [project.optional-dependencies]
+serving = ["aiohttp>=3.12.14,<4", "torch>=2.7", "numpy>=1.26", "safetensors>=0.5", "zstandard>=0.23", "xxhash>=3.5"]
+weights = ["torch>=2.5", "numpy>=1.26", "safetensors>=0.5", "zstandard>=0.23", "xxhash>=3.5", "huggingface-hub>=0.28"]
 sql = ["pyarrow>=14.0.0"]
 workflows = ["chalkpy[workflows]>=2.154.27"]
 dev = [

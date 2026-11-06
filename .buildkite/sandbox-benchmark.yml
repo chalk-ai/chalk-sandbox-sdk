@@ -36,7 +36,7 @@ steps:
           --min-success-rate 1.0 \
           --max-p95-ms 60000
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 60
     retry:
       automatic:
@@ -60,7 +60,7 @@ steps:
           - "git-repo"
           - "api-throughput"
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 90
     notify:
       - slack:

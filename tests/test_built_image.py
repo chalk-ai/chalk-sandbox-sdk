@@ -110,14 +110,15 @@ class Worker:
 
 
 @pytest.mark.parametrize("size_limit", [None, "64Mi"])
-def test_round_trip_without_services(size_limit):
+@pytest.mark.parametrize(
+    "volume_type", [VolumeMountType.EMPTY_DIR, VolumeMountType.SHARED_MEMORY]
+)
+def test_round_trip_without_services(size_limit, volume_type):
     legacy = built_image("engine:1", (VolumeMount("assets", "/assets", 7),))
     assert json.loads(legacy.to_json())["volumes"] == [
         {"name": "assets", "mount_path": "/assets", "version_id": 7}
     ]
-    scratch = VolumeMount(
-        "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit=size_limit
-    )
+    scratch = VolumeMount("scratch", "/tmp", type=volume_type, size_limit=size_limit)
     spec = Image._from_built("engine:1", [*legacy.volumes, scratch])
     assert Image.from_json(spec.to_json()).to_json() == spec.to_json()
     assert Sandbox(image=Image.from_json(spec.to_json()))._referenced_volumes == list(
@@ -146,6 +147,16 @@ def test_round_trip_without_services(size_limit):
         {"volumes": [{"name": "assets", "mount_path": "/assets", "version_id": None}]},
         {"volumes": [{"name": "assets", "mount_path": "/assets", "version_id": -1}]},
         {"volumes": [{"name": "assets", "mount_path": "assets", "version_id": 7}]},
+        {
+            "volumes": [
+                {
+                    "name": "shm",
+                    "mount_path": "/dev/shm",
+                    "type": "shared_memory",
+                    "version_id": 7,
+                }
+            ]
+        },
     ],
 )
 def test_invalid_serialized_spec(change):
