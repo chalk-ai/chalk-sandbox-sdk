@@ -180,7 +180,7 @@ def _load_dataframe(data_dir: str) -> object:
         pass
 
     try:
-        import pandas as pd  # type: ignore[import-not-found]  # ty: ignore[unresolved-import]
+        import pandas as pd  # type: ignore[import-not-found]  # ty: ignore[import-not-found]
 
         frames = [pd.read_parquet(f) for f in parquet_files]
         return pd.concat(frames, ignore_index=True) if frames else None
