@@ -468,7 +468,7 @@ def _router_client_options() -> dict[str, Any]:
 def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     """One chat completion: the parsed model, or ``parse_fn``'s reading of the text."""
     # Present in the judge's image, never in the SDK's environment.
-    from openai import OpenAI  # ty: ignore[unresolved-import]
+    from openai import OpenAI  # ty: ignore[import-not-found]
 
     client = OpenAI(**_client_options(spec))
     request: dict[str, Any] = {
@@ -1295,7 +1295,7 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 def _embed(spec: _EmbeddingSpec, texts: Sequence[str]) -> list[Sequence[float]]:
     # Present in the scorer's image, never in the SDK's environment.
-    from openai import OpenAI  # ty: ignore[unresolved-import]
+    from openai import OpenAI  # ty: ignore[import-not-found]
 
     client = OpenAI(**_client_options(spec))
     embedded = client.embeddings.create(model=spec.model, input=list(texts))

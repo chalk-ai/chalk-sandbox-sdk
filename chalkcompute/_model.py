@@ -136,7 +136,7 @@ def bind_model(
     """
     # `chalkdf` must be imported first; it bootstraps `libchalk` onto sys.path.
     from chalkdf import Catalog
-    from libchalk.runtime.remote_call import (  # ty: ignore[unresolved-import]
+    from libchalk.runtime.remote_call import (  # ty: ignore[import-not-found]
         GrpcChannelCredentials,
         RemoteCallClientSupplier,
     )
