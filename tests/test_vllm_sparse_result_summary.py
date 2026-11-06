@@ -546,3 +546,79 @@ def test_substring_index_copy_name_is_not_native_indexed_write_evidence(exported
     )
     with pytest.raises(ValueError, match="Native sparse operation"):
         summary.verify_sparse(exported)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        None,
+        "missing_rank",
+        "version",
+        "tx",
+        "identity",
+        "full_loader",
+        "allocation",
+        "timing",
+        "operation",
+        "storage",
+        "replay_write",
+    ],
+)
+def test_diagnostic_online_commit_gate_reuses_real_receipt_contract(exported, damage):
+    from scripts.vllm_sparse import pod_script as pod
+
+    replay = damage == "replay_write"
+    rpc = json.loads(commit_path(exported, 1 if replay else 0).read_text())
+    records = rpc["response"]["results"]
+    transaction, version, identities, digest = rpc["request"]["args"]
+    if damage == "missing_rank":
+        records.pop()
+    elif damage == "version":
+        records[-1]["result"]["version"] = True
+    elif damage == "tx":
+        records[-1]["result"]["transaction_id"] = "wrong"
+    elif damage == "identity":
+        records[-1]["result"]["identity_sha256"] = "wrong"
+    elif damage == "full_loader":
+        records[-1]["full_loaders_forbidden"] = False
+    elif damage == "allocation":
+        records[-1]["maximum_new_storage_bytes"] = 4097
+    elif damage == "timing":
+        records[-1]["commit_and_sync_seconds"] = float("nan")
+    elif damage == "operation":
+        records[-1]["sparse_writes"][0]["op"] = "wrong"
+    elif damage == "storage":
+        records[-1]["sparse_writes"][0]["storage_ptr"] = 0
+    elif damage == "replay_write":
+        records[-1]["sparse_writes"] = [
+            {"op": "aten.index_copy_.default", "storage_ptr": 123}
+        ]
+    baseline = json.loads((exported / "A.json").read_text())
+    if damage is None:
+        pod.validate_diagnostic_commit(
+            records, baseline, version, transaction, identities, digest, replay=replay
+        )
+    else:
+        with pytest.raises(ValueError):
+            pod.validate_diagnostic_commit(
+                records,
+                baseline,
+                version,
+                transaction,
+                identities,
+                digest,
+                replay=replay,
+            )
+
+
+def test_diagnostic_byte_checker_does_not_make_diagnostic_a_strict_pass(exported):
+    scope = {"status": "diagnostic_complete", "full_smoke_accepted": False}
+    write(exported / "scope.json", scope)
+    assert summary.verify_byte_control_receipts(exported, scope)["passed"] is True
+    assert summary.verify_sparse(exported)["passed"] is False
+    mutate(
+        commit_path(exported, 0),
+        lambda rpc: rpc["response"]["results"][-1].update(full_loaders_forbidden=False),
+    )
+    with pytest.raises(ValueError):
+        summary.verify_byte_control_receipts(exported, scope)

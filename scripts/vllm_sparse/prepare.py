@@ -62,7 +62,13 @@ def main():
     for name in ("vllm_worker_ext.py", "vllm_resident_sparse.py"):
         relative = "chalkcompute/weights/serving/" + name
         files[relative] = (args.runtime_root / relative).read_bytes()
-    for name in ("runtime_gate.py", "audit_extension.py", "proof.py", "pod_script.py"):
+    for name in (
+        "runtime_gate.py",
+        "audit_extension.py",
+        "proof.py",
+        "pod_script.py",
+        "summarize_result.py",
+    ):
         relative = "scripts/vllm_sparse/" + name
         files[relative] = (source_root / relative).read_bytes()
     overlay_hashes = {name: sha(value) for name, value in files.items()}

@@ -215,6 +215,11 @@ def verify_sparse(root):
             "scope_record": scope,
             "reason": "Native harness did not report passed",
         }
+    return verify_byte_control_receipts(root, scope)
+
+
+def verify_byte_control_receipts(root, scope):
+    """Inspect receipts only; callers separately classify harness acceptance."""
     baseline = ranks(read(root / "A.json"))
     if read(root / "A.json") != read(root / "A-unchanged-repeat.json"):
         raise ValueError("Baseline was not exactly repeatable")
