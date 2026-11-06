@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import posixpath
 import time
 import uuid
-import posixpath
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -16,7 +17,16 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_pb,
 )
 from chalkcompute._image import Image
-from chalkcompute._volume import VolumeClient, VolumeMount
+from chalkcompute._volume import (
+    VolumeClient,
+    VolumeMount,
+    VolumeError,
+    _prepare_source_files,
+)
+
+
+if TYPE_CHECKING:
+    from chalkcompute._native import PreparedFiles
 
 
 def _paths_overlap(left: str, right: str) -> bool:
@@ -53,30 +63,43 @@ def function_source_root(
 
 
 def resolve_function_volumes(
-    client: ConnectClient,
     *,
     image: Image,
-    volume_name: str,
     referenced: Sequence[VolumeMount],
-    poll_interval: float,
-    timeout: float,
 ) -> list[VolumeMount]:
-    """Resolve function source and merge it with referenced volumes."""
+    """Validate explicit mounts without allocating function storage."""
     source_paths = set(image.lazy_local_files_grouped_for_volume_mounts())
-    occupied_paths = {mount.mount_path for mount in referenced}
-    overlap = source_paths & occupied_paths
+    overlap = source_paths & {mount.mount_path for mount in referenced}
     if overlap:
-        path = min(overlap)
-        raise ValueError(f"Source mount overlaps a user volume at {path!r}")
-    if not source_paths:
-        return list(referenced)
-    sources = VolumeClient.from_connect(client)._resolve_lazy_files(
-        image,
-        volume_name=volume_name,
-        poll_interval=poll_interval,
-        timeout=timeout,
-    )
-    return [*referenced, *sources]
+        raise ValueError(f"Source mount overlaps a user volume at {min(overlap)!r}")
+    return list(referenced)
+
+
+def _source_manifests(
+    image: Image,
+) -> tuple[
+    list[service_pb.FunctionSourceMount],
+    dict[str, service_pb.FunctionSourceManifest],
+    dict[str, PreparedFiles],
+]:
+    mounts = []
+    manifests = {}
+    prepared_by_digest = {}
+    for mount_path, prepared in _prepare_source_files(image):
+        data = prepared.source_manifest()
+        manifest = service_pb.FunctionSourceManifest(
+            tree_digest=data["tree_digest"],
+            files=[service_pb.FunctionSourceFile(**file) for file in data["files"]],
+        )
+        manifests[manifest.tree_digest] = manifest
+        for file in manifest.files:
+            prepared_by_digest[file.content_digest] = prepared
+        mounts.append(
+            service_pb.FunctionSourceMount(
+                tree_digest=manifest.tree_digest, mount_path=mount_path
+            )
+        )
+    return mounts, manifests, prepared_by_digest
 
 
 def ensure_external_function(
@@ -93,6 +116,7 @@ def ensure_external_function(
 ) -> service_pb.EnsuredExternalFunction:
     stub = client.stub(service_connect.ExternalFunctionCatalogServiceClientSync)
     deadline = time.monotonic() + timeout
+    sources, manifests, prepared_by_digest = _source_manifests(image)
     request = service_pb.EnsureExternalFunctionRequest(
         request_id=str(uuid.uuid4()),
         function_name=function_name,
@@ -100,6 +124,7 @@ def ensure_external_function(
             version_spec=version_spec,
             image=image.to_proto(),
             local_secrets=local_secrets,
+            sources=sources,
         ),
         force_new_version=force_new_version,
     )
@@ -121,6 +146,38 @@ def ensure_external_function(
             raise ConnectError("Ensure response omitted its result")
         if response.result.field == "complete":
             return response.result.value
+        if response.result.field == "missing_inputs":
+            missing = response.result.value
+            supplied = service_pb.FunctionDeploymentInputs(
+                manifests=[manifests[digest] for digest in missing.tree_digests],
+            )
+            if missing.file_digests:
+                if missing.upload_volume is None:
+                    raise ConnectError("Source upload response omitted its volume")
+                groups: dict[PreparedFiles, list[str]] = {}
+                for digest in missing.file_digests:
+                    groups.setdefault(prepared_by_digest[digest], []).append(digest)
+                try:
+                    volume_client = VolumeClient.from_connect(client)
+                    intent = volume_client._stage_source_inputs(
+                        missing.upload_volume.name, groups
+                    )
+                except VolumeError as exc:
+                    if exc.code not in (
+                        "unavailable",
+                        "deadline_exceeded",
+                        "resource_exhausted",
+                    ):
+                        raise
+                    time.sleep(poll_interval)
+                    continue
+                if intent.deltas is None or intent.deltas.field != "path_deltas":
+                    raise ConnectError("Source upload did not produce file deltas")
+                supplied.files = intent.deltas.value.upserts
+                supplied.uploaded_objects = intent.uploaded_object_references
+                supplied.upload_volume = missing.upload_volume
+            request.supplied_inputs = supplied
+            continue
         if response.result.field == "pending_image_build":
             try:
                 wait_for_image_build(

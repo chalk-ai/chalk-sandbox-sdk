@@ -389,7 +389,7 @@ def test_remote_class_resolves_one_shared_source_volume(monkeypatch, tmp_path) -
     rc.deploy(poll_interval=0, ready_timeout=10)
 
     assert len(resolutions) == 1
-    assert resolutions[0]["volume_name"] == "arithmetic"
+    assert resolutions[0]["image"] is image
     assert client.methods.count("ensure_external_function") == 2
 
 
