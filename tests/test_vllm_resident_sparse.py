@@ -264,12 +264,13 @@ def install_module(monkeypatch, name, **attributes):
     return module
 
 
+@pytest.mark.parametrize("runtime_version", ["0.33.0", "0.33.0+rocm100"])
 @pytest.mark.parametrize(
     "change",
     [None, "version", "topology", "rank", "model", "config", "device", "architecture"],
 )
 def test_native_context_rejects_unsupported_runtime_before_any_tensor_access(
-    monkeypatch, change
+    monkeypatch, change, runtime_version
 ):
     world = SimpleNamespace(world_size=8, rank=0)
     tp = SimpleNamespace(world_size=8, rank_in_group=0)
@@ -285,7 +286,7 @@ def test_native_context_rejects_unsupported_runtime_before_any_tensor_access(
     monkeypatch.setattr(
         importlib.metadata,
         "version",
-        lambda _: "0.32.0" if change == "version" else "0.33.0",
+        lambda _: "0.32.0" if change == "version" else runtime_version,
     )
     monkeypatch.setattr(torch.version, "hip", "10.0")
     monkeypatch.setattr(
@@ -334,6 +335,33 @@ def test_native_context_rejects_unsupported_runtime_before_any_tensor_access(
     else:
         with pytest.raises(ValueError):
             sparse._context(worker)
+
+
+@pytest.mark.parametrize(
+    "runtime_version",
+    [
+        "0.32.0",
+        "0.34.0",
+        "0.33.0.dev1+rocm100",
+        "0.33.0.post1+rocm100",
+        "0.33.0+rocm72",
+        "0.33.0+rocm100.extra",
+        "0.33.0+cu130",
+        "0.33.0+cpu",
+    ],
+)
+def test_unreviewed_version_rejected_before_model_access(monkeypatch, runtime_version):
+    install_module(monkeypatch, "vllm")
+    install_module(monkeypatch, "vllm.distributed")
+    install_module(monkeypatch, "vllm.distributed.parallel_state")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: runtime_version)
+    worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            get_model=lambda: pytest.fail("Unreviewed version accessed resident model")
+        )
+    )
+    with pytest.raises(ValueError, match="observed"):
+        sparse._context(worker)
 
 
 @pytest.mark.parametrize(

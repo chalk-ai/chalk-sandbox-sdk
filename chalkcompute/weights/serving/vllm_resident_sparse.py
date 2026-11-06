@@ -17,6 +17,8 @@ import re
 from typing import Any
 
 PROFILE = "kimi-k3-bf16-tp8-v1"
+# Pinned vLLM setup.py appends rocm100 for its ROCm 10.0 wheel build.
+SUPPORTED_VLLM_VERSIONS = ("0.33.0", "0.33.0+rocm100")
 NORM = "language_model.model.norm.weight"
 HEAD = "language_model.lm_head.weight"
 HIDDEN = 7168
@@ -45,8 +47,12 @@ def _context(worker: Any) -> tuple[Any, dict[str, Any]]:
 
     parallel = importlib.import_module("vllm.distributed.parallel_state")
 
-    if version("vllm") != "0.33.0":
-        raise ValueError("Direct resident Kimi scatter requires vLLM 0.33.0")
+    installed_version = version("vllm")
+    if installed_version not in SUPPORTED_VLLM_VERSIONS:
+        raise ValueError(
+            "Direct resident Kimi scatter requires vLLM "
+            f"{SUPPORTED_VLLM_VERSIONS}; observed {installed_version!r}"
+        )
     model = worker.model_runner.get_model()
     if (
         type(model).__module__ != "vllm.models.kimi_k3.amd.model"
