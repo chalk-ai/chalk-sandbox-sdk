@@ -508,3 +508,47 @@ def test_read_rejects_an_empty_revision_and_a_revision_with_no_output() -> None:
     connect = FakeConnectClient(handler=lambda name, request: _download_links())
     with pytest.raises(DatasetError, match="no output to read"):
         DatasetClient(connect_client=connect).read("rev-1")  # type: ignore[arg-type]
+
+
+def test_delete_dataset_uses_dataset_id_and_timeout() -> None:
+    transport = FakeConnectClient(
+        handler=lambda method, request: datasets_pb.DeleteDatasetResponse(
+            dataset_id=request.dataset_id
+        )
+    )
+    client = DatasetClient(connect_client=transport)
+    assert client.delete(" dataset-1 ", timeout=12.0) is None
+    call = transport.calls[0]
+    assert call.method == "delete_dataset"
+    assert isinstance(call.request, datasets_pb.DeleteDatasetRequest)
+    assert call.request.dataset_id == "dataset-1"
+    assert call.timeout == 12.0
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, float("nan"), float("inf")])
+def test_delete_dataset_rejects_invalid_timeout(timeout: float) -> None:
+    transport = FakeConnectClient()
+    with pytest.raises(ValueError, match="timeout"):
+        DatasetClient(connect_client=transport).delete("dataset-1", timeout=timeout)
+    assert transport.calls == []
+
+
+def test_delete_dataset_rejects_empty_id() -> None:
+    transport = FakeConnectClient()
+    with pytest.raises(ValueError, match="dataset_id"):
+        DatasetClient(connect_client=transport).delete(" ")
+    assert transport.calls == []
+
+
+def test_delete_dataset_translates_rpc_error() -> None:
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+
+    def fail(method: str, request: Any) -> Any:
+        raise ConnectError(Code.PERMISSION_DENIED, "denied")
+
+    with pytest.raises(DatasetError) as exc:
+        DatasetClient(connect_client=FakeConnectClient(handler=fail)).delete(
+            "dataset-1"
+        )
+    assert exc.value.status_code == 403

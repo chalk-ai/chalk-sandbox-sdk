@@ -198,6 +198,30 @@ class DatasetClient:
             )
         return DatasetRevisionRef(dataset_id=dataset_id, revision_id=revision_id)
 
+    @_instrumented("chalkcompute.dataset.delete")
+    def delete(self, dataset_id: str, *, timeout: float = 300.0) -> None:
+        """Soft-delete a dataset by dataset ID, not revision ID or name.
+
+        This marks the dataset deleted; it does not physically erase stored
+        data. Missing or already-deleted IDs succeed without changes.
+        """
+        dataset_id = dataset_id.strip()
+        if not dataset_id:
+            raise ValueError("dataset_id is required")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("timeout must be a positive finite number")
+        stub = self._connect.stub(datasets_connect.DatasetMetadataServiceClientSync)
+        self._call(
+            stub.delete_dataset,
+            datasets_pb.DeleteDatasetRequest(dataset_id=dataset_id),
+            timeout=timeout,
+        )
+
     @_instrumented("chalkcompute.dataset.read")
     def read(
         self,
