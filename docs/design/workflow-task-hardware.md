@@ -69,7 +69,7 @@ async def nightly(day: str) -> list[float]:          # body unchanged
 
 nightly.deploy()                                     # optional: deploy now and wait, like RemoteFunction.deploy()
 
-result = nightly.remote(day="2026-11-03")            # blocks, returns the result
+result = nightly.run(day="2026-11-03")               # blocks, returns the result
 run    = nightly.defer(day="2026-11-03")             # returns a WorkflowRun handle immediately
 run.result(timeout=600); run.status(); run.send_message("approve", {...})
 run.cancel()                                         # planned, see below
@@ -91,7 +91,7 @@ await nightly(day="2026-11-03")                      # plain call: in-process, n
 | Hardware | One size for the whole file | Per spec: each distinct set of specs in a workflow gets its own scaling group and queue |
 | Deploy | `cc.deploy_workflow_worker(...)` | Implicit, or `wf.deploy()` explicitly (like `RemoteFunction.deploy()`) |
 | Deployment unit | File (`wf-<stem>`) | Workflow name |
-| Run and wait | `worker.trigger(wf, {...}, wait=True)` / `cc.run_workflow(wf, {...})` | `wf.remote(**kwargs)` |
+| Run and wait | `worker.trigger(wf, {...}, wait=True)` / `cc.run_workflow(wf, {...})` | `wf.run(**kwargs)` |
 | Start, return immediately | `worker.trigger(wf, {...})` → data-only handle | `wf.defer(**kwargs)` → `WorkflowRun` handle (below) |
 | Call from elsewhere | `ChalkClient().trigger_workflow(name, ..., task_queue=...)` | `cc.RemoteWorkflow.from_name(name)` |
 | Local code, real orchestrator | `ChalkClient().run_workflow(wf, {...})` | `wf.run_from_source(**kwargs)` |
@@ -143,7 +143,7 @@ Because the version is in every name, a run stays on the groups and queues of th
 | Trigger | Behavior |
 |---|---|
 | `wf.deploy()` | Deploys now and blocks until done; raises on failure |
-| First `wf.remote()` / `wf.defer()` in the process | Deploys if needed, then starts the run |
+| First `wf.run()` / `wf.defer()` in the process | Deploys if needed, then starts the run |
 | Interpreter exit | Deploys workflows that were defined but never deployed or called, so a script that only defines workflows still deploys. A failure exits the process with a non-zero status |
 
 By then every task the workflow uses has been defined, so the deploy sees the complete set.
@@ -154,33 +154,33 @@ By then every task the workflow uses has been defined, so the deploy sees the co
 PENDING ──first trigger──► DEPLOYING (one shared in-flight deploy) ──► DEPLOYED(version) | FAILED(error)
 ```
 
-- `PENDING`: `.remote()` / `.defer()` start the deploy and wait for it.
+- `PENDING`: `.run()` / `.defer()` start the deploy and wait for it.
 - `DEPLOYING`: they wait on the deploy already in flight. Concurrent callers share one deploy.
 - `DEPLOYED`: they start the run directly, with no deploy and no extra RPC.
 
 The first deploy in a process always asks the server (`EnsureWorkflow`), because a new process can't know what's already deployed. The server compares content hashes, and an unchanged workflow comes back immediately as reused: no image builds, no new groups, no new version. `RemoteFunction` behaves the same through `EnsureExternalFunction`.
 
-**No duplicate deploys.** The exit hook only deploys workflows still in `PENDING`, and `.remote()` / `.defer()` skip workflows already `DEPLOYED`:
+**No duplicate deploys.** The exit hook only deploys workflows still in `PENDING`, and `.run()` / `.defer()` skip workflows already `DEPLOYED`:
 
 | Script does | Ensure calls |
 |---|---|
 | Defines `nightly`, nothing else | 1, at exit |
 | `nightly.deploy()` | 1 |
-| `nightly.deploy()`, then `nightly.remote()` ×3 | 1 |
-| `nightly.remote()` ×3, no `.deploy()` | 1, on the first call |
+| `nightly.deploy()`, then `nightly.run()` ×3 | 1 |
+| `nightly.run()` ×3, no `.deploy()` | 1, on the first call |
 | `nightly.deploy()` twice | 2; the second comes back as reused |
 
 An explicit `.deploy()` always asks the server again, as `RemoteFunction.deploy()` does. Even then, the server reuses identical content, so the worst case is one extra round trip, never a second set of groups or a new version.
 
 **What `.deploy()` waits for:** images built, every scaling group accepted, the version recorded, and new runs pointed at it. It does not wait for running pods: workflow groups scale to zero, so there may be none.
 
-**Errors** surface as they do for functions: raised from `.deploy()`, `.remote()` or `.defer()`, or a non-zero exit when the exit-time deploy fails.
+**Errors** surface as they do for functions: raised from `.deploy()`, `.run()` or `.defer()`, or a non-zero exit when the exit-time deploy fails.
 
 **Never deploy:** `cc.RemoteWorkflow.from_name(...)`, `wf.run_from_source(...)`, a plain `await wf(...)`, and every import inside a worker. An env var set in worker containers makes the decorators inert, as `CHALK_REMOTE_FUNCTION` does for functions.
 
-**Startup latency.** Because the deploy starts later than a function's, the first `.remote()` waits for it. To win most of that time back, each `@cc.task(image=...)` starts building its image in the background when the decorator runs. Images depend only on their own definition, so they're usually built by the time the deploy starts.
+**Startup latency.** Because the deploy starts later than a function's, the first `.run()` waits for it. To win most of that time back, each `@cc.task(image=...)` starts building its image in the background when the decorator runs. Images depend only on their own definition, so they're usually built by the time the deploy starts.
 
-**Notebooks.** Re-running a cell that defines a workflow creates a new object in `PENDING`, so its next `.remote()` deploys the edited code.
+**Notebooks.** Re-running a cell that defines a workflow creates a new object in `PENDING`, so its next `.run()` deploys the edited code.
 
 ## `WorkflowRun` handle
 
