@@ -119,9 +119,29 @@ def arm(worker, trace_id, selected_ids, layer_indices):
             def hook(module, inputs, output, index=index):
                 try:
                     values = output if isinstance(output, tuple) else (output,)
-                    components = [
-                        tensor_info(value[-1]) for value in values if value is not None
-                    ]
+                    components = []
+                    for component, value in enumerate(values):
+                        if value is None:
+                            continue
+                        row = value[-1]
+                        metadata = {"component_index": component}
+                        if component == 1 and getattr(
+                            module, "use_attn_residuals", False
+                        ):
+                            # Kimi allocates future residual-bank slots with
+                            # new_empty; only completed/current slots are valid.
+                            previous = module.prev_valid_blocks
+                            writing = module.is_block_write_layer
+                            if type(previous) is not int or type(writing) is not bool:
+                                raise ValueError(
+                                    "Invalid native residual-bank metadata"
+                                )
+                            valid = previous + int(writing)
+                            if value.ndim != 3 or not 1 <= valid <= value.shape[1]:
+                                raise ValueError("Invalid native valid residual slots")
+                            row = row[:valid]
+                            metadata["valid_residual_slots"] = valid
+                        components.append({**metadata, **tensor_info(row)})
                     if not components:
                         raise ValueError("Missing native layer tensor components")
                     append(

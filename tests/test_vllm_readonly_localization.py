@@ -484,3 +484,43 @@ def test_offline_prepare_freezes_exact_readonly_contract(tmp_path, monkeypatch, 
     assert (out / "overlay.tar.gz").read_bytes() == (
         tmp_path / "out-again" / "overlay.tar.gz"
     ).read_bytes()
+
+
+@pytest.mark.parametrize(
+    "previous,writing,valid", [(0, True, 1), (1, False, 1), (1, True, 2), (8, False, 8)]
+)
+def test_attn_residual_trace_ignores_uninitialized_future_bank_slots(
+    previous, writing, valid
+):
+    class AttnResidualLayer(torch.nn.Module):
+        use_attn_residuals = True
+        prev_valid_blocks = previous
+        is_block_write_layer = writing
+
+        def forward(self, value, bank):
+            return value, bank, value + 1
+
+    model = Model()
+    layer = AttnResidualLayer()
+    model.layers[0] = layer
+    target = worker(model)
+    value = torch.zeros((1, 16))
+    bank = torch.ones((1, 8, 16))
+
+    def capture():
+        trace.arm(target, "a" * 32, [1], [0])
+        output = layer(value, bank)
+        assert output[0] is value and output[1] is bank
+        model.compute_logits(value)
+        result = trace.collect(target, "a" * 32)
+        return next(r for r in result["records"] if r["boundary"] == "layer")
+
+    before = capture()
+    bank[:, valid:] = float("nan")
+    after = capture()
+    assert before == after
+    assert after["components"][1]["valid_residual_slots"] == valid
+    assert after["components"][1]["shape"] == [valid, 16]
+    assert torch.isnan(bank[:, valid:]).all()
+    bank[:, valid - 1] = 2
+    assert capture()["sha256"] != after["sha256"]
