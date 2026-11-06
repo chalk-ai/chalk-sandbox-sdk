@@ -100,6 +100,7 @@ def preflight(overlay):
             }
         )
     return {
+        "passed": True,
         "sources": observed,
         "packages": {
             name: importlib.metadata.version(name)
