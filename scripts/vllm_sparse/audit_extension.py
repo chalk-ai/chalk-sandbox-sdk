@@ -11,6 +11,7 @@ import base64
 import hashlib
 import math
 import os
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
@@ -269,6 +270,7 @@ class SparseAuditExtension(WeightSyncExtension):
         from chalkcompute._weights_format import WeightManifest
 
         root = Path(directory)
+        started = time.perf_counter()
         manifest = WeightManifest.from_json((root / "manifest.json").read_bytes())
         if (
             manifest.kind != "patch"
@@ -282,9 +284,18 @@ class SparseAuditExtension(WeightSyncExtension):
                 "Measured phase permits only bounded nonempty sparse entries"
             )
         verify_payloads(root, manifest)
-        return super().ws_sparse_prepare_dir(
+        result = super().ws_sparse_prepare_dir(
             directory, expected_version, transaction_id
         )
+        return {
+            **result,
+            "prepare_verify_and_stage_seconds": time.perf_counter() - started,
+            "compressed_payload_bytes": sum(e.length for e in manifest.tensors),
+            "global_sparse_values_bytes": sum(e.nnz * 2 for e in manifest.tensors),
+            "global_logical_int64_index_bytes": sum(
+                e.nnz * 8 for e in manifest.tensors
+            ),
+        }
 
     def ws_audit_commit(
         self, transaction_id, expected_version, rank_identities, manifest_sha256
@@ -313,9 +324,11 @@ class SparseAuditExtension(WeightSyncExtension):
                 )
             )
             stack.enter_context(guard)
+            started = time.perf_counter()
             result = super().ws_sparse_commit(
                 transaction_id, expected_version, rank_identities, manifest_sha256
             )
+            commit_seconds = time.perf_counter() - started
         if not guard.sparse_writes and not replay:
             raise RuntimeError(
                 "No actual indexed write to resident model storage observed"
@@ -325,6 +338,7 @@ class SparseAuditExtension(WeightSyncExtension):
         return {
             "result": result,
             "idempotent_no_write_replay": replay,
+            "commit_and_sync_seconds": commit_seconds,
             "rank": torch.distributed.get_rank(),
             "pid": os.getpid(),
             "sparse_writes": guard.sparse_writes,

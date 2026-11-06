@@ -1,8 +1,8 @@
 """Bounded in-image source/package inspection before any model download or launch.
 
-No installs, downloads, device initialization or resource lifecycle. --inspect-only
-collects missing metadata honestly; --check requires an exact reviewed receipt and
-CPU codec roundtrip. Run with the same absolute interpreter/PYTHONPATH as vLLM.
+No installs, downloads or resource lifecycle. Only the explicit
+--native-device-check initializes devices inside an already-owned image.
+--inspect-only records actual metadata; --check requires an exact reviewed receipt. Run with the same absolute interpreter/PYTHONPATH as vLLM.
 """
 
 import argparse
@@ -181,6 +181,7 @@ def main():
                     }
                 )
             result["devices"] = devices
+            result["cuda_initialized_after_native"] = torch.cuda.is_initialized()
         result["passed"] = True
     except BaseException as error:
         result.update(error_type=type(error).__name__, error=str(error)[:2000])

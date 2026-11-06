@@ -164,6 +164,17 @@ class Experiment:
                 raise ValueError(
                     "Every rank must prepare replicated norm and distinct TP shard coordinates"
                 )
+            if (
+                record["compressed_payload_bytes"]
+                != sum(e["length"] for e in manifest["tensors"])
+                or record["global_sparse_values_bytes"] != 72
+                or record["global_logical_int64_index_bytes"] != 288
+                or not math.isfinite(record["prepare_verify_and_stage_seconds"])
+                or record["prepare_verify_and_stage_seconds"] < 0
+            ):
+                raise ValueError(
+                    "Prepare timing/byte instrumentation differs from actual sparse payload"
+                )
         hashes = {r["manifest_sha256"] for r in prepared}
         expected_hash = hashlib.sha256(
             (root / "manifest.json").read_bytes()
@@ -184,6 +195,12 @@ class Experiment:
             raise RuntimeError(
                 "Uncertain commit: terminate all workers; no retry/fallback"
             )
+        if any(
+            not math.isfinite(r["commit_and_sync_seconds"])
+            or r["commit_and_sync_seconds"] < 0
+            for r in committed
+        ):
+            raise RuntimeError("Worker commit/sync timing evidence missing or invalid")
         return transaction, identities, expected_hash
 
 
