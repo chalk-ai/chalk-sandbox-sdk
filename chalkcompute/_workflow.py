@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from chalk.workflows import WorkflowDefinition
     from chalk.workflows._remote import WorkflowRunHandle
 
+    from chalkcompute._workflow_worker import WorkflowWorker
+
 
 class WorkflowError(Exception):
     """Raised when a workflow cannot be started."""
@@ -39,6 +41,7 @@ def trigger_workflow(
     workflow_id: str | None = None,
     environment: str | None = None,
     wait: bool = False,
+    worker: WorkflowWorker | str | None = None,
 ) -> WorkflowRunHandle | Any:
     """Start a deployed workflow on the environment's workflow workers.
 
@@ -56,7 +59,31 @@ def trigger_workflow(
     wait
         If True, block until the workflow completes and return its result.
         Otherwise return a handle to the running workflow.
+    worker
+        Run on a worker from ``deploy_workflow_worker``: the ``WorkflowWorker`` it
+        returned, or its name (e.g. ``"wf-nightly"``). Defaults to the environment's
+        workflow workers.
     """
+    kwargs: dict[str, Any] = {}
+    if worker is not None:
+        kwargs["task_queue"] = _worker_task_queue(worker)
     return _client(environment).trigger_workflow(
-        workflow, input, workflow_id=workflow_id, wait=wait
+        workflow, input, workflow_id=workflow_id, wait=wait, **kwargs
     )
+
+
+def _worker_task_queue(worker: WorkflowWorker | str) -> str:
+    from chalkcompute._workflow_worker import _TASK_QUEUE_PREFIX, WorkflowWorker
+
+    if isinstance(worker, WorkflowWorker):
+        return worker.task_queue
+    if not isinstance(worker, str):
+        raise TypeError(
+            f"worker must be a WorkflowWorker or a worker name, got {worker!r}"
+        )
+    # Worker names are DNS labels, so a dot means a task queue was passed instead.
+    if not worker or "." in worker:
+        raise ValueError(
+            f"Expected a workflow worker name such as 'wf-nightly', got {worker!r}"
+        )
+    return f"{_TASK_QUEUE_PREFIX}{worker}"
