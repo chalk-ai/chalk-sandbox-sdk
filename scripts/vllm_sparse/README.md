@@ -23,7 +23,12 @@ hash manifests and exact pinned model config. It refuses to overwrite an output.
 
 Inside the pinned image, run `runtime_gate` before any model download. It verifies
 the overlay/import roots, native vLLM source bytes, installed dependency presence,
-Python3.12/vLLM0.33, actual CPU codec API and HIP build. The explicit
+Python3.12 and exactly `vllm==0.33.0` or `vllm==0.33.0+rocm100`, actual CPU codec
+API and HIP build. The latter is the release's ROCm 10.0.0 packaging variant;
+development builds, other local versions and CUDA variants remain rejected.
+Both accepted strings still require the frozen image and exact native source
+hashes. The actual installed version remains a recorded runtime fact; support for
+the packaging variant does not establish that the image contains it. The explicit
 `--native-device-check` additionally requires eight gfx950 devices,230GiB free each
 and tiny indexed BF16 kernel readback. Missing dependencies fail; no install fallback.
 Record the actual package versions rather than guessing them from image labels.

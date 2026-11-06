@@ -10,6 +10,7 @@ import tarfile
 from pathlib import Path
 
 from scripts.vllm_sparse.proof import selected_architecture_hash
+from scripts.vllm_sparse.runtime_gate import REVIEWED_VLLM_VERSIONS
 
 
 def sha(data):
@@ -94,6 +95,7 @@ def main():
         "config_sha256": sha(config),
         "selected_architecture_hash": selected_architecture_hash(config),
         "native_source_count": len(native),
+        "reviewed_vllm_distribution_versions": REVIEWED_VLLM_VERSIONS,
         "scope": "experimental minimal worker module overlay, not full installed SDK integration",
         "runtime_source_head": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=args.runtime_root, text=True

@@ -14,6 +14,16 @@ import platform
 from pathlib import Path
 
 PACKAGES = ("vllm", "torch", "numpy", "safetensors", "xxhash", "zstandard")
+# v0.33.0 setup.py appends +rocm100 for the reviewed ROCm 10.0.0 build.
+# This is a packaging allowlist; native source/image and HIP gates still apply.
+REVIEWED_VLLM_VERSIONS = ("0.33.0", "0.33.0+rocm100")
+
+
+def require_reviewed_versions(result):
+    if result["package_versions"]["vllm"] not in REVIEWED_VLLM_VERSIONS or not result[
+        "python"
+    ].startswith("3.12."):
+        raise ValueError("Reviewed vLLM0.33.0 release packaging/Python3.12 required")
 
 
 def collect(source_manifest, overlay_manifest):
@@ -92,10 +102,7 @@ def main():
             value["match"] for value in result["sources"].values()
         ):
             raise ValueError("Installed dependencies/source attestation gate failed")
-        if result["package_versions"]["vllm"] != "0.33.0" or not result[
-            "python"
-        ].startswith("3.12."):
-            raise ValueError("Pinned vLLM0.33/Python3.12 required")
+        require_reviewed_versions(result)
         if args.check:
             expected = json.loads(args.check.read_text())
             if any(
