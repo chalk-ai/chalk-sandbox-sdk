@@ -1,0 +1,2 @@
+- `deploy_workflow_worker` gives each `@task` with an `image` or `resources=TaskResources(...)` a scale-to-zero worker per distinct image and resources, sized and capped from the task's resources, and routes the tasks to it through `CHALK_WORKFLOW_TASK_QUEUES`; task workers a redeploy no longer uses are deleted
+- Add `max_concurrent_tasks` to `deploy_workflow_worker`
