@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import difflib
 import functools
 import json
@@ -12,10 +13,11 @@ import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
+from pathlib import Path
 from typing import Any
 
-from chalkcompute import _tracing
+from chalkcompute import _dataclass_model, _tracing
 from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
@@ -90,7 +92,7 @@ def llm_judge(
     image: Image | None = None,
     **function_kwargs: Any,
 ) -> RemoteFunction | _NoOpFunction:
-    """Deploy an LLM judge described by a pydantic model.
+    """Deploy an LLM judge described by a dataclass or Pydantic model.
 
     ``response_model`` needs a ``score`` field, which becomes the scorer's
     score; its other fields are recorded as row metadata. A reply that fails
@@ -113,7 +115,11 @@ def llm_judge(
     :func:`chalkcompute.function`.
     """
     _assert_deployable()
-    _assert_response_model(response_model)
+    if "score" not in _field_names(response_model):
+        raise ValueError(
+            "response_model must declare a `score` field; it becomes the scorer's "
+            "score and the remaining fields are recorded as metadata"
+        )
     inputs = _validate_inputs(inputs)
     completion_kwargs = _validate_completion_kwargs(completion_kwargs)
     name = name or _default_name(response_model)
@@ -236,30 +242,24 @@ def _assert_deployable(what: str = "cc.scorers.llm_judge") -> None:
         )
 
 
-def _assert_response_model(response_model: Any) -> None:
-    if not _is_pydantic_model(response_model):
-        raise TypeError("response_model must be a pydantic BaseModel class")
-    if "score" not in _field_names(response_model):
-        raise ValueError(
-            "response_model must declare a `score` field; it becomes the scorer's "
-            "score and the remaining fields are recorded as metadata"
-        )
-
-
 # pydantic 1 and 2 both work, for parity with chalkpy; the helpers below pick
 # the API the installed version has.
-def _is_pydantic_model(cls: Any) -> bool:
-    return isinstance(cls, type) and (
-        hasattr(cls, "model_fields") or hasattr(cls, "__fields__")
-    )
-
-
 def _field_names(cls: Any) -> Any:
+    if not isinstance(cls, type):
+        raise TypeError("response_model must be a dataclass or Pydantic model class")
+    if is_dataclass(cls):
+        return _dataclass_model.model_fields(cls).keys()
     fields = getattr(cls, "model_fields", None)
-    return (fields if fields is not None else cls.__fields__).keys()
+    if fields is None:
+        fields = getattr(cls, "__fields__", None)
+    if fields is None:
+        raise TypeError("response_model must be a dataclass or Pydantic model class")
+    return fields.keys()
 
 
 def _json_schema(cls: Any, *, serialization: bool = False) -> dict[str, Any]:
+    if is_dataclass(cls):
+        return _dataclass_model.json_schema(cls)
     if hasattr(cls, "model_json_schema"):
         return cls.model_json_schema(
             mode="serialization" if serialization else "validation"
@@ -268,6 +268,8 @@ def _json_schema(cls: Any, *, serialization: bool = False) -> dict[str, Any]:
 
 
 def _validate(cls: Any, data: Any) -> Any:
+    if is_dataclass(cls):
+        return _dataclass_model.validate(cls, data)
     return (
         cls.model_validate(data)
         if hasattr(cls, "model_validate")
@@ -276,6 +278,8 @@ def _validate(cls: Any, data: Any) -> Any:
 
 
 def _dump(instance: Any) -> dict[str, Any]:
+    if is_dataclass(instance):
+        return _dataclass_model.dump(instance)
     if hasattr(instance, "model_dump"):
         return instance.model_dump(mode="json", by_alias=True)
     return json.loads(instance.json(by_alias=True))
@@ -320,6 +324,8 @@ def _default_name(response_model: Any) -> str:
 
 def _serialized_name(response_model: Any, field: str) -> str:
     """The key the model serializes ``field`` under."""
+    if is_dataclass(response_model):
+        return field
     fields = getattr(response_model, "model_fields", None)
     if fields is None:
         return response_model.__fields__[field].alias
@@ -358,12 +364,19 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
         prompt = spec.prompt_fn(spec.response_model, **columns)
     else:
         prompt = _default_prompt(spec, columns)
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
     if spec.instructions:
         messages.append({"role": "system", "content": spec.instructions})
     messages.append({"role": "user", "content": prompt})
+    return _graded_result(spec, messages)
+
+
+def _graded_result(
+    spec: _JudgeSpec, messages: list[dict[str, Any]]
+) -> EvaluationScorerResult:
+    """Ask the model, then split its reply into the score and the row's metadata."""
     graded = _complete(spec, messages)
-    if not isinstance(graded, spec.response_model):
+    if is_dataclass(spec.response_model) or not isinstance(graded, spec.response_model):
         graded = _validate(spec.response_model, graded)
     # By alias, the way the stamped schema names it.
     data = _dump(graded)
@@ -372,10 +385,10 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
 
 
 def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
-    fields = _json_schema(spec.response_model).get("properties", {})
+    schema = _json_schema(spec.response_model)
     parts = [
         "Grade the material below. Reply with a JSON object matching this schema:",
-        json.dumps(fields, indent=1),
+        json.dumps(schema, indent=1),
     ]
     for column, value in columns.items():
         parts.extend([f"## {column}", _render_input(column, value)])
@@ -465,7 +478,7 @@ def _router_client_options() -> dict[str, Any]:
     }
 
 
-def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
+def _complete(spec: _JudgeSpec, messages: list[dict[str, Any]]) -> Any:
     """One chat completion: the parsed model, or ``parse_fn``'s reading of the text."""
     # Present in the judge's image, never in the SDK's environment.
     from openai import OpenAI  # ty: ignore[import-not-found]
@@ -479,6 +492,30 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     if spec.parse_fn is not None:
         text = client.chat.completions.create(**request).choices[0].message.content
         return spec.parse_fn(text or "")
+    if is_dataclass(spec.response_model):
+        choice = client.chat.completions.create(
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": spec.response_model.__name__,
+                    "strict": True,
+                    "schema": _dataclass_model.json_schema(
+                        spec.response_model, strict=True
+                    ),
+                },
+            },
+            **request,
+        ).choices[0]
+        if choice.finish_reason in ("length", "content_filter"):
+            raise RuntimeError(
+                f"llm_judge: the model returned an incomplete grade ({choice.finish_reason})"
+            )
+        message = choice.message
+        if message.refusal or not message.content:
+            raise RuntimeError(
+                f"llm_judge: the model returned no grade ({message.refusal or 'empty reply'})"
+            )
+        return json.loads(message.content)
     # The client derives the strict schema and validates the reply. parse()
     # left beta in openai 1.92; older clients still have it under beta.
     parse = getattr(client.chat.completions, "parse", None)
@@ -490,6 +527,222 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
             f"llm_judge: the model returned no grade ({message.refusal or 'empty reply'})"
         )
     return message.parsed
+
+
+# ---------------------------------------------------------------------------
+# Vision judge
+# ---------------------------------------------------------------------------
+
+_IMAGE_DETAILS = frozenset({"low", "high", "auto"})
+# The formats vision endpoints take, by their leading bytes; WebP is checked
+# separately because its signature is split around the file length.
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+_IMAGE_URL_SCHEMES = ("http://", "https://", "data:")
+
+
+@dataclass(frozen=True)
+class _VlmJudgeSpec:
+    judge: _JudgeSpec
+    # The columns shown as pictures; the judge's other inputs are read as text.
+    images: tuple[str, ...]
+    detail: str | None
+
+
+def vlm_judge(
+    response_model: type,
+    /,
+    *,
+    model: str,
+    images: Sequence[str] = ("output",),
+    inputs: Sequence[str] = (),
+    name: str | None = None,
+    instructions: str = "",
+    detail: str | None = None,
+    prompt_fn: Callable[..., str] | None = None,
+    parse_fn: Callable[[str], Any] | None = None,
+    base_url: str | None = None,
+    api_key: Secret | None = None,
+    completion_kwargs: Mapping[str, Any] | None = None,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a vision judge: :func:`llm_judge` shown image columns as pictures.
+
+    ``images`` names the columns the model sees as pictures (``output`` is
+    the task's) and ``inputs`` the columns it reads as text, rendered the way
+    :func:`llm_judge` renders them, ``trace`` included. An image column holds
+    a URL (``https://...`` or a ``data:`` URL), which is sent as given; a path
+    readable in the scorer's container; or the image bytes themselves. PNG,
+    JPEG, GIF, and WebP bytes are inlined as data URLs, and a JSON array of
+    any of these shows several pictures. A row whose image column is empty or
+    unreadable fails. ``detail`` asks the provider for ``low``, ``high``, or
+    ``auto`` image fidelity. ``prompt_fn(response_model, **columns)``
+    replaces the text of the prompt, and the pictures follow it. The other
+    keywords are :func:`llm_judge`'s, and the model is reached the same way,
+    so it must accept images on the route it is called through.
+    """
+    _assert_deployable("cc.scorers.vlm_judge")
+    if "score" not in _field_names(response_model):
+        raise ValueError(
+            "response_model must declare a `score` field; it becomes the scorer's "
+            "score and the remaining fields are recorded as metadata"
+        )
+    image_columns = _validate_inputs(images)
+    text_columns = _validate_inputs(inputs) if inputs else ()
+    shared = sorted(set(text_columns) & set(image_columns))
+    if shared:
+        raise ValueError(f"{shared} cannot be both inputs and images")
+    if _TRACE_INPUT in image_columns:
+        raise ValueError(
+            f"{_TRACE_INPUT!r} is read as a transcript, not shown as a picture; "
+            "name it in inputs"
+        )
+    if detail is not None and detail not in _IMAGE_DETAILS:
+        raise ValueError(
+            f"detail must be one of {sorted(_IMAGE_DETAILS)}, not {detail!r}"
+        )
+    columns = text_columns + image_columns
+    completion_kwargs = _validate_completion_kwargs(completion_kwargs)
+    name = name or _default_name(response_model)
+    secrets: list[Secret] = []
+    api_key_env = _DEFAULT_API_KEY_ENV
+    if api_key is not None:
+        api_key_env = _secret_env_var(api_key)
+        secrets.append(api_key)
+    score_key = _serialized_name(response_model, "score")
+    spec = _VlmJudgeSpec(
+        judge=_JudgeSpec(
+            response_model=response_model,
+            score_key=score_key,
+            model=model,
+            instructions=instructions,
+            inputs=columns,
+            prompt_fn=prompt_fn,
+            parse_fn=parse_fn,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            api_key_declared=api_key is not None,
+            completion_kwargs=completion_kwargs,
+        ),
+        images=image_columns,
+        detail=detail,
+    )
+
+    def grade(**columns: Any) -> EvaluationScorerResult:
+        return _vlm_judge(spec, columns)
+
+    return _declare_scorer(
+        name,
+        columns,
+        grade,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_JUDGE_PACKAGES,
+        secrets=secrets,
+        stamp={
+            "__chalk_scorer_response_schema__": json.dumps(
+                _metadata_schema(response_model, score_key)
+            )
+        },
+        extra_globals={"__chalk_spec__": spec},
+        prefix="_chalk_vlm_judge_",
+    )
+
+
+def _vlm_judge(
+    spec: _VlmJudgeSpec, columns: Mapping[str, Any]
+) -> EvaluationScorerResult:
+    judge = spec.judge
+    if judge.prompt_fn is not None:
+        prompt = judge.prompt_fn(judge.response_model, **columns)
+    else:
+        text = {
+            column: value
+            for column, value in columns.items()
+            if column not in spec.images
+        }
+        prompt = _default_prompt(judge, text)
+    # One user turn: the text, then each picture under its column's heading.
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for column in spec.images:
+        content.append({"type": "text", "text": f"## {column}"})
+        content.extend(_image_parts(column, columns[column], spec.detail))
+    messages: list[dict[str, Any]] = []
+    if judge.instructions:
+        messages.append({"role": "system", "content": judge.instructions})
+    messages.append({"role": "user", "content": content})
+    return _graded_result(judge, messages)
+
+
+def _image_parts(column: str, value: Any, detail: str | None) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    for url in _image_urls(column, value):
+        image_url: dict[str, Any] = {"url": url}
+        if detail is not None:
+            image_url["detail"] = detail
+        parts.append({"type": "image_url", "image_url": image_url})
+    return parts
+
+
+def _image_urls(column: str, value: Any) -> list[str]:
+    """What one column shows: URLs as given; bytes, paths, and arrays resolved."""
+    if value is None:
+        raise ValueError(f"vlm_judge: column {column!r} holds no image")
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return [_image_data_url(column, bytes(value))]
+    if isinstance(value, (list, tuple)):
+        urls = [url for item in value for url in _image_urls(column, item)]
+        if not urls:
+            raise ValueError(f"vlm_judge: column {column!r} holds no image")
+        return urls
+    if not isinstance(value, str):
+        raise TypeError(
+            f"vlm_judge: column {column!r} holds a {type(value).__name__}, not an "
+            "image URL, a path, or image bytes"
+        )
+    text = value.strip()
+    if not text:
+        raise ValueError(f"vlm_judge: column {column!r} holds no image")
+    if text.startswith("["):
+        try:
+            items = json.loads(text)
+        except ValueError:
+            items = None
+        if isinstance(items, list):
+            return _image_urls(column, items)
+    if text.lower().startswith(_IMAGE_URL_SCHEMES):
+        return [text]
+    path = Path(text)
+    if not path.is_file():
+        raise ValueError(
+            f"vlm_judge: column {column!r} holds {text[:80]!r}, which is neither an "
+            "image URL nor a file the scorer can read"
+        )
+    return [_image_data_url(column, path.read_bytes())]
+
+
+def _image_data_url(column: str, data: bytes) -> str:
+    media_type = _image_media_type(data)
+    if media_type is None:
+        raise ValueError(
+            f"vlm_judge: column {column!r} holds bytes that are not a PNG, JPEG, "
+            "GIF, or WebP image"
+        )
+    return f"data:{media_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _image_media_type(data: bytes) -> str | None:
+    for signature, media_type in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return media_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1398,87 @@ def _json_loads(text: str) -> Any:
     """Parse strict JSON. Python's parser otherwise takes NaN and Infinity,
     which no JSON document may contain."""
     return json.loads(text, parse_constant=_reject_constant)
+
+
+def ndcg(
+    *,
+    name: str = "ndcg",
+    inputs: Sequence[str] = ("output", "relevance"),
+    k: int = 10,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a normalized discounted cumulative gain scorer at cutoff ``k``.
+
+    Each row represents one query. The first input is a JSON array of unique
+    string item IDs in ranked order; the second is a JSON object mapping IDs
+    to finite, nonnegative relevance grades. For example, ``'["b", "a"]'``
+    and ``'{"a": 3, "b": 1}'``. Unjudged IDs have relevance zero.
+
+    Gain is ``2**relevance - 1``, discounted by ``log2(position + 1)`` with
+    positions starting at one. The ideal ranking uses all reference items,
+    including ones not returned, and the same cutoff. Missing results earn
+    no gain. Empty or all-zero references score zero. Invalid inputs,
+    including duplicate returned IDs or non-finite gains, score zero with
+    an ``error`` in metadata. Valid results record ``k``, ``dcg``, and ``idcg``.
+
+    Call ``scorers.ndcg(k=10)`` at module scope and pass the returned handle
+    to an evaluation's ``scorers``. Other keywords go to
+    :func:`chalkcompute.function`.
+    """
+    _assert_deployable("cc.scorers.ndcg")
+    candidate, reference = _validate_pair(inputs, "ndcg")
+    if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
+        raise ValueError("ndcg: k must be a positive integer")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        try:
+            ranked = _json_loads(_text(columns[candidate]))
+            relevance = _json_loads(_text(columns[reference]))
+            if not isinstance(ranked, list) or any(
+                not isinstance(item, str) for item in ranked
+            ):
+                raise ValueError("ndcg: output must be a JSON array of string IDs")
+            if len(set(ranked)) != len(ranked):
+                raise ValueError("ndcg: output must contain unique IDs")
+            if not isinstance(relevance, dict):
+                raise ValueError("ndcg: relevance must be a JSON object")
+            gains: dict[str, float] = {}
+            for item, grade in relevance.items():
+                if (
+                    isinstance(grade, bool)
+                    or not isinstance(grade, (int, float))
+                    or not math.isfinite(grade)
+                    or grade < 0
+                ):
+                    raise ValueError("ndcg: grades must be finite nonnegative numbers")
+                gain = math.expm1(grade * math.log(2))
+                if not math.isfinite(gain):
+                    raise ValueError("ndcg: gains must be finite")
+                gains[item] = gain
+
+            def discounted(values: Sequence[float]) -> float:
+                return math.fsum(
+                    gain / math.log2(position + 1)
+                    for position, gain in enumerate(values, start=1)
+                )
+
+            actual = discounted([gains.get(item, 0.0) for item in ranked[:k]])
+            ideal = discounted(sorted(gains.values(), reverse=True)[:k])
+        except (ValueError, OverflowError) as exc:
+            return EvaluationScorerResult(score=0.0, metadata={"error": str(exc)})
+        return EvaluationScorerResult(
+            score=min(1.0, actual / ideal) if ideal > 0 else 0.0,
+            metadata={"k": k, "dcg": actual, "idcg": ideal},
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
 
 
 def json_valid(

@@ -5,12 +5,23 @@ import importlib
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    "WeightStream": ("chalkcompute._weights", "WeightStream"),
+    "WeightPublisher": ("chalkcompute._weights", "WeightPublisher"),
+    "WeightStreamError": ("chalkcompute._weights_format", "WeightStreamError"),
+    # _router.py
+    "Router": ("chalkcompute._router", "Router"),
+    "RouterClient": ("chalkcompute._router", "RouterClient"),
+    "RouterError": ("chalkcompute._router", "RouterError"),
+    "RouterInfo": ("chalkcompute._router", "RouterInfo"),
+    "RouterNotFoundError": ("chalkcompute._router", "RouterNotFoundError"),
     "configure_logging": ("chalkcompute._logging", "configure_logging"),
+    "UsagePool": ("chalkcompute._usage_pool", "UsagePool"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),
     "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
     "ArtifactError": ("chalkcompute._artifact", "ArtifactError"),
     "ArtifactNotFoundError": ("chalkcompute._artifact", "ArtifactNotFoundError"),
+    "UsageBudget": ("chalkcompute._usage_budget", "UsageBudget"),
     # _container.py
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
@@ -24,6 +35,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
+    "Runtime": ("chalkcompute._containerspec", "Runtime"),
     "ExecutionBackend": ("chalkcompute._containerspec", "ExecutionBackend"),
     "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "SshDest": ("chalkcompute._containerspec", "SshDest"),
@@ -41,6 +53,11 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
     "RemoteExecutionError": ("chalkcompute._function_error", "RemoteExecutionError"),
     "FunctionError": ("chalkcompute._function", "FunctionError"),
+    "CallCancelledError": ("chalkcompute._function_error", "CallCancelledError"),
+    "RemoteCallCancelResult": (
+        "chalkcompute._remote_call_client",
+        "RemoteCallCancelResult",
+    ),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
     "FunctionSignatureError": ("chalkcompute._function", "FunctionSignatureError"),
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
@@ -60,6 +77,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "get_call_context": ("chalkcompute._call_context", "get_call_context"),
     "get_row_metadata": ("chalkcompute._call_context", "get_row_metadata"),
     "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
+    "RateLimit": ("chalkcompute._router_rate_limit", "RateLimit"),
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),

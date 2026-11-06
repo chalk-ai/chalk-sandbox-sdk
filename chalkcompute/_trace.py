@@ -6,7 +6,7 @@ scoring::
     @chalkcompute.function
     def total_cost(expected: str, output: str, trace: chalkcompute.Trace) -> float:
         return sum(
-            span.attribute_float("llm.cost") or 0.0
+            span.cost or 0.0
             for span in trace.get_spans()
         )
 
@@ -34,12 +34,16 @@ a published ``chalkcompute`` for session-aware scoring.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from enum import Enum
+from functools import partial
 from typing import Any, TypeVar
 
 from connectrpc.code import Code
@@ -50,12 +54,17 @@ from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.server.v1 import trace_connect, trace_pb
 from chalkcompute._tracing import (
+    CALL_ID_ATTRIBUTE,
+    CALL_SPAN_COUNT_ATTRIBUTE,
+    SESSION_ROOT_SPAN_NAME,
+    current_call_id,
     SESSION_ID_ATTRIBUTE as SESSION_ID_ATTRIBUTE,
     SESSION_ID_HEADER as SESSION_ID_HEADER,
     _instrumented,
 )
 
 _T = TypeVar("_T")
+_logger = logging.getLogger(__name__)
 
 _MAX_PAGE_SIZE = 1000
 
@@ -100,7 +109,13 @@ class SpanStatusCode(str, Enum):
 
 @dataclass(frozen=True)
 class Span:
-    """One span of a session's telemetry."""
+    """One span of a session's telemetry.
+
+    Token, cost, model and provider properties normalize common telemetry
+    attributes without making additional requests. Numeric properties return
+    ``None`` when unavailable or invalid; a recorded zero remains zero.
+    Metrics describe this span only, never an aggregate over its children.
+    """
 
     span_id: str
     trace_id: str
@@ -122,8 +137,124 @@ class Span:
             SESSION_ID_ATTRIBUTE
         ) or self.resource_attributes.get(SESSION_ID_ATTRIBUTE)
 
+    @property
+    def model(self) -> str | None:
+        """Model used, preferring Chalk's normalized value and the response model."""
+        return self._first_attribute(
+            "chalk.ai.model",
+            "gen_ai.response.model",
+            _MODEL_NAME_ATTRIBUTE,
+            "gen_ai.request.model",
+        )
+
+    @property
+    def provider(self) -> str | None:
+        """LLM provider, from OpenInference or GenAI attributes."""
+        return self._first_attribute(
+            "llm.provider", "gen_ai.provider.name", "gen_ai.system"
+        )
+
+    @property
+    def input_tokens(self) -> int | None:
+        """Prompt tokens, including any cache tokens already included by the emitter."""
+        return self._token_count(
+            "chalk.ai.input_tokens",
+            "llm.token_count.prompt",
+            "gen_ai.usage.input_tokens",
+        )
+
+    @property
+    def output_tokens(self) -> int | None:
+        """Completion tokens, including any reasoning tokens reported in that total."""
+        return self._token_count(
+            "chalk.ai.output_tokens",
+            "llm.token_count.completion",
+            "gen_ai.usage.output_tokens",
+        )
+
+    @property
+    def total_tokens(self) -> int | None:
+        """Recorded total, or input plus output when both counts are available.
+
+        Cache and reasoning counts are breakdowns and are not added again.
+        A partial count does not imply the missing count is zero.
+        """
+        total = self._token_count(
+            "chalk.ai.total_tokens", _TOKEN_TOTAL_ATTRIBUTE, "gen_ai.usage.total_tokens"
+        )
+        if total is not None:
+            return total
+        input_tokens, output_tokens = self.input_tokens, self.output_tokens
+        if input_tokens is None or output_tokens is None:
+            return None
+        return input_tokens + output_tokens
+
+    @property
+    def cache_read_tokens(self) -> int | None:
+        """Prompt tokens read from the provider's cache."""
+        return self._token_count(
+            "chalk.ai.cache_read_tokens",
+            "llm.token_count.prompt_details.cache_read",
+            "gen_ai.usage.cache_read.input_tokens",
+        )
+
+    @property
+    def cache_write_tokens(self) -> int | None:
+        """Prompt tokens written to the provider's cache."""
+        return self._token_count(
+            "chalk.ai.cache_write_tokens",
+            "llm.token_count.prompt_details.cache_write",
+            "gen_ai.usage.cache_creation.input_tokens",
+        )
+
+    @property
+    def reasoning_tokens(self) -> int | None:
+        """Reasoning tokens within the completion, when reported."""
+        return self._token_count(
+            "llm.token_count.completion_details.reasoning",
+            "gen_ai.usage.reasoning.output_tokens",
+        )
+
+    @property
+    def cost(self) -> float | None:
+        """Recorded total cost in USD; no model pricing is inferred.
+
+        Tries Chalk's normalized cost, OpenInference total/legacy cost, then
+        GenAI cost, skipping malformed, negative and non-finite values.
+        """
+        for key in (
+            "chalk.ai.cost_usd",
+            "llm.cost.total",
+            "llm.cost",
+            "gen_ai.usage.cost",
+        ):
+            value = self.attribute_float(key)
+            if value is not None and value >= 0:
+                return value
+        return None
+
+    def _first_attribute(self, *keys: str) -> str | None:
+        return next(
+            (self.attributes[key] for key in keys if self.attributes.get(key)), None
+        )
+
+    def _token_count(self, *keys: str) -> int | None:
+        # Unlike the generic integer accessor, token counts must not truncate
+        # fractional values or accept negative counts.
+        for key in keys:
+            raw = self.attributes.get(key)
+            if raw is None:
+                continue
+            try:
+                value = Decimal(raw)
+            except InvalidOperation:
+                continue
+            if value.is_finite() and value >= 0 and value == value.to_integral_value():
+                return int(value)
+        return None
+
     def attribute_float(self, key: str) -> float | None:
-        """Return an attribute parsed as a float, or ``None`` if absent or unparseable.
+        """Return a finite float, or ``None`` if absent, unparseable or non-finite.
 
         Span attributes arrive as strings — ``ChalkSpan.attributes`` is a
         ``map<string, string>`` — so summing ``span.attributes["llm.cost"]``
@@ -133,12 +264,21 @@ class Span:
         if raw is None:
             return None
         try:
-            return float(raw)
+            value = float(raw)
+            return value if math.isfinite(value) else None
         except (TypeError, ValueError):
             return None
 
     def attribute_int(self, key: str) -> int | None:
         """Return an attribute parsed as an int, or ``None`` if absent or unparseable."""
+        raw = self.attributes.get(key)
+        if raw is None:
+            return None
+        try:
+            # Preserve integer precision instead of rounding through float.
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
         value = self.attribute_float(key)
         if value is None:
             return None
@@ -210,8 +350,14 @@ class Trace:
         reaches a scorer -- and otherwise returns as soon as the count holds
         across two polls. It cannot exceed ``timeout``.
 
-    A steady count is a pragmatic signal, not a proof: it cannot tell "complete"
-    from "quiet", so a long pause between agent turns can settle early. Pass
+    Waited reads also check completion counts for sampled local spans started
+    with the call’s context before teardown, excluding the active scorer call.
+    Threads without copied context and explicitly reparented spans are excluded.
+    Remote spans need their own markers. Unusable markers fall back to quiet-count checks; valid count
+    shortfalls raise at timeout.
+
+    For producers without markers, a steady count cannot tell "complete" from
+    "quiet", so a long pause between agent turns can settle early. Pass
     ``quiet_for`` to require a longer silence, or ``expect_min`` when the caller
     knows better.
     """
@@ -299,17 +445,35 @@ class Trace:
             within ``timeout``.
         """
 
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be >= 0 or None")
+
         def fetch() -> list[Span]:
+            # A filtered or limited result cannot establish a whole-call count.
             return self._require_client().list_spans(
                 self.id,
-                operation_name=operation_name,
-                attribute_filters=attribute_filters,
-                limit=limit,
+                operation_name=None if wait else operation_name,
+                attribute_filters=None if wait else attribute_filters,
+                limit=None if wait else limit,
             )
 
-        return _settle(
+        def selected(spans: list[Span]) -> list[Span]:
+            return [
+                span
+                for span in spans
+                if (operation_name is None or span.operation_name == operation_name)
+                and all(
+                    key in span.attributes
+                    and (value is None or span.attributes[key] == value)
+                    for key, value in (attribute_filters or {}).items()
+                )
+            ][:limit]
+
+        spans = _settle(
             fetch,
             spans_seen=len,
+            target_seen=lambda spans: len(selected(spans)),
+            completion_ready=partial(_span_counts_match, warned=set()),
             subject=f"session {self.id!r}",
             wait=wait,
             timeout=timeout,
@@ -317,6 +481,8 @@ class Trace:
             expect_min=expect_min,
             quiet_for=quiet_for,
         )
+
+        return selected(spans)
 
     def summary(
         self,
@@ -364,6 +530,16 @@ class Trace:
             ever_found = True
             return summary
 
+        warned: set[str] = set()
+
+        def completed(summary: SessionSummary | None) -> bool:
+            spans = self._require_client().list_spans(self.id)
+            observed = len({(span.trace_id, span.span_id) for span in spans})
+            return (
+                _span_counts_match(spans, warned=warned)
+                and (summary.span_count if summary else 0) >= observed
+            )
+
         try:
             settled = _settle(
                 fetch,
@@ -374,6 +550,7 @@ class Trace:
                 poll_interval=poll_interval,
                 expect_min=expect_min,
                 quiet_for=quiet_for,
+                completion_ready=completed,
             )
         except TimeoutError:
             # "It never showed up" is the more actionable diagnosis, and keeps the
@@ -425,6 +602,18 @@ class Trace:
         def fetch() -> list[TraceSummary]:
             return list(self._require_client().list_traces(self.id, limit=limit))
 
+        warned: set[str] = set()
+
+        def completed(summaries: list[TraceSummary]) -> bool:
+            spans = self._require_client().list_spans(self.id)
+            observed: dict[str, set[str]] = {}
+            for span in spans:
+                observed.setdefault(span.trace_id, set()).add(span.span_id)
+            return _span_counts_match(spans, warned=warned) and all(
+                summary.span_count >= len(observed.get(summary.trace_id, set()))
+                for summary in summaries
+            )
+
         return _settle(
             fetch,
             spans_seen=lambda summaries: sum(s.span_count for s in summaries),
@@ -434,6 +623,7 @@ class Trace:
             poll_interval=poll_interval,
             expect_min=expect_min,
             quiet_for=quiet_for,
+            completion_ready=completed,
         )
 
     def transcript(
@@ -495,6 +685,7 @@ class Trace:
             spans = _settle(
                 fetch,
                 spans_seen=len,
+                completion_ready=partial(_span_counts_match, warned=set()),
                 target_seen=_count_turns,
                 subject=f"session {self.id!r}",
                 wait=wait,
@@ -503,12 +694,18 @@ class Trace:
                 expect_min=expect_min,
                 quiet_for=quiet_for,
             )
-        except TimeoutError:
+        except TimeoutError as wait_error:
             # A session that has shown no turn after the wait has none to
             # render. One whose turns are still arriving must not be read
             # short: the note would pass for a real result.
-            if _count_turns(fetch()):
+            try:
+                latest = fetch()
+            except (TraceError, TimeoutError):
+                raise wait_error from None
+            if _count_turns(latest):
                 raise
+            if not _span_counts_match(latest):
+                raise wait_error
             spans = []
         return _format_transcript(
             spans,
@@ -542,8 +739,8 @@ def _format_transcript(
         return _NO_TURNS_NOTE
     parts: list[str] = []
     for index, span in enumerate(turns, start=1):
-        model = span.attributes.get(_MODEL_NAME_ATTRIBUTE) or "unknown model"
-        tokens = span.attribute_int(_TOKEN_TOTAL_ATTRIBUTE)
+        model = span.model or "unknown model"
+        tokens = span.total_tokens
         heading = f"### turn {index} ({model}"
         heading += f", {tokens:,} tokens)" if tokens is not None else ")"
         lines = [heading]
@@ -787,6 +984,54 @@ def _trace_complete_after(quiet_for: float | None) -> float | None:
     return seconds
 
 
+def _span_counts_match(spans: list[Span], *, warned: set[str] | None = None) -> bool:
+    """Match usable call counts; invalid markers retain the quiet-period check."""
+    observed: dict[str, set[tuple[str, str]]] = {}
+    expected: dict[str, int] = {}
+    unusable: set[str] = set()
+    active = current_call_id()
+    for span in spans:
+        call_id = span.attributes.get(CALL_ID_ATTRIBUTE)
+        if not call_id or call_id == active:
+            continue
+        observed.setdefault(call_id, set()).add((span.trace_id, span.span_id))
+        if span.operation_name != SESSION_ROOT_SPAN_NAME:
+            continue
+        raw_count = span.attributes.get(CALL_SPAN_COUNT_ATTRIBUTE, "")
+        if (
+            call_id != f"{span.trace_id}/{span.span_id}"
+            or not raw_count.isascii()
+            or not raw_count.isdecimal()
+            or len(raw_count) > 19
+            or not 1 <= int(raw_count) < 2**63
+        ):
+            unusable.add(call_id)
+            continue
+        count = int(raw_count)
+        if call_id in expected and expected[call_id] != count:
+            unusable.add(call_id)
+        expected[call_id] = count
+    for call_id, ids in observed.items():
+        count = expected.get(call_id)
+        if call_id in unusable or (count is not None and len(ids) > count):
+            unusable.add(call_id)
+        elif len(ids) != count:
+            return False
+    for call_id in unusable:
+        if warned is not None:
+            if call_id in warned:
+                continue
+            warned.add(call_id)
+        _logger.warning(
+            "Call %s has unusable span completion markers (expected=%s, observed=%s); "
+            "falling back to the quiet-count check",
+            call_id,
+            expected.get(call_id),
+            len(observed[call_id]),
+        )
+    return True
+
+
 def _settle(
     fetch: Callable[[], _T],
     *,
@@ -798,6 +1043,7 @@ def _settle(
     expect_min: int | None,
     quiet_for: float | None = None,
     target_seen: Callable[[_T], int] | None = None,
+    completion_ready: Callable[[_T], bool] | None = None,
 ) -> _T:
     """Poll ``fetch`` until the number of spans it can see stops growing.
 
@@ -813,8 +1059,8 @@ def _settle(
     observed through its spans, so this is the nearest thing to "no span has
     arrived for N seconds" a reader has.
 
-    Returns the settled payload. Raises :class:`TimeoutError` rather than
-    returning a knowingly incomplete one — an undercount reads as a real result.
+    Unusable markers use these settling rules. Valid count shortfalls and failed
+    completion lookups keep waiting and raise at timeout.
     """
     if timeout < 0:
         raise ValueError("timeout must be >= 0")
@@ -844,11 +1090,23 @@ def _settle(
     previous = -1
     # When the count was last seen to change; the quiet window runs from here.
     steady_since = time.monotonic()
+    check_failure_logged = False
     while True:
         now = time.monotonic()
         steady = reached(result) >= target and count == previous
         quiet = now - steady_since
-        if steady and (quiet_for is None or quiet >= quiet_for):
+        counts_match = True
+        if steady and completion_ready is not None:
+            try:
+                counts_match = completion_ready(result)
+            except (TraceError, TimeoutError) as error:
+                counts_match = False
+                if not check_failure_logged:
+                    _logger.warning(
+                        "%s completion check failed; retrying: %s", subject, error
+                    )
+                    check_failure_logged = True
+        if steady and counts_match and (quiet_for is None or quiet >= quiet_for):
             return result
         remaining = deadline - now
         if remaining <= 0:
@@ -857,6 +1115,11 @@ def _settle(
                     f"{subject} had {reached(result)} span(s) after {timeout}s, "
                     f"expected at least {target}; spans may still be in flight. "
                     f"Pass wait=False to accept a partial read."
+                )
+            if not counts_match:
+                raise TimeoutError(
+                    f"{subject} span completion could not be confirmed after {timeout}s; "
+                    f"spans may still be in flight. Pass wait=False to accept a partial read."
                 )
             if steady:
                 raise TimeoutError(
@@ -878,7 +1141,8 @@ def _settle(
         if steady and quiet_for is not None:
             # Only the quiet window is outstanding: wake when it closes rather
             # than up to a poll late.
-            pause = min(pause, quiet_for - quiet)
+            if quiet < quiet_for:
+                pause = min(pause, quiet_for - quiet)
         previous = count
         time.sleep(pause)
         result = fetch()

@@ -18,5 +18,5 @@ steps:
       set -euo pipefail
       .buildkite/sops.sh promote
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 5

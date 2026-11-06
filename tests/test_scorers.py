@@ -61,8 +61,8 @@ def _judge(**overrides):
     return scorers.llm_judge(kwargs.pop("response_model", Grade), **kwargs)
 
 
-def test_rejects_non_pydantic_response_model() -> None:
-    with pytest.raises(TypeError, match="pydantic"):
+def test_rejects_unsupported_response_model() -> None:
+    with pytest.raises(TypeError, match="dataclass or Pydantic"):
         scorers.llm_judge(dict, model="m")
 
 

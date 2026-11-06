@@ -50,7 +50,7 @@ local-fn-deploy script sdk_wheel="" use_uv="1":
 
 # Run ty type checker
 ty:
-    uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
+    uv run --with ty ty check chalkcompute/ tests/typing/ --exclude chalkcompute/_gen/
 
 # Run unit tests
 test *args:

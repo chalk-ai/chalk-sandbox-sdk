@@ -10,7 +10,7 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] | None = None,
         use_tls: bool | None = None,
         initial_poll_delay_ms: int = 50,
-        max_poll_delay_ms: int = 5000,
+        max_poll_delay_ms: int = 1000,
         poll_backoff_multiplier: float = 1.7,
         max_message_size: int | None = None,
         auth_endpoint: str | None = None,
@@ -44,6 +44,9 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] | None = None,
         max_retries: int | None = None,
     ) -> str: ...
+    def cancel(
+        self, call_id: str, terminate_containers: bool = False
+    ) -> dict[str, Any]: ...
     def poll_next(
         self,
         call_id: str,
@@ -54,6 +57,7 @@ class RemoteCallClient:
     def purge_function(self, function_name: str) -> int: ...
     def purge_all(self) -> dict[str, int]: ...
 
+class RemoteCallCancelledError(RuntimeError): ...
 class RemoteCallUnavailableError(RuntimeError): ...
 class RemoteCallTransportError(RuntimeError): ...
 class VolumeRpcError(RuntimeError): ...

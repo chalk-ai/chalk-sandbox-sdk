@@ -15,7 +15,8 @@ import chalkcompute
 
 @chalkcompute.function(
     name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-result-ttl"),
-    queue_policy=chalkcompute.QueuePolicy(result_ttl_seconds=2),
+    # Leave time for polling and CI scheduling before testing expiration.
+    queue_policy=chalkcompute.QueuePolicy(result_ttl_seconds=15),
 )
 def echo(token: str) -> str:
     """Return a value whose deferred result will shortly expire."""

@@ -41,7 +41,7 @@ steps:
       echo "--- :python: Bootstrap Toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync Locked Deps"
-      uv sync --locked --all-extras --reinstall-package chalkcompute
+      uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
       if [ "{{matrix}}" = "main" ]; then
         echo "--- :snake: Install Chalkpy from Git Main"
@@ -52,7 +52,7 @@ steps:
       echo "--- :crystal_ball: Deploy & Test Model Scaling Groups (chalkpy {{matrix}})"
       uv run python -m pytest e2etests/test_model_scaling_group.py -v -s --tb=short
     agents:
-      queue: default
+      queue: compile-runner-s
     timeout_in_minutes: 45
     retry:
       automatic:

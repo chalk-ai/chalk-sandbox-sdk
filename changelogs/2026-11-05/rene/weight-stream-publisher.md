@@ -1,0 +1,1 @@
+- Add `WeightStream` and `WeightPublisher` for atomic full checkpoints and sparse absolute weight updates on ChalkFS. Streams support pinned versions, exact checkpoint materialization, and retention that preserves the pinned replay chain. Publishers require one active full-state writer per stream; distributed trainers must gather their checkpoint before publishing.

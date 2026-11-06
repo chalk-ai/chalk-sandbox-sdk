@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from chalkcompute._function_error import CallCancelledError
+
 logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -113,6 +115,15 @@ RemoteCallNotFoundError: type[Exception] = getattr(
 )
 
 
+class _RemoteCallCancelledError(RuntimeError):
+    pass
+
+
+_RemoteCallCancelledErrorType: type[Exception] = getattr(
+    _native, "RemoteCallCancelledError", _RemoteCallCancelledError
+)
+
+
 class _RemoteCallTransportError(RuntimeError):
     pass
 
@@ -141,6 +152,16 @@ class ServiceAuthContext:
 
 
 @dataclass(frozen=True)
+class RemoteCallCancelResult:
+    status: int
+    status_name: str
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status_name.lower() == "cancelled"
+
+
+@dataclass(frozen=True)
 class RemoteCallPollResult:
     status: int
     status_name: str
@@ -161,6 +182,10 @@ class RemoteCallPollResult:
     def is_failed(self) -> bool:
         return self.status_name.lower() == "failed"
 
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status_name.lower() == "cancelled"
+
 
 class RemoteCallClient:
     """Byte-oriented remote-call client backed by the native Rust implementation."""
@@ -172,7 +197,7 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
         use_tls: bool | None = None,
         initial_poll_delay_ms: int = 50,
-        max_poll_delay_ms: int = 5000,
+        max_poll_delay_ms: int = 1000,
         poll_backoff_multiplier: float = 1.7,
         max_message_size: int | None = None,
         auth_endpoint: str | None = None,
@@ -367,6 +392,19 @@ class RemoteCallClient:
         )
         return call_id
 
+    def cancel(self, call_id: str) -> RemoteCallCancelResult:
+        """Cancel a Stream-backed call before acquisition; successful repeats are idempotent.
+
+        Acquired calls that have not finished fail with gRPC FAILED_PRECONDITION
+        and continue executing. Completed or failed calls return their existing
+        status, with ``is_cancelled`` set to ``False``.
+        """
+        raw = self._inner_or_raise().cancel(call_id, False)
+        return RemoteCallCancelResult(
+            status=int(raw["status"]),
+            status_name=str(raw["status_name"]),
+        )
+
     def poll_next(
         self,
         call_id: str,
@@ -393,7 +431,10 @@ class RemoteCallClient:
         return result
 
     def get_result_chunks(self, call_id: str) -> list[bytes]:
-        return list(self._inner_or_raise().get_result_chunks(call_id))
+        try:
+            return list(self._inner_or_raise().get_result_chunks(call_id))
+        except _RemoteCallCancelledErrorType:
+            raise CallCancelledError(f"Remote call {call_id} was cancelled") from None
 
     def purge_function(self, function_name: str) -> int:
         return int(self._inner_or_raise().purge_function(function_name))
