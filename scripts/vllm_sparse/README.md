@@ -130,3 +130,52 @@ summarizer is unsuitable for classifying that prelaunch failure: it requires
 completed sparse receipts and must not infer a native launch or absence from
 missing files. Resource release and provider reclamation require independent
 controller evidence.
+
+A separate diagnostic candidate may explicitly select
+`--diagnostic-mode native_byte_control_diagnostic_v1`. This is disabled by default
+and requires its own reviewed frozen archive and execution contract. It never
+activates after a strict failure. The original `compare_generation` function,
+strict default, text/token and top-key equality, finite values and 1e-3 criterion
+remain unchanged.
+
+The diagnostic validates all eight prompt outputs completely before comparisons;
+malformed envelopes, arrays, missing values and nonfinite scores are fatal, even
+when an earlier token already differs. Valid finite comparison differences are
+retained in `diagnostic-generation-comparisons.json`. Every record binds both
+canonical generation files and the eight original HTTP response byte files by
+SHA256. Transport and unexpected errors remain fatal. The extra `A-postgeneration`
+snapshot must exactly equal A before the first write.
+
+All A/B/replay-B/C/replay-C/inverse-A/replay-inverse-A/corrupt-refusal cases are
+mandatory. The diagnostic compares cold/repeat A, B/replay B, C/replay C,
+A/inverse A, inverse A/replay inverse A and A/corrupt-refusal generation. Every
+commit immediately checks eight bound identities, transaction, manifest, version,
+exact indexed writes, loader guard and allocation receipt; replays must write
+nothing. The final exported byte/control verifier must also pass. Generation after
+the final refusal receives another unchanged-byte snapshot. No byte, control,
+identity or health failure is made nonfatal.
+
+A completed diagnostic writes `status=diagnostic_complete` and
+`full_smoke_accepted=false`, including when every generation comparison matches.
+Any generation comparison failure yields exit code 2 even when all byte/control
+checks pass. Other failures preserve the normal fatal failure receipt. The ordinary
+offline summarizer rejects diagnostic scopes. The separate diagnostic byte/control
+receipt summary concerns only the selected BF16 norm and unquantized TP head;
+it proves no fresh-B native oracle, stream drain, quantized expert equivalence,
+model-wide training equivalence or production readiness. CPU orchestration tests
+use fake workers and establish no native outcome.
+
+To prepare that separate inactive candidate, use `prepare --diagnostic-mode
+native_byte_control_diagnostic_v1 --startup-profile <frozen-startup.json>`.
+The archive includes `expected-execution-contract.json`, covered by the overlay
+manifest and duplicated in the plan with its SHA256. It binds exact harness and
+strict runtime-validator argv, actual model config digest and expected startup
+profile. The controller prepends its phase interpreter. The runtime-only validator
+never receives the diagnostic flag. Preparing this contract does not execute it.
+
+For a disabled batch profile the audit never imports the invariant module. It
+observes an already-loaded module through `sys.modules`, or records null private
+state and module hash when it is absent. Public environment controls must still
+resolve disabled, and an already-loaded enabled mode/library is rejected. The
+host distinguishes absent private state from observed false state. Enabled-profile
+source/mode attestation remains strict.

@@ -19,7 +19,7 @@ import urllib.error
 import uuid
 from pathlib import Path
 
-from scripts.vllm_sparse import proof
+from scripts.vllm_sparse import proof, summarize_result
 
 
 class NativeHTTPError(RuntimeError):
@@ -33,8 +33,9 @@ def write(path, value):
 
 
 class Experiment:
-    def __init__(self, directory, url):
+    def __init__(self, directory, url, *, diagnostic=False):
         self.directory, self.url = directory, url
+        self.diagnostic = diagnostic
         self.sequence = 0
         self.baseline = None
 
@@ -52,6 +53,8 @@ class Experiment:
             if len(raw) > 2 * 1024**2:
                 raise ValueError("Control response exceeds2MiB")
             value = json.loads(raw)
+            if self.diagnostic:
+                (self.directory / f"http-{self.sequence:03d}-raw.json").write_bytes(raw)
             write(
                 self.directory / f"rpc-{self.sequence:03d}.json",
                 {
@@ -98,18 +101,21 @@ class Experiment:
         return records
 
     def generate(self, label):
+        first_sequence = self.sequence + 1
         values = [
-            self.request(
-                "/v1/completions",
-                {
-                    "model": os.environ["AMD_EXPERIMENT_MODEL"],
-                    "prompt": prompt,
-                    "max_tokens": 8,
-                    "temperature": 0,
-                    "seed": 20261105,
-                    "logprobs": 5,
-                },
-            )["choices"][0]
+            self.completion_choice(
+                self.request(
+                    "/v1/completions",
+                    {
+                        "model": os.environ["AMD_EXPERIMENT_MODEL"],
+                        "prompt": prompt,
+                        "max_tokens": 8,
+                        "temperature": 0,
+                        "seed": 20261105,
+                        "logprobs": 5,
+                    },
+                )
+            )
             for prompt in (
                 [4, 5, 6],
                 [6, 5, 4],
@@ -122,7 +128,37 @@ class Experiment:
             )
         ]
         write(self.directory / (label + "-generation.json"), values)
+        if self.diagnostic:
+            validate_generation(values)
+            write(
+                self.directory / (label + "-generation-bindings.json"),
+                {
+                    "output_sha256": hashlib.sha256(
+                        (self.directory / (label + "-generation.json")).read_bytes()
+                    ).hexdigest(),
+                    "raw_responses": [
+                        {
+                            "path": f"http-{sequence:03d}-raw.json",
+                            "sha256": hashlib.sha256(
+                                (
+                                    self.directory / f"http-{sequence:03d}-raw.json"
+                                ).read_bytes()
+                            ).hexdigest(),
+                        }
+                        for sequence in range(first_sequence, self.sequence + 1)
+                    ],
+                },
+            )
         return values
+
+    def completion_choice(self, response):
+        if self.diagnostic and (
+            type(response) is not dict
+            or type(response.get("choices")) is not list
+            or len(response["choices"]) != 1
+        ):
+            raise ValueError("Invalid completion response schema")
+        return response["choices"][0]
 
     def apply(self, root, version, *, replay=None):
         transaction = replay or uuid.uuid4().hex
@@ -201,6 +237,16 @@ class Experiment:
             for r in committed
         ):
             raise RuntimeError("Worker commit/sync timing evidence missing or invalid")
+        if self.diagnostic:
+            validate_diagnostic_commit(
+                committed,
+                self.baseline,
+                version,
+                transaction,
+                identities,
+                expected_hash,
+                replay=False,
+            )
         return transaction, identities, expected_hash
 
 
@@ -322,6 +368,192 @@ def compare_generation(reference, observed):
     return maximum
 
 
+DIAGNOSTIC_MODE = "native_byte_control_diagnostic_v1"
+DIAGNOSTIC_CASES = [
+    "A",
+    "B",
+    "replay_B",
+    "C",
+    "replay_C",
+    "inverse_A",
+    "replay_inverse_A",
+    "corrupt_refusal",
+]
+DIAGNOSTIC_LIMITS = [
+    "Not a full smoke pass",
+    "Selected two unquantized BF16 parameters only",
+    "No fresh-B native oracle or stream drain proof",
+    "No quantized experts, model-wide training equivalence or production readiness proof",
+]
+
+
+def validate_diagnostic_commit(
+    records, baseline, version, transaction, identities, digest, *, replay
+):
+    before = {record["rank"]: record for record in baseline}
+    if (
+        len(records) != 8
+        or {r["rank"] for r in records} != set(range(8))
+        or any(type(r["rank"]) is not int for r in records)
+    ):
+        raise ValueError("Diagnostic commit requires all eight distinct ranks")
+    for record in records:
+        rank = record["rank"]
+        expected = {
+            "committed": True,
+            "ok": True,
+            "prepared": False,
+            "transaction_id": transaction,
+            "version": version,
+            "parent_version": version - 1,
+            "manifest_sha256": digest,
+            "identity_sha256": identities[str(rank)],
+        }
+        if any(
+            type(record["result"].get(key)) is not type(value)
+            or record["result"].get(key) != value
+            for key, value in expected.items()
+        ) or (
+            record["pid"] != before[rank]["pid"]
+            or record.get("full_loaders_forbidden") is not True
+            or record.get("idempotent_no_write_replay") is not replay
+        ):
+            raise ValueError(
+                "Diagnostic commit identity/version/guard acknowledgement differs"
+            )
+        for key, maximum in (
+            ("commit_and_sync_seconds", math.inf),
+            ("maximum_new_storage_bytes", 4096),
+        ):
+            value = record[key]
+            if (
+                type(value) not in (int, float)
+                or not math.isfinite(value)
+                or not 0 <= value <= maximum
+            ):
+                raise ValueError("Diagnostic commit timing/allocation guard differs")
+        writes = record["sparse_writes"]
+        if type(writes) is not list:
+            raise ValueError("Diagnostic indexed-write schema differs")
+        if replay:
+            if writes:
+                raise ValueError("Diagnostic replay wrote resident storage")
+        else:
+            pointers = {
+                before[rank]["tensors"][name]["storage_ptr"]
+                for name in (proof.NORM, proof.HEAD)
+            }
+            if (
+                len(writes) != 2
+                or {w["storage_ptr"] for w in writes} != pointers
+                or any(w["op"] != "aten.index_copy_.default" for w in writes)
+            ):
+                raise ValueError("Diagnostic indexed-write receipts differ")
+
+
+def validate_generation(values):
+    """Reject malformed/nonfinite outputs before comparison differences can continue."""
+    if type(values) is not list or len(values) != 8:
+        raise ValueError("Diagnostic generation requires eight prompt outputs")
+    for value in values:
+        if type(value) is not dict or type(value.get("text")) is not str:
+            raise ValueError("Invalid generation choice/text schema")
+        logprobs = value.get("logprobs")
+        if type(logprobs) is not dict:
+            raise ValueError("Invalid generation logprobs schema")
+        tokens = logprobs.get("tokens")
+        scores = logprobs.get("token_logprobs")
+        tops = logprobs.get("top_logprobs")
+        if (
+            type(tokens) is not list
+            or not 1 <= len(tokens) <= 8
+            or any(type(token) is not str for token in tokens)
+            or type(scores) is not list
+            or len(scores) != len(tokens)
+            or type(tops) is not list
+            or len(tops) != len(tokens)
+        ):
+            raise ValueError("Invalid generation token/score array schema")
+        for top in tops:
+            if type(top) is not dict or not top or any(type(k) is not str for k in top):
+                raise ValueError("Invalid generation top-logprob schema")
+        for number in [*scores, *(n for top in tops for n in top.values())]:
+            if type(number) not in (int, float) or not math.isfinite(number):
+                raise ValueError("Invalid or nonfinite generation score")
+
+
+class DiagnosticComparisons:
+    """Retain differences under the unchanged comparator; never accept a full smoke."""
+
+    def __init__(self, directory):
+        self.directory = directory
+        self.records = []
+
+    def compare(self, reference_label, reference, observed_label, observed):
+        validate_generation(reference)
+        validate_generation(observed)
+        bindings = {}
+        for label, values in ((reference_label, reference), (observed_label, observed)):
+            output = (self.directory / (label + "-generation.json")).read_bytes()
+            binding = json.loads(
+                (self.directory / (label + "-generation-bindings.json")).read_bytes()
+            )
+            if (
+                json.loads(output) != values
+                or hashlib.sha256(output).hexdigest() != binding["output_sha256"]
+            ):
+                raise ValueError("Generation output binding differs")
+            raw_responses = binding["raw_responses"]
+            if len(raw_responses) != 8 or len({r["path"] for r in raw_responses}) != 8:
+                raise ValueError("Generation raw response count/identity differs")
+            for raw_record, value in zip(raw_responses, values, strict=True):
+                name = raw_record["path"]
+                if (
+                    Path(name).name != name
+                    or not name.startswith("http-")
+                    or not name.endswith("-raw.json")
+                ):
+                    raise ValueError("Generation raw response path invalid")
+                raw = (self.directory / name).read_bytes()
+                if (
+                    hashlib.sha256(raw).hexdigest() != raw_record["sha256"]
+                    or json.loads(raw)["choices"][0] != value
+                ):
+                    raise ValueError("Generation raw response binding differs")
+            bindings[label] = binding
+        record = {
+            "reference": reference_label,
+            "observed": observed_label,
+            "output_sha256": {
+                label: hashlib.sha256(
+                    (self.directory / (label + "-generation.json")).read_bytes()
+                ).hexdigest()
+                for label in (reference_label, observed_label)
+            },
+            "criterion": "unchanged strict exact text/tokens/top keys; finite1e-3",
+            "bindings": bindings,
+        }
+        try:
+            maximum = compare_generation(reference, observed)
+            record.update(passed=True, maximum_error=maximum)
+        except ValueError as error:
+            if str(error) not in (
+                "Unchanged/restored generation tokens differ",
+                "Unchanged/restored top logprob tokens differ",
+            ) and not str(error).startswith(
+                "Fixed predeclared1e-3 criterion exceeded: "
+            ):
+                raise
+            record.update(passed=False, error=str(error))
+        self.records.append(record)
+        write(self.directory / "diagnostic-generation-comparisons.json", self.records)
+        return record
+
+    @property
+    def failed(self):
+        return any(record["passed"] is not True for record in self.records)
+
+
 def corrupt_refusal(experiment, directory, transaction):
     evidence = proof.corrupt_payload_evidence(directory)
     records = experiment.rpc(
@@ -354,6 +586,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute-reviewed", action="store_true")
     parser.add_argument("--validate-runtime-only", action="store_true")
+    parser.add_argument(
+        "--diagnostic-mode",
+        choices=[DIAGNOSTIC_MODE],
+        default=None,
+        help="Disabled by default; requires a separately reviewed frozen diagnostic candidate",
+    )
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--expected-config-sha256", required=True)
     args = parser.parse_args()
@@ -361,12 +599,14 @@ def main():
         parser.error(
             "Requires root-reviewed frozen source/runtime/manifest before execution"
         )
+    if args.validate_runtime_only and args.diagnostic_mode:
+        parser.error("Diagnostic mode requires the full mandatory scenario matrix")
     directory = Path(os.environ["AMD_EXPERIMENT_RUN_DIR"]) / (
         "sparse-runtime-validation" if args.validate_runtime_only else "sparse-proof"
     )
     directory.mkdir()
     try:
-        run_experiment(args, directory)
+        exit_code = run_experiment(args, directory)
     except BaseException as error:
         failure = {
             "error_type": type(error).__name__,
@@ -385,13 +625,21 @@ def main():
                 "fresh_B_native_oracle": "not_proven",
             }
         )
+        if args.diagnostic_mode:
+            scope.update(mode=DIAGNOSTIC_MODE, full_smoke_accepted=False)
         previous = scope["status"]
         scope.update(status="failed", previous_status=previous, failure=failure)
         write(scope_path, scope)
         raise
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def run_experiment(args, directory):
+    diagnostic_mode = getattr(args, "diagnostic_mode", None)
+    if diagnostic_mode not in (None, DIAGNOSTIC_MODE):
+        raise ValueError("Unknown diagnostic mode")
+    diagnostic = DiagnosticComparisons(directory) if diagnostic_mode else None
     config_bytes = args.model_config.read_bytes()
     if hashlib.sha256(config_bytes).hexdigest() != args.expected_config_sha256:
         raise ValueError("Actual loaded model config differs from frozen config")
@@ -404,7 +652,9 @@ def run_experiment(args, directory):
             "scope": "actual config bytes plus two selected BF16 schemas, not full trainer architecture",
         },
     )
-    experiment = Experiment(directory, os.environ["AMD_EXPERIMENT_SERVER_URL"])
+    experiment = Experiment(
+        directory, os.environ["AMD_EXPERIMENT_SERVER_URL"], diagnostic=bool(diagnostic)
+    )
     runtime = experiment.rpc("ws_audit_runtime_info", [])
     if len(runtime) != 8 or {record["rank"] for record in runtime} != set(range(8)):
         raise ValueError("Effective runtime config did not cover all eight workers")
@@ -416,6 +666,11 @@ def run_experiment(args, directory):
         directory / "scope.json",
         {
             "status": "running",
+            **(
+                {"mode": DIAGNOSTIC_MODE, "full_smoke_accepted": False}
+                if diagnostic
+                else {}
+            ),
             "sparse_tensor_readback_only": True,
             "generation_repeatability": "not_reached",
             "stream_drain": "not_proven",
@@ -440,13 +695,29 @@ def run_experiment(args, directory):
         raise ValueError("Unchanged tensor/worker snapshot was not exactly repeatable")
     baseline_generation = experiment.generate("A-cold")
     repeat_generation = experiment.generate("A-repeat")
-    error = compare_generation(baseline_generation, repeat_generation)
+    if diagnostic:
+        comparison = diagnostic.compare(
+            "A-cold", baseline_generation, "A-repeat", repeat_generation
+        )
+        error = comparison.get("maximum_error")
+        postgeneration = experiment.snapshot("A-postgeneration")
+        if baseline != postgeneration:
+            raise ValueError(
+                "Post-generation A snapshot differs before first sparse write"
+            )
+    else:
+        error = compare_generation(baseline_generation, repeat_generation)
     write(
         directory / "PREUPDATE-criterion.json",
         {
             "frozen_before_updates": True,
             "tensor_bytes": "exact",
             "generation_tokens": "exact",
+            **(
+                {"mode": DIAGNOSTIC_MODE, "full_smoke_accepted": False}
+                if diagnostic
+                else {}
+            ),
             "logprob_tolerance": 1e-3,
             "observed_repeat_error": error,
             "prompts": 8,
@@ -466,11 +737,25 @@ def run_experiment(args, directory):
         observed = experiment.snapshot(label + "-after")
         check_bytes(baseline, observed, desired)
         generation = experiment.generate(label)
-        if label == "inverse_A":
+        if diagnostic:
+            validate_generation(generation)
+            if label == "inverse_A":
+                diagnostic.compare("A-cold", baseline_generation, label, generation)
+        elif label == "inverse_A":
             compare_generation(baseline_generation, generation)
         replay = experiment.rpc(
             "ws_audit_commit", [transaction, version, identities, digest]
         )
+        if diagnostic:
+            validate_diagnostic_commit(
+                replay,
+                baseline,
+                version,
+                transaction,
+                identities,
+                digest,
+                replay=True,
+            )
         if any(
             r.get("idempotent_no_write_replay") is not True or r["sparse_writes"]
             for r in replay
@@ -480,6 +765,9 @@ def run_experiment(args, directory):
             )
         replayed = experiment.snapshot(label + "-replay")
         check_bytes(baseline, replayed, desired)
+        if diagnostic:
+            replay_generation = experiment.generate("replay_" + label)
+            diagnostic.compare(label, generation, "replay_" + label, replay_generation)
         last = replayed
     corrupt = directory / "corrupt"
     build(corrupt, original, 4, 3, 1, architecture_hash)
@@ -491,10 +779,47 @@ def run_experiment(args, directory):
     corrupt_refusal(experiment, corrupt, transaction)
     final = experiment.snapshot("corruption-refusal")
     check_bytes(baseline, final, original)
+    if diagnostic:
+        refusal_generation = experiment.generate("corrupt_refusal")
+        diagnostic.compare(
+            "A-cold", baseline_generation, "corrupt_refusal", refusal_generation
+        )
+        after_refusal_generation = experiment.snapshot(
+            "corruption-refusal-postgeneration"
+        )
+        check_bytes(baseline, after_refusal_generation, original)
+    if diagnostic:
+        receipt_summary = summarize_result.verify_byte_control_receipts(
+            directory, json.loads((directory / "scope.json").read_bytes())
+        )
+        if receipt_summary["passed"] is not True:
+            raise ValueError("Diagnostic byte/control receipts did not pass")
+        write(
+            directory / "diagnostic-byte-control-receipts.json",
+            {
+                **receipt_summary,
+                "full_smoke_accepted": False,
+                "mode": DIAGNOSTIC_MODE,
+            },
+        )
     write(
         directory / "scope.json",
         {
-            "status": "passed",
+            "status": "diagnostic_complete" if diagnostic else "passed",
+            **(
+                {
+                    "mode": DIAGNOSTIC_MODE,
+                    "full_smoke_accepted": False,
+                    "byte_control_status": "passed",
+                    "mandatory_cases": DIAGNOSTIC_CASES,
+                    "limits": DIAGNOSTIC_LIMITS,
+                    "generation_comparison_failures": sum(
+                        not r["passed"] for r in diagnostic.records
+                    ),
+                }
+                if diagnostic
+                else {}
+            ),
             "sparse_tensor_readback_only": True,
             "cases": [
                 "A_B_C",
@@ -502,12 +827,17 @@ def run_experiment(args, directory):
                 "idempotent_no_write_replay",
                 "corrupt_preverify",
             ],
-            "generation_repeatability": "passed_fixed_1e-3_before_updates_and_after_inverse",
+            "generation_repeatability": (
+                "failed"
+                if diagnostic and diagnostic.failed
+                else "passed_fixed_1e-3_before_updates_and_after_inverse"
+            ),
             "stream_drain": "not_proven",
             "fresh_B_native_oracle": "not_proven",
             "last_snapshot_ranks": len(last),
         },
     )
+    return 2 if diagnostic and diagnostic.failed else 0
 
 
 if __name__ == "__main__":

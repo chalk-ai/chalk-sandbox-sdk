@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import math
 import os
+import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -44,12 +45,18 @@ def rpc_metadata(value):
 
 def batch_invariance_info(profile, *, batch_module=None, envs_module=None):
     """Observe pinned private state; never enable or initialize batch mode here."""
-    batch_module = batch_module or importlib.import_module(
-        "vllm.model_executor.determinism.batch_invariant"
-    )
-    envs_module = envs_module or importlib.import_module("vllm.envs")
     enabled = profile["batch_invariant"]
-    module_hash = hashlib.sha256(Path(batch_module.__file__).read_bytes()).hexdigest()
+    if batch_module is None:
+        name = "vllm.model_executor.determinism.batch_invariant"
+        batch_module = (
+            importlib.import_module(name) if enabled else sys.modules.get(name)
+        )
+    envs_module = envs_module or importlib.import_module("vllm.envs")
+    module_hash = (
+        hashlib.sha256(Path(batch_module.__file__).read_bytes()).hexdigest()
+        if batch_module is not None
+        else None
+    )
     if (
         enabled
         and module_hash
@@ -74,17 +81,26 @@ def batch_invariance_info(profile, *, batch_module=None, envs_module=None):
             "expected_enabled": enabled,
             "environment_value": os.environ.get("VLLM_BATCH_INVARIANT"),
             "resolved_env_flag": envs_module.VLLM_BATCH_INVARIANT,
-            "private_mode": batch_module._batch_invariant_MODE,
-            "private_library_present": batch_module._batch_invariant_LIB is not None,
+            "module_loaded": batch_module is not None,
+            "private_mode": batch_module._batch_invariant_MODE
+            if batch_module is not None
+            else None,
+            "private_library_present": (batch_module._batch_invariant_LIB is not None)
+            if batch_module is not None
+            else None,
             "module_sha256": module_hash,
             "public_backend_controls": controls,
             "scope": "read-only source-bound private state and public controls; no end-to-end numerical guarantee",
         }
     )
-    if any(
-        state[key] is not enabled
-        for key in ("resolved_env_flag", "private_mode", "private_library_present")
-    ) or state["environment_value"] not in (("1",) if enabled else (None, "0")):
+    if (
+        any(state[key] is not enabled for key in ("resolved_env_flag",))
+        or any(
+            state[key] is not (enabled if batch_module is not None else None)
+            for key in ("private_mode", "private_library_present")
+        )
+        or state["environment_value"] not in (("1",) if enabled else (None, "0"))
+    ):
         raise ValueError(
             "Actual worker batch-invariance state differs from frozen expectation"
         )

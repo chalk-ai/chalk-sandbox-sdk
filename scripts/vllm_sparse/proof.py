@@ -38,10 +38,15 @@ def validate_batch_records(records, profile):
                 for key in (
                     "expected_enabled",
                     "resolved_env_flag",
-                    "private_mode",
-                    "private_library_present",
                 )
             )
+            or type(state["module_loaded"]) is not bool
+            or (expected and state["module_loaded"] is not True)
+            or any(
+                state[key] is not (expected if state["module_loaded"] else None)
+                for key in ("private_mode", "private_library_present")
+            )
+            or (not state["module_loaded"] and state["module_sha256"] is not None)
             or state["environment_value"] not in (("1",) if expected else (None, "0"))
         ):
             raise ValueError(
