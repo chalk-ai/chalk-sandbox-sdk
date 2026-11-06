@@ -164,3 +164,18 @@ receipt summary concerns only the selected BF16 norm and unquantized TP head;
 it proves no fresh-B native oracle, stream drain, quantized expert equivalence,
 model-wide training equivalence or production readiness. CPU orchestration tests
 use fake workers and establish no native outcome.
+
+To prepare that separate inactive candidate, use `prepare --diagnostic-mode
+native_byte_control_diagnostic_v1 --startup-profile <frozen-startup.json>`.
+The archive includes `expected-execution-contract.json`, covered by the overlay
+manifest and duplicated in the plan with its SHA256. It binds exact harness and
+strict runtime-validator argv, actual model config digest and expected startup
+profile. The controller prepends its phase interpreter. The runtime-only validator
+never receives the diagnostic flag. Preparing this contract does not execute it.
+
+For a disabled batch profile the audit never imports the invariant module. It
+observes an already-loaded module through `sys.modules`, or records null private
+state and module hash when it is absent. Public environment controls must still
+resolve disabled, and an already-loaded enabled mode/library is rejected. The
+host distinguishes absent private state from observed false state. Enabled-profile
+source/mode attestation remains strict.

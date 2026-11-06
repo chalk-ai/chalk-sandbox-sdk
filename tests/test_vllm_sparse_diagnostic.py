@@ -421,3 +421,26 @@ def test_early_diagnostic_failure_always_marks_full_smoke_unaccepted(
     assert scope["status"] == "failed"
     assert scope["mode"] == pod.DIAGNOSTIC_MODE
     assert scope["full_smoke_accepted"] is False
+
+
+def test_prepared_diagnostic_contract_binds_exact_command_and_strict_validator():
+    from scripts.vllm_sparse import prepare
+
+    startup = {"model_path": "/workspace/models/frozen/revision"}
+    contract = prepare.execution_contract(startup, "a" * 64)
+    common = [
+        "-m",
+        "scripts.vllm_sparse.pod_script",
+        "--execute-reviewed",
+        "--model-config",
+        "/workspace/models/frozen/revision/config.json",
+        "--expected-config-sha256",
+        "a" * 64,
+    ]
+    assert contract["harness_argv"] == common + [
+        "--diagnostic-mode",
+        pod.DIAGNOSTIC_MODE,
+    ]
+    assert contract["effective_validator_argv"] == common + ["--validate-runtime-only"]
+    assert contract["full_smoke_accepted"] is contract["automatic_fallback"] is False
+    assert contract["status"].startswith("DISABLED_UNEXECUTED")

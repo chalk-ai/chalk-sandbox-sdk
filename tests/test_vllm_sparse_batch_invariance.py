@@ -122,3 +122,48 @@ def test_host_requires_all_eight_expected_worker_observations(
         records[0]["batch_invariance"][key] = value
     with pytest.raises(ValueError):
         proof.validate_batch_records(records, profile)
+
+
+def test_disabled_profile_never_imports_unloaded_invariant_module(
+    tmp_path, monkeypatch
+):
+    profile, module, envs = fixture_state(tmp_path, monkeypatch, False)
+    monkeypatch.delitem(
+        audit.sys.modules,
+        "vllm.model_executor.determinism.batch_invariant",
+        raising=False,
+    )
+
+    def no_import(name):
+        pytest.fail("Disabled audit attempted module import: " + name)
+
+    monkeypatch.setattr(audit.importlib, "import_module", no_import)
+    state = audit.batch_invariance_info(profile, envs_module=envs)
+    assert state["module_loaded"] is False
+    assert (
+        state["private_mode"]
+        is state["private_library_present"]
+        is state["module_sha256"]
+        is None
+    )
+    records = [
+        {"rank": rank, "batch_invariance": copy.deepcopy(state)} for rank in range(8)
+    ]
+    proof.validate_batch_records(records, profile)
+    records[-1]["batch_invariance"]["private_mode"] = False
+    with pytest.raises(ValueError):
+        proof.validate_batch_records(records, profile)
+
+
+def test_disabled_profile_observes_existing_module_and_rejects_enabled_state(
+    tmp_path, monkeypatch
+):
+    profile, module, envs = fixture_state(tmp_path, monkeypatch, False)
+    monkeypatch.setitem(
+        audit.sys.modules, "vllm.model_executor.determinism.batch_invariant", module
+    )
+    state = audit.batch_invariance_info(profile, envs_module=envs)
+    assert state["module_loaded"] is True
+    module._batch_invariant_MODE = True
+    with pytest.raises(ValueError):
+        audit.batch_invariance_info(profile, envs_module=envs)

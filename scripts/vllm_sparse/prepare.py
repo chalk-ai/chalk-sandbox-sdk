@@ -12,6 +12,29 @@ from pathlib import Path
 from scripts.vllm_sparse.proof import selected_architecture_hash
 from scripts.vllm_sparse.runtime_gate import REVIEWED_VLLM_VERSIONS
 
+DIAGNOSTIC_MODE = "native_byte_control_diagnostic_v1"
+
+
+def execution_contract(startup, config_sha256):
+    common = [
+        "-m",
+        "scripts.vllm_sparse.pod_script",
+        "--execute-reviewed",
+        "--model-config",
+        startup["model_path"] + "/config.json",
+        "--expected-config-sha256",
+        config_sha256,
+    ]
+    return {
+        "mode": DIAGNOSTIC_MODE,
+        "status": "DISABLED_UNEXECUTED_REQUIRES_SEPARATE_CONTROLLER_REVIEW",
+        "full_smoke_accepted": False,
+        "automatic_fallback": False,
+        "python_executable_policy": "phase sys.executable prepended by native_experiment",
+        "harness_argv": [*common, "--diagnostic-mode", DIAGNOSTIC_MODE],
+        "effective_validator_argv": [*common, "--validate-runtime-only"],
+    }
+
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
@@ -23,8 +46,14 @@ def main():
     parser.add_argument("--audit-root", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--startup-profile", type=Path)
+    parser.add_argument("--diagnostic-mode", choices=[DIAGNOSTIC_MODE])
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    if args.diagnostic_mode and not args.startup_profile:
+        parser.error(
+            "A diagnostic contract requires an explicit frozen startup profile"
+        )
+    contract = None
     profile = {"batch_invariant": False, "startup_sha256": None, "source_sha256": {}}
     if args.startup_profile:
         raw_startup = args.startup_profile.read_bytes()
@@ -89,6 +118,20 @@ def main():
             raise ValueError("Conflicting batch-invariance native source hash")
         native[path] = digest
     config = args.model_config.read_bytes()
+    if args.diagnostic_mode:
+        if startup["model_config_sha256"] != sha(config):
+            raise ValueError("Diagnostic startup and actual model config digest differ")
+        contract = execution_contract(startup, sha(config))
+        contract.update(
+            startup_sha256=profile["startup_sha256"],
+            expected_runtime_profile=profile,
+        )
+        files["expected-execution-contract.json"] = json.dumps(
+            contract, sort_keys=True, indent=2
+        ).encode()
+        overlay_hashes["expected-execution-contract.json"] = sha(
+            files["expected-execution-contract.json"]
+        )
     files["overlay-manifest.json"] = json.dumps(
         overlay_hashes, sort_keys=True, indent=2
     ).encode()
@@ -128,6 +171,16 @@ def main():
         "native_source_count": len(native),
         "reviewed_vllm_distribution_versions": REVIEWED_VLLM_VERSIONS,
         "expected_runtime_profile": profile,
+        **(
+            {
+                "execution_contract": contract,
+                "execution_contract_sha256": sha(
+                    files["expected-execution-contract.json"]
+                ),
+            }
+            if contract
+            else {}
+        ),
         "scope": "experimental minimal worker module overlay, not full installed SDK integration",
         "runtime_source_head": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=args.runtime_root, text=True
