@@ -13,6 +13,92 @@ VOCAB = 163840
 TP = 8
 
 
+def corrupt_payload_evidence(directory):
+    """Read only the bounded corrupted norm stream; retain its exact checksums."""
+    from chalkcompute._weights_codec import checksum
+    from chalkcompute._weights_format import WeightManifest, safe_path
+
+    directory = Path(directory)
+    raw_manifest = (directory / "manifest.json").read_bytes()
+    manifest = WeightManifest.from_json(raw_manifest)
+    entries = [entry for entry in manifest.tensors if entry.name == NORM]
+    if (
+        manifest.kind != "patch"
+        or manifest.version != 4
+        or manifest.parent_version != 3
+        or len(entries) != 1
+        or not 0 < entries[0].length <= 4096
+    ):
+        raise ValueError("Expected the bounded version4 corrupted norm patch")
+    entry = entries[0]
+    with safe_path(directory, entry.file).open("rb") as stream:
+        stream.seek(entry.offset)
+        payload = stream.read(entry.length)
+    actual = checksum(payload)
+    if len(payload) != entry.length or actual == entry.checksum:
+        raise ValueError("Expected an exact-length checksum-mismatched norm payload")
+    return {
+        "manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+        "corrupt_tensor": NORM,
+        "expected_checksum": entry.checksum,
+        "actual_checksum": actual,
+        "payload_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def validate_refusal_records(records, baseline, transaction, evidence):
+    """Every worker must acknowledge the same non-mutating SDK checksum refusal."""
+    if len(records) != TP or {r["rank"] for r in records} != set(range(TP)):
+        raise ValueError("Checksum refusal requires all eight distinct ranks")
+    before = validate_rank_records(baseline)
+    identities = set()
+    for record in records:
+        rank = record["rank"]
+        original = before[rank]
+        expected = {
+            "profile": "kimi-k3-bf16-tp8-v1",
+            "tp_rank": rank,
+            "tp_world_size": TP,
+            "pid": original["pid"],
+            "pid_start_ticks": int(original["process_start_ticks"]),
+            "device": original["device"],
+            "model_id": original["model_id"],
+            "version": 3,
+            "version_after": 3,
+            "requested_version": 4,
+            "transaction_id": transaction,
+            "error_type": "WeightStreamError",
+            "error": "Checksum mismatch for " + NORM,
+            **evidence,
+        }
+        if (
+            type(rank) is not int
+            or record.get("refused") is not True
+            or any(record.get(key) != value for key, value in expected.items())
+            or any(
+                record.get(key) is not False
+                for key in (
+                    "pending_before",
+                    "pending_after",
+                    "failed_before",
+                    "failed_after",
+                )
+            )
+            or record.get("sparse_writes") != []
+            or set(record["targets"]) != {NORM, HEAD}
+        ):
+            raise ValueError("Checksum refusal identity/state/evidence differs")
+        for name, target in record["targets"].items():
+            if any(
+                target[key] != original["tensors"][name][key]
+                for key in ("storage_ptr", "data_ptr", "shape")
+            ):
+                raise ValueError("Checksum refusal resident target differs")
+        identities.add(record["identity_sha256"])
+    if len(identities) != TP:
+        raise ValueError("Checksum refusal worker identities are not distinct")
+
+
 def target_indices():
     rows = VOCAB // TP
     return {

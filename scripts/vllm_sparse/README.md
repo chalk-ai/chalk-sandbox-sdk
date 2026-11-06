@@ -48,6 +48,21 @@ Then actual codec sparse streams drive A→B→C, inverse-A, no-write commit rep
 explicit corrupt-checksum refusal. Each prepare rank is bound to the original
 worker/process/model/storage identity before any commit.
 
+The expected corrupt case calls actual SDK codec verification and catches only
+the exact norm `WeightStreamError` checksum mismatch. Each worker returns a
+built-in refusal receipt bound to its unchanged identity/version, exact corrupt
+payload and manifest checksums, absent pending/failed state and zero observed
+indexed writes. All eight receipts must arrive before a normal all-rank abort
+and final unchanged-byte snapshot. A successful corrupt preparation, unknown
+error or inconsistent receipt fails the run. In the pinned executor, throwing
+the expected error from every worker leaves unread failure queues; explicit
+refusal data lets all eight queues drain. Codec verification rejects the stream
+before the later resident prepare method is entered.
+
+`python -m scripts.vllm_sparse.queue_regression` reproduces that queue behavior
+on CPU using SHA256-verified pinned executor source and its actual AST bodies,
+with fake transport queues. It does not import or run vLLM/GPU code.
+
 The norm is replicated and the unquantized head has explicit contiguous vocabulary
 row shards. Small norm bytes and chunked head masked hashes prove changed and
 unchanged bytes of these inspected tensors only. The full model is never cloned to
@@ -78,7 +93,8 @@ After exporting a completed `sparse-proof` directory, the stdlib-only offline
 summarizer checks exact norm bytes, selected head bytes and unchanged-head hash
 consistency across all eight ranks, plus resident identity, three all-rank prepare
 barriers bound to exported manifests and matching commits, commit/replay order,
-exact indexed-write instrumentation and explicit checksum refusal. The inspected
+exact indexed-write instrumentation and eight explicit checksum refusals followed
+by matching abort acknowledgements. HTTP errors cannot count as checksum proof. The inspected
 norm and head must have distinct positive resident storage pointers:
 
 ```sh

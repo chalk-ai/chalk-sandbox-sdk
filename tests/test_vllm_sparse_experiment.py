@@ -189,7 +189,7 @@ def test_actual_http500_body_is_preserved_and_generic_error_not_refusal(
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             events.append(request["method"])
-            failed = request["method"] == "ws_audit_prepare_dir"
+            failed = request["method"] == "ws_audit_corrupt_refusal"
             self.send_response(500 if failed else 200)
             self.end_headers()
             error = (
@@ -211,17 +211,14 @@ def test_actual_http500_body_is_preserved_and_generic_error_not_refusal(
     thread.start()
     experiment = pod.Experiment(tmp_path, f"http://127.0.0.1:{server.server_port}")
     try:
-        if refusal:
-            pod.corrupt_refusal(experiment, tmp_path, "1" * 32)
-        else:
-            with pytest.raises(RuntimeError, match="unproven"):
-                pod.corrupt_refusal(experiment, tmp_path, "1" * 32)
+        with pytest.raises(pod.NativeHTTPError):
+            experiment.rpc("ws_audit_corrupt_refusal", [str(tmp_path), 4, "1" * 32])
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
     assert not thread.is_alive()
-    assert events == ["ws_audit_prepare_dir", "ws_sparse_abort"]
+    assert events == ["ws_audit_corrupt_refusal"]
     saved = json.loads((tmp_path / "rpc-001-error.json").read_text())
     assert saved["error"] == "HTTPError" and saved["body"]
     assert (

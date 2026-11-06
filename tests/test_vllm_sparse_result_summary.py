@@ -208,15 +208,73 @@ def exported(tmp_path):
                 "finished": 100.2 + call,
             },
         )
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    payload = b"synthetic corrupted norm stream"
+    (corrupt / "patch-0.bin").write_bytes(payload)
     write(
-        tmp_path / "rpc-009-error.json",
+        corrupt / "manifest.json",
         {
-            "error": "HTTPError",
+            "version": 4,
+            "parent_version": 3,
+            "tensors": [
+                {
+                    "name": summary.NORM,
+                    "file": "patch-0.bin",
+                    "offset": 0,
+                    "length": len(payload),
+                    "checksum": "0" * 32,
+                }
+            ],
+        },
+    )
+    refusals = copy.deepcopy(prepared)
+    for record in refusals:
+        record.update(
+            version=3,
+            version_after=3,
+            requested_version=4,
+            transaction_id="refusal-transaction",
+            refused=True,
+            error_type="WeightStreamError",
+            error="Checksum mismatch for " + summary.NORM,
+            corrupt_tensor=summary.NORM,
+            manifest_sha256=hashlib.sha256(
+                (corrupt / "manifest.json").read_bytes()
+            ).hexdigest(),
+            expected_checksum="0" * 32,
+            actual_checksum="1" * 32,
+            payload_sha256=hashlib.sha256(payload).hexdigest(),
+            pending_before=False,
+            pending_after=False,
+            failed_before=False,
+            failed_after=False,
+            sparse_writes=[],
+        )
+    write(
+        tmp_path / "rpc-009.json",
+        {
             "request": {
-                "method": "ws_audit_prepare_dir",
-                "args": ["corrupt", 4, "bad"],
+                "method": "ws_audit_corrupt_refusal",
+                "args": ["/remote/corrupt", 4, "refusal-transaction"],
             },
-            "body": "Checksum mismatch for " + summary.NORM,
+            "response": {"results": refusals},
+        },
+    )
+    write(
+        tmp_path / "rpc-010.json",
+        {
+            "request": {"method": "ws_sparse_abort", "args": ["refusal-transaction"]},
+            "response": {
+                "results": [
+                    {
+                        "ok": True,
+                        "aborted": True,
+                        "transaction_id": "refusal-transaction",
+                    }
+                ]
+                * 8
+            },
         },
     )
     return tmp_path
@@ -227,6 +285,7 @@ def test_valid_export_checks_bytes_controls_and_retains_scope_limits(exported):
     assert result["passed"] is True
     assert result["rank_count"] == 8
     assert result["all_rank_prepare_barriers"] == 3
+    assert result["checksum_refusal_ranks"] == 8
     assert len(result["snapshot_checks"]) == 7
     assert [(v["version"], v["replay"]) for v in result["commit_calls"]] == [
         (1, False),
@@ -346,8 +405,8 @@ def test_reject_loosened_criterion_and_generic_corruption_error(exported):
     with pytest.raises(ValueError, match="criterion"):
         summary.verify_sparse(exported)
     mutate(criterion, lambda v: v.update(logprob_tolerance=0.001))
-    mutate(exported / "rpc-009-error.json", lambda v: v.update(error="TimeoutError"))
-    with pytest.raises(ValueError, match="checksum refusal"):
+    write(exported / "rpc-011-error.json", {"error": "TimeoutError"})
+    with pytest.raises(ValueError, match="Unexpected RPC error"):
         summary.verify_sparse(exported)
 
 
@@ -399,8 +458,11 @@ def test_cli_reports_incomplete_scope_with_nonzero_exit(exported):
 
 
 def test_unexpected_rpc_error_cannot_be_hidden_by_checksum_refusal(exported):
-    write(exported / "rpc-010-error.json", {"error": "TimeoutError"})
-    with pytest.raises(ValueError, match="checksum refusal"):
+    write(
+        exported / "rpc-011-error.json",
+        {"error": "HTTPError", "body": "Checksum mismatch for " + summary.NORM},
+    )
+    with pytest.raises(ValueError, match="Unexpected RPC error"):
         summary.verify_sparse(exported)
 
 

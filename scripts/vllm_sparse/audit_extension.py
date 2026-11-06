@@ -318,6 +318,60 @@ class SparseAuditExtension(WeightSyncExtension):
             }
         )
 
+    def ws_audit_corrupt_refusal(self, directory, expected_version, transaction_id):
+        from chalkcompute._weights_format import WeightStreamError
+        from .proof import NORM, corrupt_payload_evidence
+
+        if expected_version != 4:
+            raise ValueError("Corruption refusal is restricted to version4")
+        before = super().ws_sparse_probe()
+        if (
+            before["version"] != 3
+            or getattr(self, "_ws_resident_pending", None) is not None
+            or getattr(self, "_ws_resident_failed", False) is not False
+        ):
+            raise RuntimeError("Corruption refusal requires clean committed version3")
+        evidence = corrupt_payload_evidence(directory)
+        model = self.model_runner.get_model()
+        guard = SparseOnlyDispatch([*model.parameters(), *model.buffers()])
+        try:
+            with guard:
+                self.ws_audit_prepare_dir(directory, expected_version, transaction_id)
+        except WeightStreamError as error:
+            if (
+                type(error) is not WeightStreamError
+                or str(error) != "Checksum mismatch for " + NORM
+            ):
+                raise
+        else:
+            raise RuntimeError("Corrupted payload unexpectedly prepared")
+        after = super().ws_sparse_probe()
+        if (
+            before != after
+            or guard.sparse_writes
+            or getattr(self, "_ws_resident_pending", None) is not None
+            or getattr(self, "_ws_resident_failed", False) is not False
+            or evidence != corrupt_payload_evidence(directory)
+        ):
+            raise RuntimeError("Corrupt preparation changed resident state or payload")
+        return rpc_metadata(
+            {
+                **before,
+                **evidence,
+                "requested_version": expected_version,
+                "transaction_id": transaction_id,
+                "refused": True,
+                "error_type": "WeightStreamError",
+                "error": "Checksum mismatch for " + NORM,
+                "pending_before": False,
+                "pending_after": False,
+                "failed_before": False,
+                "failed_after": False,
+                "version_after": after["version"],
+                "sparse_writes": guard.sparse_writes,
+            }
+        )
+
     def ws_audit_commit(
         self, transaction_id, expected_version, rank_identities, manifest_sha256
     ):

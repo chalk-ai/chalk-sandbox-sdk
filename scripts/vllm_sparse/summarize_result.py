@@ -125,6 +125,88 @@ def verify_prepare(root, rpc, baseline, version):
     return [request[2], version, identities, digest]
 
 
+def verify_refusal(root, rpc, baseline):
+    request = rpc["request"]["args"]
+    if len(request) != 3 or request[1] != 4 or Path(request[0]).name != "corrupt":
+        raise ValueError("Corruption refusal request differs")
+    directory = root / "corrupt"
+    manifest_path = directory / "manifest.json"
+    manifest = read(manifest_path)
+    entries = [entry for entry in manifest["tensors"] if entry["name"] == NORM]
+    if manifest["version"] != 4 or manifest["parent_version"] != 3 or len(entries) != 1:
+        raise ValueError("Corrupted manifest differs")
+    entry = entries[0]
+    path = (directory / entry["file"]).resolve()
+    if not path.is_relative_to(directory.resolve()) or not 0 < entry["length"] <= 4096:
+        raise ValueError("Corrupted norm payload path/length differs")
+    with path.open("rb") as stream:
+        stream.seek(entry["offset"])
+        payload = stream.read(entry["length"])
+    if len(payload) != entry["length"]:
+        raise ValueError("Truncated corrupted norm payload")
+    records = rpc["response"]["results"]
+    if len(records) != 8 or {r["rank"] for r in records} != set(range(8)):
+        raise ValueError("Missing all-rank checksum refusal receipts")
+    checksums, identities = set(), set()
+    for record in records:
+        rank = record["rank"]
+        original = baseline[rank]
+        expected = {
+            "profile": "kimi-k3-bf16-tp8-v1",
+            "tp_rank": rank,
+            "tp_world_size": 8,
+            "pid": original["pid"],
+            "pid_start_ticks": int(original["process_start_ticks"]),
+            "device": original["device"],
+            "model_id": original["model_id"],
+            "version": 3,
+            "version_after": 3,
+            "requested_version": 4,
+            "transaction_id": request[2],
+            "corrupt_tensor": NORM,
+            "error_type": "WeightStreamError",
+            "error": "Checksum mismatch for " + NORM,
+            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "expected_checksum": entry["checksum"],
+            "payload_sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        if (
+            type(rank) is not int
+            or record.get("refused") is not True
+            or any(record.get(key) != value for key, value in expected.items())
+            or any(
+                record.get(key) is not False
+                for key in (
+                    "pending_before",
+                    "pending_after",
+                    "failed_before",
+                    "failed_after",
+                )
+            )
+            or record.get("sparse_writes") != []
+            or set(record["targets"]) != {NORM, HEAD}
+        ):
+            raise ValueError("Checksum refusal identity/state/evidence differs")
+        for name, target in record["targets"].items():
+            if any(
+                target[key] != original["tensors"][name][key]
+                for key in ("storage_ptr", "data_ptr", "shape")
+            ):
+                raise ValueError("Checksum refusal target differs")
+        checksum = record["actual_checksum"]
+        if (
+            len(checksum) != 32
+            or any(c not in "0123456789abcdef" for c in checksum)
+            or checksum == entry["checksum"]
+        ):
+            raise ValueError("Missing explicit checksum mismatch")
+        checksums.add(checksum)
+        identities.add(record["identity_sha256"])
+    if len(checksums) != 1 or len(identities) != 8:
+        raise ValueError("Checksum refusal worker identities/checksums differ")
+    return request[2]
+
+
 def verify_sparse(root):
     scope = read(root / "scope.json")
     if scope.get("status") != "passed":
@@ -214,12 +296,37 @@ def verify_sparse(root):
     errors = []
     previous_request = None
     prepares = []
+    refusal_transaction, refusal_aborted = None, False
     for path in sorted(root.glob("rpc-*.json")):
         value = read(path)
         if path.name.endswith("-error.json"):
             errors.append(value)
             continue
         method = value["request"].get("method")
+        if method == "ws_audit_corrupt_refusal":
+            if len(commit_calls) != 6 or refusal_transaction is not None:
+                raise ValueError("Checksum refusal order differs")
+            refusal_transaction = verify_refusal(root, value, baseline)
+            continue
+        if method == "ws_sparse_abort":
+            workers = value["response"]["results"]
+            if (
+                refusal_transaction is None
+                or refusal_aborted
+                or value["request"]["args"] != [refusal_transaction]
+                or len(workers) != 8
+                or any(
+                    w.get("ok") is not True
+                    or w.get("aborted") is not True
+                    or w.get("transaction_id") != refusal_transaction
+                    for w in workers
+                )
+            ):
+                raise ValueError(
+                    "Missing all-rank checksum refusal abort acknowledgements"
+                )
+            refusal_aborted = True
+            continue
         if method == "ws_audit_prepare_dir":
             version = len(prepares) + 1
             if version > 3 or len(commit_calls) != (version - 1) * 2:
@@ -307,14 +414,10 @@ def verify_sparse(root):
         )
     if len(commit_calls) != 6 or len(prepares) != 3:
         raise ValueError("Missing six commit/replay control calls")
-    if len(errors) != 1 or not all(
-        v.get("error") == "HTTPError"
-        and v.get("request", {}).get("method") == "ws_audit_prepare_dir"
-        and v["request"]["args"][1] == 4
-        and "Checksum mismatch for " + NORM in (v.get("body") or "")
-        for v in errors
-    ):
-        raise ValueError("Explicit native checksum refusal body missing")
+    if errors:
+        raise ValueError("Unexpected RPC error in a passed receipt set")
+    if refusal_transaction is None or not refusal_aborted:
+        raise ValueError("Missing all-rank checksum refusal/abort receipts")
     return {
         "passed": True,
         "verification_scope": "exported sparse byte/control receipts only",
@@ -322,6 +425,7 @@ def verify_sparse(root):
         "snapshot_checks": checks,
         "commit_calls": commit_calls,
         "all_rank_prepare_barriers": len(prepares),
+        "checksum_refusal_ranks": 8,
         "scope_record": scope,
         "limits": [
             "Trusts exported worker instrumentation; does not authenticate image/source or allocation",

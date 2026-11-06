@@ -323,33 +323,31 @@ def compare_generation(reference, observed):
 
 
 def corrupt_refusal(experiment, directory, transaction):
-    try:
-        experiment.rpc("ws_audit_prepare_dir", [str(directory), 4, transaction])
-    except Exception as original:
-        explicit = isinstance(original, NativeHTTPError) and (
-            "Checksum mismatch for " + proof.NORM in original.body
+    evidence = proof.corrupt_payload_evidence(directory)
+    records = experiment.rpc(
+        "ws_audit_corrupt_refusal", [str(directory), 4, transaction]
+    )
+    proof.validate_refusal_records(records, experiment.baseline, transaction, evidence)
+    aborted = experiment.rpc("ws_sparse_abort", [transaction])
+    if len(aborted) != 8 or any(
+        record.get("ok") is not True
+        or record.get("aborted") is not True
+        or record.get("transaction_id") != transaction
+        for record in aborted
+    ):
+        raise RuntimeError(
+            "Missing all-rank abort acknowledgements after checksum refusal"
         )
-        try:
-            experiment.rpc("ws_sparse_abort", [transaction])
-        except Exception as abort_error:
-            write(
-                experiment.directory / "corruption-abort-error.json",
-                {
-                    "original_type": type(original).__name__,
-                    "original_error": str(original),
-                    "explicit_checksum_refusal": explicit,
-                    "abort_error": str(abort_error),
-                },
-            )
-            raise RuntimeError(
-                "Abort failed after corrupt preparation; original refusal evidence retained"
-            ) from original
-        if not explicit:
-            raise RuntimeError(
-                "Corruption test failed for an unproven reason"
-            ) from original
-    else:
-        raise ValueError("Corrupt payload was not rejected before commit")
+    write(
+        experiment.directory / "checksum-refusal.json",
+        {
+            "passed": True,
+            "transaction_id": transaction,
+            **evidence,
+            "ranks": records,
+            "abort_acknowledgements": aborted,
+        },
+    )
 
 
 def main():
