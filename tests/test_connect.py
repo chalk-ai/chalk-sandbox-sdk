@@ -1406,6 +1406,152 @@ class TestChalkClientFromEnv:
 
 
 class TestSandboxClientFromEnv:
+    @pytest.mark.parametrize("auth_source", ["explicit_client", "cli", "service"])
+    def test_mount_resolution_keeps_authenticated_context(
+        self, monkeypatch: pytest.MonkeyPatch, auth_source: str
+    ) -> None:
+        from chalkcompute import Sandbox
+        from chalkcompute._volume import VolumeMount
+
+        for key in (
+            "CHALK_API_SERVER",
+            "CHALK_CLIENT_ID",
+            "CHALK_CLIENT_SECRET",
+            "CHALK_ENVIRONMENT_ID",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            "chalkcompute._connect.web_identity_token_file_from_env", lambda: None
+        )
+        monkeypatch.setattr(
+            "chalkcompute._connect.active_environment_from_env", lambda: None
+        )
+        service_auth = (
+            ServiceAuthContext(
+                auth_endpoint="https://api.selected.chalk.test",
+                exchange_token="exchange-token",
+                environment_id="env-selected",
+                requested_permissions=(2,),
+                grpc_engine=None,
+            )
+            if auth_source == "service"
+            else None
+        )
+        monkeypatch.setattr(
+            "chalkcompute._connect.service_auth_context_from_env", lambda: service_auth
+        )
+        selected_token = _auth_config.TokenConfig(
+            clientId="selected-client",
+            clientSecret="selected-secret",
+            apiServer="https://api.selected.chalk.test",
+            activeEnvironment="env-selected",
+        )
+        ambient_token = _auth_config.TokenConfig(
+            clientId="ambient-client",
+            clientSecret="ambient-secret",
+            apiServer="https://api.ambient.chalk.test",
+            activeEnvironment="env-ambient",
+        )
+        monkeypatch.setattr(
+            "chalkcompute._connect.load_token",
+            lambda *args: selected_token if auth_source == "cli" else ambient_token,
+        )
+        posted: dict[str, Any] = {}
+        payload = {
+            "accessToken": "selected-token",
+            "primaryEnvironment": "env-selected",
+            "grpcEngines": {"env-selected": "engine.selected.chalk.test:443"},
+        }
+        if auth_source == "service":
+            payload.pop("primaryEnvironment")
+            _install_auth_client(monkeypatch, payload, posted)
+        else:
+            _install_token_client(monkeypatch, payload, posted)
+        chalk_client = (
+            types.SimpleNamespace(
+                _api_server="https://api.selected.chalk.test",
+                _client_id="selected-client",
+                _client_secret="selected-secret",
+                _primary_environment="env-selected",
+            )
+            if auth_source == "explicit_client"
+            else None
+        )
+
+        client = SandboxClient.from_env(chalk_client=chalk_client)
+        try:
+            connect = client._connect
+            assert connect is not None
+            assert connect._api_server == "https://api.selected.chalk.test"
+            assert connect._env_id == "env-selected"
+            assert connect.grpc_engine_target() == (
+                "engine.selected.chalk.test:443",
+                True,
+            )
+            assert posted["address"] == "https://api.selected.chalk.test"
+            if auth_source == "explicit_client":
+                assert posted["request"].client_id == "selected-client"
+
+            # A later CLI/environment change must not rebind volume resolution.
+            monkeypatch.setattr(
+                "chalkcompute._connect.load_token", lambda *args: ambient_token
+            )
+            monkeypatch.setenv("CHALK_API_SERVER", "https://api.ambient.chalk.test")
+            monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-ambient")
+
+            def unexpected_connect(**kwargs: Any) -> None:
+                raise AssertionError(
+                    "sandbox must reuse its authenticated Connect client"
+                )
+
+            monkeypatch.setattr(
+                "chalkcompute._sandbox.ConnectClient", unexpected_connect
+            )
+            monkeypatch.setattr(
+                "chalkcompute._connect.auth_connect.AuthServiceClientSync",
+                unexpected_connect,
+            )
+            mounts = []
+
+            def resolve_mount(
+                actual_connect: ConnectClient, mount: VolumeMount
+            ) -> VolumeMount:
+                assert actual_connect is connect
+                assert (
+                    dict(actual_connect._rpc_metadata())["x-chalk-env-id"]
+                    == "env-selected"
+                )
+                mounts.append(mount)
+                return mount
+
+            monkeypatch.setattr(
+                "chalkcompute._sandbox.referenced_volume_mount", resolve_mount
+            )
+
+            def instantiate(sandbox: Sandbox, image: str, **kwargs: Any) -> None:
+                sandbox._id = "sandbox-test"
+
+            monkeypatch.setattr(client, "_instantiate", instantiate)
+            sandbox = Sandbox(
+                image="test-image",
+                volumes=[VolumeMount("fixture", "/data", version_id=70)],
+                sandbox_client=client,
+            )
+            sandbox.run(wait=False)
+            assert mounts == [VolumeMount("fixture", "/data", version_id=70)]
+            assert dict(client._metadata or [])["x-chalk-env-id"] == "env-selected"
+        finally:
+            client.close()
+
+    def test_direct_constructor_preserves_static_metadata(self) -> None:
+        metadata = [("authorization", "Bearer direct-token")]
+        client = SandboxClient("localhost:18080", metadata=metadata)
+        try:
+            assert client._connect is None
+            assert client._metadata == metadata
+        finally:
+            client.close()
+
     def test_uses_insecure_address_for_local_http_api(self, monkeypatch):
         monkeypatch.setenv("CHALK_API_SERVER", "http://localhost:18080")
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")

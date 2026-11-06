@@ -2171,11 +2171,9 @@ class SandboxClient:
             host,
             use_tls=use_tls,
             metadata=connect._rpc_metadata(),
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
+            # Volume resolution and image builds must share the authenticated
+            # environment, including when it came from an explicit ChalkClient.
+            _connect=connect,
         )
 
     @property
