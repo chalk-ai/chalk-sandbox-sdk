@@ -49,9 +49,10 @@ class Experiment:
         started = time.time()
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
-                raw = response.read(2 * 1024**2 + 1)
-            if len(raw) > 2 * 1024**2:
-                raise ValueError("Control response exceeds2MiB")
+                limit = getattr(self, "response_limit", 2 * 1024**2)
+                raw = response.read(limit + 1)
+            if len(raw) > limit:
+                raise ValueError(f"Control response exceeds{limit}bytes")
             value = json.loads(raw)
             if self.diagnostic:
                 (self.directory / f"http-{self.sequence:03d}-raw.json").write_bytes(raw)
