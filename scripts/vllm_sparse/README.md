@@ -13,6 +13,7 @@ Run CPU checks with an existing Torch/NumPy/pytest/xxhash/zstandard environment:
 
 ```sh
 python -m pytest -q tests/test_vllm_sparse_experiment.py
+python -m pytest -q tests/test_vllm_sparse_result_summary.py
 python -m ruff check scripts/vllm_sparse tests/test_vllm_sparse_experiment.py
 ```
 
@@ -52,3 +53,32 @@ keeps stream drain and fresh native B oracle explicitly unproven. Generation aft
 an inverse update does not replace a separate fresh-B reference.
 
 No native/AMD compatibility result is claimed by these source/CPU tests.
+
+After exporting a completed `sparse-proof` directory, the stdlib-only offline
+summarizer checks exact norm bytes, selected head bytes and unchanged-head hash
+consistency across all eight ranks, plus resident identity, commit/replay order,
+write instrumentation and explicit checksum refusal:
+
+```sh
+python -m scripts.vllm_sparse.summarize_result --root /path/to/exported/sparse-proof --out /path/to/new-summary.json
+```
+
+It never contacts a server, mutates input receipts, or overwrites its output. A
+non-passing harness scope returns a failed summary and nonzero exit; absent or
+inconsistent evidence raises an error. Its `passed` field concerns these exported
+byte/control receipts only. It trusts worker instrumentation and does not
+authenticate image/source, verify generation samples, establish cleanup or prove
+stream drain, fresh native B, or full SDK integration. The tests use synthetic
+receipt files and tiny byte arrays; they do not constitute native evidence.
+
+The first pinned AMD spot attempt (`kimi-vllm-sparse-20261106-0100-2c327e`) failed
+before the native harness ran. Outer image attestation raised
+`PackageNotFoundError: No package metadata was found for aiter`. This establishes
+missing distribution metadata, rather than a missing import module. The remote
+attestation interpreter acknowledged exit 1; the frozen synchronous controller
+then entered cleanup before dispatching lifecycle selftest, native inspection,
+model preparation or experiment. No model/sparse result is claimed. The offline
+summarizer is unsuitable for classifying that prelaunch failure: it requires
+completed sparse receipts and must not infer a native launch or absence from
+missing files. Resource release and provider reclamation require independent
+controller evidence.
