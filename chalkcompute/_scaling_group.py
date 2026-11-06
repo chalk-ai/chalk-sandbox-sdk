@@ -42,6 +42,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
+from chalkcompute._backoff import Backoff
 from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
@@ -963,8 +964,8 @@ class ScalingGroup:
 
         While the group has no ready replica (for example, it is scaling up
         from zero), the gateway responds with HTTP 503. ``call`` retries those
-        gateway responses with backoff until a replica serves the request or
-        ``cold_start_timeout`` elapses. A 503 returned by your application is
+        gateway responses with jittered backoff until a replica serves the
+        request or ``cold_start_timeout`` elapses. A 503 returned by your application is
         not retried. Retrying stops early if the group enters a failed or
         unhealthy state, and the last 503 is returned.
 
@@ -1019,7 +1020,13 @@ class ScalingGroup:
         content = data if data is not None else json
         deadline = time.monotonic() + cold_start_timeout
         next_status_check = time.monotonic() + _COLD_START_STATUS_CHECK_SECONDS
-        delay = _COLD_START_INITIAL_BACKOFF_SECONDS
+        # Callers of a group scaling from zero all see the 503 together; jitter
+        # keeps them from retrying in lockstep while preserving the mean wait.
+        backoff = Backoff(
+            _COLD_START_INITIAL_BACKOFF_SECONDS,
+            _COLD_START_MAX_BACKOFF_SECONDS,
+            jitter="mean_preserving",
+        )
         while True:
             response = SYNC_HTTP_CLIENT.execute(
                 method,
@@ -1037,14 +1044,13 @@ class ScalingGroup:
                 next_status_check = now + _COLD_START_STATUS_CHECK_SECONDS
                 if self._has_failed():
                     return response
-            retry_delay = min(delay, deadline - now)
+            retry_delay = backoff.next_wait(deadline - now)
             logger.debug(
                 "Scaling group %s has no ready replica; retrying in %.2fs",
                 self._name,
                 retry_delay,
             )
             time.sleep(retry_delay)
-            delay = min(delay * 2, _COLD_START_MAX_BACKOFF_SECONDS)
 
     def _has_failed(self) -> bool:
         try:

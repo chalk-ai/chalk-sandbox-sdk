@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
+import chalkcompute._backoff as backoff_mod
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ExecutionBackend, NetworkPolicy, ScalingGroup
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
@@ -170,6 +172,54 @@ def test_scaling_group_call_retries_gateway_unavailable(
 
     assert sg.call("/", json={"x": 1}) is ok
     assert http_client.execute.call_count == 3
+
+
+def test_scaling_group_call_jitters_retry_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    ok = _response(200, b"ok")
+    sg, _ = _deployed_group(monkeypatch, unavailable, unavailable, unavailable, ok)
+    sleeps: list[float] = []
+    bounds: list[tuple[float, float]] = []
+
+    def uniform(low: float, high: float) -> float:
+        bounds.append((low, high))
+        return (low + high) / 2
+
+    monkeypatch.setattr(scaling_group_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(backoff_mod.random, "uniform", uniform)
+
+    assert sg.call("/") is ok
+    assert bounds == [(0.125, 0.375), (0.25, 0.75), (0.5, 1.5)]
+    assert sleeps == [0.25, 0.5, 1.0]
+
+
+def test_scaling_group_call_preserves_capped_retry_cadence(monkeypatch) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    sg, http_client = _deployed_group(monkeypatch)
+    http_client.execute.side_effect = None
+    http_client.execute.return_value = unavailable
+    now = 100.0
+    sleeps = []
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(
+        scaling_group_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_INITIAL_BACKOFF_SECONDS", 1.0)
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_MAX_BACKOFF_SECONDS", 1.0)
+    monkeypatch.setattr(
+        backoff_mod.random, "uniform", lambda low, high: (low + high) / 2
+    )
+
+    assert sg.call("/", cold_start_timeout=4.0) is unavailable
+    assert sleeps == [1.0] * 4
+    assert http_client.execute.call_count == 5
 
 
 def test_scaling_group_call_does_not_retry_app_errors(

@@ -15,6 +15,7 @@ from connectrpc.request import RequestContext
 from opentelemetry import propagate
 from opentelemetry.trace import Span, StatusCode
 
+from chalkcompute._backoff import Backoff
 from chalkcompute._tracing import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,8 @@ _RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
 # enforces a read limit; there is no client-side send-size knob.
 RPC_READ_MAX_BYTES = 100 << 20
 
-# Match the historical grpcio service_config retryPolicy for UNAVAILABLE.
+# Retain the historical grpcio service_config retry counts and backoff
+# parameters, adding full jitter to spread retries across clients.
 RPC_RETRY_MAX_ATTEMPTS = 5
 RPC_RETRY_INITIAL_BACKOFF_SECONDS = 0.1
 RPC_RETRY_MAX_BACKOFF_SECONDS = 1.0
@@ -93,8 +95,10 @@ class TracingInterceptor:
 class RetryInterceptor:
     """Retry unary RPCs that fail with ``UNAVAILABLE``.
 
-    Mirrors the historical grpcio ``service_config`` retry policy: five total
-    attempts, exponential backoff from 0.1s to 1s with multiplier 2.
+    Uses the historical grpcio ``service_config`` parameters: five total
+    attempts and exponential backoff from 0.1s to 1s with multiplier 2.
+    Each wait uses full jitter so clients that fail together spread out
+    their retries.
     """
 
     def intercept_unary_sync(
@@ -126,7 +130,11 @@ class RetryInterceptor:
             "chalk.router.v1."
         ) and ctx.method.name.startswith("Create"):
             return call_next(request, ctx)
-        delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
+        backoff = Backoff(
+            RPC_RETRY_INITIAL_BACKOFF_SECONDS,
+            RPC_RETRY_MAX_BACKOFF_SECONDS,
+            multiplier=RPC_RETRY_BACKOFF_MULTIPLIER,
+        )
         last_error: ConnectError | None = None
         for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):
             try:
@@ -135,8 +143,9 @@ class RetryInterceptor:
                 last_error = exc
                 if exc.code != Code.UNAVAILABLE or attempt >= RPC_RETRY_MAX_ATTEMPTS:
                     raise
+                delay = backoff.next_wait()
                 logger.warning(
-                    "%s/%s UNAVAILABLE (attempt %d/%d); retrying in %.1fs",
+                    "%s/%s UNAVAILABLE (attempt %d/%d); retrying in %.2fs",
                     ctx.method.service_name,
                     ctx.method.name,
                     attempt,
@@ -144,10 +153,6 @@ class RetryInterceptor:
                     delay,
                 )
                 time.sleep(delay)
-                delay = min(
-                    delay * RPC_RETRY_BACKOFF_MULTIPLIER,
-                    RPC_RETRY_MAX_BACKOFF_SECONDS,
-                )
         assert last_error is not None
         raise last_error
 
