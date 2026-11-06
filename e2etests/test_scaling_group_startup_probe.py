@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-
-from chalkcompute import Image, ScalingGroup, StartupProbe
+from chalkcompute import ComputeClass, Image, ReadinessProbe, ScalingGroup, StartupProbe
 from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import needs_staging
 
@@ -25,6 +24,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.end_headers()
         self.wfile.write(str(Handler.checks).encode())
+
+    def log_message(self, *_):
+        pass
+
+ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+"""
+
+SLOW_HEALTH_SERVER = """
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            time.sleep(1.5)
+        body = b"healthy"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, *_):
         pass
@@ -94,6 +113,55 @@ def test_grpc_startup_probe_reaches_routed_service(
         group.deploy(ready_timeout=180)
         assert group.info is not None
         assert group.info.available_replicas >= 1
+    finally:
+        if group.id is not None:
+            group.delete()
+
+
+@needs_staging
+@pytest.mark.parametrize("compute_class", [ComputeClass.K8S, ComputeClass.HOST])
+def test_http_route_check_preserves_longer_readiness_timeout(
+    compute_class: ComputeClass,
+) -> None:
+    """A valid health check taking over one second must still deploy."""
+    group = ScalingGroup(
+        name=build_scoped_name(f"ex-http-slow-health-{compute_class.name.lower()}"),
+        image="python:3.12-slim",
+        entrypoint=["python", "-u", "-c", SLOW_HEALTH_SERVER],
+        compute_class=compute_class,
+        authenticated=True,
+        readiness_probe=ReadinessProbe.http("/health", timeout_seconds=5),
+    )
+    try:
+        group.deploy(ready_timeout=180)
+        response = group.call("/health", method="GET", timeout=5, cold_start_timeout=0)
+        assert response.status == 200, response.content
+        assert response.content == b"healthy"
+    finally:
+        if group.id is not None:
+            group.delete()
+
+
+@needs_staging
+@pytest.mark.parametrize("compute_class", [ComputeClass.K8S, ComputeClass.HOST])
+def test_http_without_startup_probe_serves_first_call_after_deploy(
+    compute_class: ComputeClass,
+) -> None:
+    """The route fallback must also cover HTTP services without health probes."""
+    group = ScalingGroup(
+        name=build_scoped_name(f"ex-http-route-{compute_class.name.lower()}"),
+        image="python:3.12-slim",
+        entrypoint=["python", "-u", "-c", HTTP_SERVER],
+        compute_class=compute_class,
+        authenticated=True,
+    )
+    try:
+        group.deploy(ready_timeout=180)
+        response = group.call("/checks", method="GET", cold_start_timeout=0)
+        assert response.status == 200, response.content
+        # The root returns an application 404 with a body. The fallback only
+        # needs to establish routing, without calling /health or requiring 200.
+        assert response.content == b"0"
     finally:
         if group.id is not None:
             group.delete()
