@@ -22,12 +22,33 @@ def main():
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--audit-root", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
+    parser.add_argument("--startup-profile", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    profile = {"batch_invariant": False, "startup_sha256": None, "source_sha256": {}}
+    if args.startup_profile:
+        raw_startup = args.startup_profile.read_bytes()
+        startup = json.loads(raw_startup)
+        flag = startup["environment"].get("VLLM_BATCH_INVARIANT", "0")
+        if flag not in ("0", "1"):
+            raise ValueError("Expected explicit batch-invariance flag0 or1")
+        profile.update(batch_invariant=flag == "1", startup_sha256=sha(raw_startup))
+        if profile["batch_invariant"]:
+            profile["source_sha256"] = {
+                path: startup["required_source_sha256"][path]
+                for path in (
+                    "vllm/model_executor/determinism/batch_invariant.py",
+                    "vllm/model_executor/determinism/batch_invariant_configs.py",
+                    "vllm/platforms/rocm.py",
+                )
+            }
     source_root = Path(__file__).resolve().parents[2]
     files = {
         name: b"" for name in ("scripts/__init__.py", "scripts/vllm_sparse/__init__.py")
     }
+    files["expected-runtime-profile.json"] = json.dumps(
+        profile, sort_keys=True, indent=2
+    ).encode()
     for relative in (
         "chalkcompute/__init__.py",
         "chalkcompute/weights/__init__.py",
@@ -57,6 +78,10 @@ def main():
                 if entry["path"] in native and native[entry["path"]] != entry["sha256"]:
                     raise ValueError("Conflicting native source hashes")
                 native[entry["path"]] = entry["sha256"]
+    for path, digest in profile["source_sha256"].items():
+        if path in native and native[path] != digest:
+            raise ValueError("Conflicting batch-invariance native source hash")
+        native[path] = digest
     config = args.model_config.read_bytes()
     files["overlay-manifest.json"] = json.dumps(
         overlay_hashes, sort_keys=True, indent=2
@@ -96,6 +121,7 @@ def main():
         "selected_architecture_hash": selected_architecture_hash(config),
         "native_source_count": len(native),
         "reviewed_vllm_distribution_versions": REVIEWED_VLLM_VERSIONS,
+        "expected_runtime_profile": profile,
         "scope": "experimental minimal worker module overlay, not full installed SDK integration",
         "runtime_source_head": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=args.runtime_root, text=True

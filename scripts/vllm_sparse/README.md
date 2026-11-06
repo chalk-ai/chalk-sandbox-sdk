@@ -35,6 +35,16 @@ the packaging variant does not establish that the image contains it. The explici
 and tiny indexed BF16 kernel readback. Missing dependencies fail; no install fallback.
 Record the actual package versions rather than guessing them from image labels.
 
+For a separately reviewed batch-invariance candidate, pass `prepare --startup-profile`
+the frozen startup contract. The overlay binds its expected flag and source pins
+in `expected-runtime-profile.json`; the three additional batch/config/ROCm source
+hashes remain mandatory. Every worker reports the raw/public environment flag,
+source-bound private mode and library-presence state, and public Torch backend
+controls. The audit reads these fields and never initializes or changes batch
+mode. All eight must match the frozen expectation before generation. This is
+observational attestation of pinned private state; strict greedy/top-key/1e-3
+generation comparisons still determine whether the new profile is repeatable.
+
 Start the frozen loopback server externally using
 `scripts.vllm_sparse.audit_extension.SparseAuditExtension`, then run `pod_script`
 with `--execute-reviewed`, exact model config path and expected SHA256. It consumes

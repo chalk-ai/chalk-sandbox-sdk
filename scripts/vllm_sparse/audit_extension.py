@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib
 import math
 import os
 import time
@@ -39,6 +40,55 @@ def rpc_metadata(value):
             rpc_metadata(item)
         return value
     raise TypeError(f"Unsupported audit RPC metadata type: {type(value).__name__}")
+
+
+def batch_invariance_info(profile, *, batch_module=None, envs_module=None):
+    """Observe pinned private state; never enable or initialize batch mode here."""
+    batch_module = batch_module or importlib.import_module(
+        "vllm.model_executor.determinism.batch_invariant"
+    )
+    envs_module = envs_module or importlib.import_module("vllm.envs")
+    enabled = profile["batch_invariant"]
+    module_hash = hashlib.sha256(Path(batch_module.__file__).read_bytes()).hexdigest()
+    if (
+        enabled
+        and module_hash
+        != profile["source_sha256"][
+            "vllm/model_executor/determinism/batch_invariant.py"
+        ]
+    ):
+        raise ValueError("Pinned batch-invariance source differs")
+    controls = {
+        "matmul_fp32_precision": torch.backends.cuda.matmul.fp32_precision,
+        "cudnn_conv_fp32_precision": torch.backends.cudnn.conv.fp32_precision,
+        "cudnn_rnn_fp32_precision": torch.backends.cudnn.rnn.fp32_precision,
+        "allow_fp16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+        "allow_bf16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
+    }
+    controls = {
+        key: list(value) if type(value) is tuple else value
+        for key, value in controls.items()
+    }
+    state = rpc_metadata(
+        {
+            "expected_enabled": enabled,
+            "environment_value": os.environ.get("VLLM_BATCH_INVARIANT"),
+            "resolved_env_flag": envs_module.VLLM_BATCH_INVARIANT,
+            "private_mode": batch_module._batch_invariant_MODE,
+            "private_library_present": batch_module._batch_invariant_LIB is not None,
+            "module_sha256": module_hash,
+            "public_backend_controls": controls,
+            "scope": "read-only source-bound private state and public controls; no end-to-end numerical guarantee",
+        }
+    )
+    if any(
+        state[key] is not enabled
+        for key in ("resolved_env_flag", "private_mode", "private_library_present")
+    ) or state["environment_value"] not in (("1",) if enabled else (None, "0")):
+        raise ValueError(
+            "Actual worker batch-invariance state differs from frozen expectation"
+        )
+    return state
 
 
 def tensor_record(tensor, indices=None):
@@ -197,6 +247,8 @@ class SparseAuditExtension(WeightSyncExtension):
     """Additional bounded diagnostics around the actual production sparse method."""
 
     def ws_audit_runtime_info(self):
+        from .proof import expected_runtime_profile
+
         config = self.vllm_config
         actual = {
             "enforce_eager": config.model_config.enforce_eager,
@@ -244,7 +296,13 @@ class SparseAuditExtension(WeightSyncExtension):
         }
         if actual != expected:
             raise ValueError(f"Effective worker runtime config differs: {actual}")
-        return rpc_metadata({**super().ws_sparse_probe(), "effective_config": actual})
+        return rpc_metadata(
+            {
+                **super().ws_sparse_probe(),
+                "effective_config": actual,
+                "batch_invariance": batch_invariance_info(expected_runtime_profile()),
+            }
+        )
 
     def ws_audit_snapshot(self, targets):
         from .proof import local_indices

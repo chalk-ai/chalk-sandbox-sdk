@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
 
 NORM = "language_model.model.norm.weight"
@@ -11,6 +12,49 @@ HEAD = "language_model.lm_head.weight"
 WIDTH = 7168
 VOCAB = 163840
 TP = 8
+
+
+def expected_runtime_profile():
+    profile = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "expected-runtime-profile.json"
+        ).read_text()
+    )
+    if type(profile["batch_invariant"]) is not bool:
+        raise ValueError("Frozen batch-invariance expectation must be boolean")
+    return profile
+
+
+def validate_batch_records(records, profile):
+    if len(records) != TP or {record["rank"] for record in records} != set(range(TP)):
+        raise ValueError("Batch-invariance evidence requires all eight distinct ranks")
+    expected = profile["batch_invariant"]
+    for record in records:
+        state = record["batch_invariance"]
+        if (
+            type(record["rank"]) is not int
+            or any(
+                state[key] is not expected
+                for key in (
+                    "expected_enabled",
+                    "resolved_env_flag",
+                    "private_mode",
+                    "private_library_present",
+                )
+            )
+            or state["environment_value"] not in (("1",) if expected else (None, "0"))
+        ):
+            raise ValueError(
+                "Worker batch-invariance state differs from frozen expectation"
+            )
+        if (
+            expected
+            and state["module_sha256"]
+            != profile["source_sha256"][
+                "vllm/model_executor/determinism/batch_invariant.py"
+            ]
+        ):
+            raise ValueError("Worker batch-invariance source differs")
 
 
 def corrupt_payload_evidence(directory):

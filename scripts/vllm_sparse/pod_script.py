@@ -408,6 +408,7 @@ def run_experiment(args, directory):
     runtime = experiment.rpc("ws_audit_runtime_info", [])
     if len(runtime) != 8 or {record["rank"] for record in runtime} != set(range(8)):
         raise ValueError("Effective runtime config did not cover all eight workers")
+    proof.validate_batch_records(runtime, proof.expected_runtime_profile())
     write(directory / "effective-runtime.json", runtime)
     if args.validate_runtime_only:
         return
