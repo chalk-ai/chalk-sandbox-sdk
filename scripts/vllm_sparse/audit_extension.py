@@ -496,3 +496,30 @@ class SparseAuditExtension(WeightSyncExtension):
                 "full_loaders_forbidden": True,
             }
         )
+
+
+# Opt-in read-only localization is isolated from sparse prepare/commit methods.
+def _localization_rpc(extension, operation, *args):
+    from scripts.vllm_drift import trace
+
+    result = getattr(trace, operation)(extension, *args)
+    return rpc_metadata(
+        {"rank": torch.distributed.get_rank(), "pid": os.getpid(), **result}
+    )
+
+
+def _localization_arm(self, trace_id, selected_ids, layer_indices):
+    return _localization_rpc(self, "arm", trace_id, selected_ids, layer_indices)
+
+
+def _localization_collect(self, trace_id):
+    return _localization_rpc(self, "collect", trace_id)
+
+
+def _localization_cancel(self):
+    return _localization_rpc(self, "cancel")
+
+
+SparseAuditExtension.ws_localization_arm = _localization_arm
+SparseAuditExtension.ws_localization_collect = _localization_collect
+SparseAuditExtension.ws_localization_cancel = _localization_cancel
