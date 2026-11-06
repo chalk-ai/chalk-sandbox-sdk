@@ -622,3 +622,27 @@ def test_diagnostic_byte_checker_does_not_make_diagnostic_a_strict_pass(exported
     )
     with pytest.raises(ValueError):
         summary.verify_byte_control_receipts(exported, scope)
+
+
+@pytest.mark.parametrize(
+    "label", ["A-postgeneration", "corruption-refusal-postgeneration"]
+)
+def test_diagnostic_offline_requires_both_exact_postgeneration_snapshots(
+    exported, label
+):
+    scope = {
+        "status": "running",
+        "mode": "native_byte_control_diagnostic_v1",
+        "full_smoke_accepted": False,
+    }
+    baseline = (exported / "A.json").read_bytes()
+    for name in ("A-postgeneration", "corruption-refusal-postgeneration"):
+        (exported / (name + ".json")).write_bytes(baseline)
+    assert summary.verify_byte_control_receipts(exported, scope)["passed"] is True
+    target = exported / (label + ".json")
+    target.unlink()
+    with pytest.raises(FileNotFoundError):
+        summary.verify_byte_control_receipts(exported, scope)
+    target.write_text("[]")
+    with pytest.raises(ValueError, match="post-generation snapshot"):
+        summary.verify_byte_control_receipts(exported, scope)
