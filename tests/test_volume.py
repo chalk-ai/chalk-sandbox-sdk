@@ -1365,6 +1365,7 @@ def test_resolve_lazy_files_prepares_and_pins_each_mount(
         .add_local_file(str(model), "/models/model.bin")
     )
     client = _make_client(monkeypatch)
+    monkeypatch.setattr(vv._native, "prepare_files", client._inner.prepare_files)
     prepared = [MagicMock(), MagicMock()]
     client._inner.prepare_files.side_effect = prepared
     client._inner.resolve_prepared_files.side_effect = [
@@ -1404,6 +1405,7 @@ def test_resolve_lazy_files_maps_native_errors(
 ) -> None:
     image, _ = _lazy_image(tmp_path)
     client = _make_client(monkeypatch)
+    monkeypatch.setattr(vv._native, "prepare_files", client._inner.prepare_files)
     client._inner.prepare_files.side_effect = RuntimeError("unavailable", "retry")
 
     with pytest.raises(VolumeError, match="retry") as raised:
@@ -1417,6 +1419,7 @@ def test_resolve_lazy_files_requires_a_version(
 ) -> None:
     image, _ = _lazy_image(tmp_path)
     client = _make_client(monkeypatch)
+    monkeypatch.setattr(vv._native, "prepare_files", client._inner.prepare_files)
     client._inner.resolve_prepared_files.return_value = {}
 
     with pytest.raises(VolumeError, match="returned no version"):
