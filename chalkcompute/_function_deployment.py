@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
+import posixpath
 import time
 import uuid
-import posixpath
-import os
-import stat
-import struct
-from pathlib import Path
-
-import blake3
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -22,8 +17,16 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_pb,
 )
 from chalkcompute._image import Image
-from chalkcompute._volume import VolumeClient, VolumeMount, _default_upload_config
-from chalkcompute._gen.chalk.volume.v2 import volume_pb
+from chalkcompute._volume import (
+    VolumeClient,
+    VolumeMount,
+    VolumeError,
+    _prepare_source_files,
+)
+
+
+if TYPE_CHECKING:
+    from chalkcompute._native import PreparedFiles
 
 
 def _paths_overlap(left: str, right: str) -> bool:
@@ -60,13 +63,9 @@ def function_source_root(
 
 
 def resolve_function_volumes(
-    client: ConnectClient,
     *,
     image: Image,
-    volume_name: str,
     referenced: Sequence[VolumeMount],
-    poll_interval: float,
-    timeout: float,
 ) -> list[VolumeMount]:
     """Validate explicit mounts without allocating function storage."""
     source_paths = set(image.lazy_local_files_grouped_for_volume_mounts())
@@ -81,50 +80,26 @@ def _source_manifests(
 ) -> tuple[
     list[service_pb.FunctionSourceMount],
     dict[str, service_pb.FunctionSourceManifest],
-    dict[str, Path],
+    dict[str, PreparedFiles],
 ]:
     mounts = []
     manifests = {}
-    paths = {}
-    for mount_path, files in image.lazy_local_files_grouped_for_volume_mounts().items():
-        entries = []
-        for file in files:
-            path = Path(file.src)
-            hasher = blake3.blake3()
-            with path.open("rb") as stream:
-                while chunk := stream.read(1024 * 1024):
-                    hasher.update(chunk)
-            digest = hasher.hexdigest()
-            mode = (
-                file.mode
-                if file.mode is not None
-                else stat.S_IMODE(path.stat().st_mode)
-            )
-            entries.append(
-                service_pb.FunctionSourceFile(
-                    path=os.path.relpath(file.dest, mount_path).replace(os.sep, "/"),
-                    content_digest=digest,
-                    size=path.stat().st_size,
-                    mode=mode,
-                )
-            )
-            paths[digest] = path
-        entries.sort(key=lambda entry: entry.path)
-        tree = blake3.blake3(b"chalk.function-source.v1\0")
-        for entry in entries:
-            encoded = entry.path.encode()
-            tree.update(struct.pack(">I", len(encoded)))
-            tree.update(encoded)
-            tree.update(bytes.fromhex(entry.content_digest))
-            tree.update(struct.pack(">QI", entry.size, entry.mode))
-        digest = tree.hexdigest()
-        manifests[digest] = service_pb.FunctionSourceManifest(
-            tree_digest=digest, files=entries
+    prepared_by_digest = {}
+    for mount_path, prepared in _prepare_source_files(image):
+        data = prepared.source_manifest()
+        manifest = service_pb.FunctionSourceManifest(
+            tree_digest=data["tree_digest"],
+            files=[service_pb.FunctionSourceFile(**file) for file in data["files"]],
         )
+        manifests[manifest.tree_digest] = manifest
+        for file in manifest.files:
+            prepared_by_digest[file.content_digest] = prepared
         mounts.append(
-            service_pb.FunctionSourceMount(tree_digest=digest, mount_path=mount_path)
+            service_pb.FunctionSourceMount(
+                tree_digest=manifest.tree_digest, mount_path=mount_path
+            )
         )
-    return mounts, manifests, paths
+    return mounts, manifests, prepared_by_digest
 
 
 def ensure_external_function(
@@ -141,7 +116,7 @@ def ensure_external_function(
 ) -> service_pb.EnsuredExternalFunction:
     stub = client.stub(service_connect.ExternalFunctionCatalogServiceClientSync)
     deadline = time.monotonic() + timeout
-    sources, manifests, paths = _source_manifests(image)
+    sources, manifests, prepared_by_digest = _source_manifests(image)
     request = service_pb.EnsureExternalFunctionRequest(
         request_id=str(uuid.uuid4()),
         function_name=function_name,
@@ -179,24 +154,23 @@ def ensure_external_function(
             if missing.file_digests:
                 if missing.upload_volume is None:
                     raise ConnectError("Source upload response omitted its volume")
-                batch = missing.file_digests[:256]
-                source = [(digest, paths[digest]) for digest in batch]
-                volume_client = VolumeClient.from_connect(client)
-                prepared = volume_client._inner.prepare_files(source, "main")
-                staged = volume_client._inner.stage_prepared_files(
-                    missing.upload_volume.name, prepared, _default_upload_config()
-                )
-                intent = volume_pb.CommitIntent.from_binary(
-                    bytes(
-                        volume_client._inner.staged_intent(
-                            missing.upload_volume.name,
-                            staged,
-                            "main",
-                            [],
-                            "source_code",
-                        )
+                groups: dict[PreparedFiles, list[str]] = {}
+                for digest in missing.file_digests:
+                    groups.setdefault(prepared_by_digest[digest], []).append(digest)
+                try:
+                    volume_client = VolumeClient.from_connect(client)
+                    intent = volume_client._stage_source_inputs(
+                        missing.upload_volume.name, groups
                     )
-                )
+                except VolumeError as exc:
+                    if exc.code not in (
+                        "unavailable",
+                        "deadline_exceeded",
+                        "resource_exhausted",
+                    ):
+                        raise
+                    time.sleep(poll_interval)
+                    continue
                 if intent.deltas is None or intent.deltas.field != "path_deltas":
                     raise ConnectError("Source upload did not produce file deltas")
                 supplied.files = intent.deltas.value.upserts

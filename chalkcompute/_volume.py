@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import KW_ONLY, dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -42,6 +42,9 @@ from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
+
+if TYPE_CHECKING:
+    from chalkcompute._native import PreparedFiles
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +251,31 @@ def _dataset_output_path(object_path: str, dest_prefix: str = "") -> str:
     if any(part in ("", ".", "..") for part in [*prefix_parts, *relative_parts]):
         raise ValueError(f"invalid dataset output path {object_path!r}")
     return "/".join([*prefix_parts, *relative_parts])
+
+
+def _prepare_source_files(image: Image) -> builtins.list[tuple[str, PreparedFiles]]:
+    """Prepare local sources once for manifests and uploads."""
+    groups = image.lazy_local_files_grouped_for_volume_mounts()
+    if not groups:
+        return []
+    if _native is None:
+        raise ImportError(
+            "Source preparation requires the native chalkcompute extension"
+        )
+    prepared = []
+    for mount_path, files in groups.items():
+        source = []
+        for file in files:
+            path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
+            entry: tuple[Any, ...] = (path, Path(file.src))
+            if file.mode is not None:
+                entry = (*entry, {"mode": file.mode})
+            source.append(entry)
+        try:
+            prepared.append((mount_path, _native.prepare_files(source, "main")))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, mount_path)
+    return prepared
 
 
 def _default_upload_config() -> dict[str, int]:
@@ -1638,6 +1666,31 @@ class VolumeClient:
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
 
+    def _stage_source_inputs(
+        self, volume: str, groups: dict[PreparedFiles, builtins.list[str]]
+    ) -> pb_v2.CommitIntent:
+        """Stage requested content using its prepared identity."""
+        self._raise_if_closed()
+        staged = None
+        try:
+            for prepared, digests in groups.items():
+                batch = self._inner.stage_prepared_files(
+                    volume, prepared.select_by_digest(digests), _default_upload_config()
+                )
+                if staged is None:
+                    staged = batch
+                else:
+                    staged.extend(batch)
+            if staged is None:
+                raise ValueError("source upload requires at least one file")
+            return pb_v2.CommitIntent.from_binary(
+                bytes(
+                    self._inner.staged_intent(volume, staged, "main", [], "source_code")
+                )
+            )
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+
     @traced("chalkcompute.volume.resolve_lazy_files")
     def _resolve_lazy_files(
         self,
@@ -1650,33 +1703,25 @@ class VolumeClient:
         """Resolve lazy local files to immutable source volume mounts."""
         from chalkcompute._naming import sanitize_dns_label
 
+        self._raise_if_closed()
+        deadline = time.monotonic() + timeout
         try:
-            groups = image.lazy_local_files_grouped_for_volume_mounts()
+            groups = _prepare_source_files(image)
         except ValueError as exc:
             raise VolumeError(str(exc)) from exc
 
-        deadline = time.monotonic() + timeout
         mounts: builtins.list[VolumeMount] = []
-        for mount_path, files in groups.items():
+        for mount_path, prepared in groups:
             name = (
                 volume_name
                 if mount_path == "/app"
                 else sanitize_dns_label(f"{volume_name}-{mount_path}")
             )
-            source: builtins.list[tuple[Any, ...]] = []
-            for file in files:
-                path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
-                entry: tuple[Any, ...] = (path, Path(file.src))
-                if file.mode is not None:
-                    entry = (*entry, {"mode": file.mode})
-                source.append(entry)
-
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise VolumeError("Source file resolution timed out")
             self._raise_if_closed()
             try:
-                prepared = self._inner.prepare_files(source, "main")
                 version = self._inner.resolve_prepared_files(
                     name,
                     "source_code",

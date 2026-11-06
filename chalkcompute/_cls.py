@@ -1251,12 +1251,8 @@ class RemoteClass:
             self._volumes = list(self._referenced_volumes)
             self._volume_driver = None
             deploy_volumes = resolve_function_volumes(
-                self._client,
                 image=deploy_image,
-                volume_name=self._explicit_name or self._class_name,
                 referenced=self._volumes,
-                poll_interval=poll_interval,
-                timeout=build_timeout,
             )
             resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
