@@ -15,12 +15,10 @@ import chalkcompute
 _ATTEMPTS: dict[str, int] = {}
 
 
+# The default single replica keeps the per-token attempt counter local: the
+# redelivered queue entry returns to the same long-lived function worker.
 @chalkcompute.function(
     name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-retry"),
-    # A single replica makes the per-token attempt counter deterministic: the
-    # redelivered queue entry returns to the same long-lived function worker.
-    min_replicas=1,
-    max_replicas=1,
     retries=1,
 )
 def retry_once(token: str) -> str:
