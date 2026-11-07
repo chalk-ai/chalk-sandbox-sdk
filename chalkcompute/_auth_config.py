@@ -13,6 +13,54 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+# Where a setting came from, described with the wording `chalk config` uses.
+
+
+@dataclass(frozen=True)
+class ArgumentSource:
+    name: str
+
+    @property
+    def description(self) -> str:
+        return f"{self.name} argument"
+
+
+@dataclass(frozen=True)
+class EnvVarSource:
+    name: str
+
+    @property
+    def description(self) -> str:
+        return f"env var {self.name}"
+
+
+@dataclass(frozen=True)
+class TokenSource:
+    """A ~/.chalk.yml token, keyed by project directory or ``default``."""
+
+    path: str
+
+    @property
+    def description(self) -> str:
+        return f"{self.path} token"
+
+    @property
+    def is_default(self) -> bool:
+        return self.path == "default"
+
+
+@dataclass(frozen=True)
+class PrimaryEnvironmentSource:
+    """No environment was requested, so the credentials' primary one is used."""
+
+    @property
+    def description(self) -> str:
+        return "primary environment of the credentials"
+
+
+Source = ArgumentSource | EnvVarSource | TokenSource | PrimaryEnvironmentSource
+
+
 @dataclass
 class TokenConfig:
     clientId: str
@@ -20,6 +68,7 @@ class TokenConfig:
     name: str | None = None
     apiServer: str | None = None
     activeEnvironment: str | None = None
+    environmentSource: Source | None = None
 
     @staticmethod
     def from_py(raw: Any, path: str) -> TokenConfig:
@@ -122,11 +171,25 @@ def _en(current_env_name: str, old_env_name: str | None = None) -> str | None:
 
 
 def active_environment_from_env() -> str | None:
-    return (
-        _en("CHALK_ENVIRONMENT", "_CHALK_ACTIVE_ENVIRONMENT")
-        or os.getenv("CHALK_ENVIRONMENT_ID")
-        or os.getenv("CHALK_ACTIVE_ENVIRONMENT")
-    )
+    found = active_environment_variable_from_env()
+    return None if found is None else found[1]
+
+
+def active_environment_variable_from_env() -> tuple[str, str] | None:
+    """Return the name and value of the environment variable selecting the env."""
+    value = _en("CHALK_ENVIRONMENT", "_CHALK_ACTIVE_ENVIRONMENT")
+    if value:
+        name = (
+            "CHALK_ENVIRONMENT"
+            if os.getenv("CHALK_ENVIRONMENT")
+            else "_CHALK_ACTIVE_ENVIRONMENT"
+        )
+        return name, value
+    for name in ("CHALK_ENVIRONMENT_ID", "CHALK_ACTIVE_ENVIRONMENT"):
+        value = os.getenv(name)
+        if value:
+            return name, value
+    return None
 
 
 def load_token(
@@ -141,7 +204,14 @@ def load_token(
     client_id = client_id or _en("CHALK_CLIENT_ID")
     client_secret = client_secret or _en("CHALK_CLIENT_SECRET")
     api_server = api_server or _en("CHALK_API_SERVER")
-    active_environment = active_environment or active_environment_from_env()
+    environment_source: Source | None = None
+    if active_environment:
+        environment_source = ArgumentSource("active_environment")
+    else:
+        found = active_environment_variable_from_env()
+        if found is not None:
+            name, active_environment = found
+            environment_source = EnvVarSource(name)
 
     if client_id is not None and client_secret is not None:
         return TokenConfig(
@@ -150,6 +220,7 @@ def load_token(
             clientSecret=client_secret,
             apiServer=api_server or "https://api.chalk.ai",
             activeEnvironment=active_environment,
+            environmentSource=environment_source or PrimaryEnvironmentSource(),
         )
 
     global_cfg = _load_global_config_uncached() if skip_cache else _load_global_config()
@@ -161,7 +232,11 @@ def load_token(
     if project_config:
         absdir = Path(project_config.local_path).parent
     tokens: Mapping[str, TokenConfig] = global_cfg.tokens or {}
-    token_config = tokens.get(str(absdir)) or tokens.get("default")
+    token_source = TokenSource(str(absdir))
+    token_config = tokens.get(token_source.path)
+    if token_config is None:
+        token_source = TokenSource("default")
+        token_config = tokens.get(token_source.path)
     if token_config is None:
         return None
 
@@ -171,6 +246,7 @@ def load_token(
         clientSecret=client_secret or token_config.clientSecret,
         apiServer=api_server or token_config.apiServer or "https://api.chalk.ai",
         activeEnvironment=active_environment or token_config.activeEnvironment,
+        environmentSource=environment_source or token_source,
     )
 
 
