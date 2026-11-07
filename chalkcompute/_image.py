@@ -1,7 +1,8 @@
 """
-Declarative image builder for Chalk sandboxes.
+Declarative image builder for Chalk sandboxes and containers.
 
-Build container images using a fluent API:
+Build container images using a fluent, immutable API — each method call
+returns a new ``Image`` recipe rather than mutating or building anything:
 
     from chalkcompute import Image, Sandbox
 
@@ -85,12 +86,26 @@ class LazyLocalFile:
 class Image:
     """Declarative, composable container image builder.
 
-    Uses a fluent (method-chaining) API. Each method returns a new ``Image``
-    instance so that intermediate images can be shared and extended.
+    An ``Image`` is a recipe, not a build: constructing or chaining methods
+    on one only records steps, it never contacts a service or runs Docker.
+    The recipe is sent as a protobuf ``ImageSpec`` to the sandbox service
+    (or build service), which builds and caches the actual image lazily,
+    the first time it's needed.
 
-    Call :meth:`build` to capture a reusable image with pinned file contents.
-    Built images work with every ``image=`` parameter and can be transferred
-    between processes using :meth:`to_json` and :meth:`from_json`.
+    Start from a constructor — :meth:`base`, :meth:`debian_slim`,
+    :meth:`sandbox`, or :meth:`from_dockerfile` — then extend with builder
+    methods such as :meth:`pip_install`, :meth:`apt_install`,
+    :meth:`run_commands`, :meth:`env`, :meth:`workdir`, :meth:`add_local_file`,
+    and :meth:`add_local_dir`. The API is fluent (method-chaining) and
+    immutable: every builder method returns a *new* ``Image``, leaving the
+    receiver unchanged, so intermediate images can be shared and extended
+    along different branches without interfering with each other.
+
+    Pass the result directly to ``image=`` on :class:`Sandbox`,
+    :class:`Container`, a function, or a class. Call :meth:`build` first to
+    capture a reusable image with pinned file contents; built images can
+    additionally be transferred between processes using :meth:`to_json` and
+    :meth:`from_json`.
 
     Examples
     --------
