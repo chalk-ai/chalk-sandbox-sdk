@@ -116,6 +116,23 @@ def validate_exec_command(method: str, command: object, args: Sequence[object]) 
             )
 
 
+def stdin_bytes(method: str, data: object) -> bytes:
+    """Return stdin ``data`` as bytes, UTF-8 encoding a ``str``.
+
+    ``method`` is the user-facing name (e.g. ``"write_stdin"``) used in the
+    error message for anything that is not str or bytes-like.
+    """
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    if isinstance(data, (bytearray, memoryview)):
+        return bytes(data)
+    if not isinstance(data, bytes):
+        raise TypeError(
+            f"{method}() data must be str or bytes, got {type(data).__name__}"
+        )
+    return data
+
+
 def validate_env(env: Mapping[str, str] | None) -> None:
     """Validate that an ``env`` mapping has non-empty string keys and string values.
 

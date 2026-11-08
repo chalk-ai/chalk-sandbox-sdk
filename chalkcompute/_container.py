@@ -63,6 +63,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import (
     sanitize_dns_label,
+    stdin_bytes,
     validate_env,
     validate_exec_command,
 )
@@ -330,14 +331,7 @@ class ContainerSession:
 
     def write(self, data: str | bytes) -> None:
         """Write data to the session process's stdin."""
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        elif isinstance(data, (bytearray, memoryview)):
-            data = bytes(data)
-        elif not isinstance(data, bytes):
-            raise TypeError(
-                f"write() data must be str or bytes, got {type(data).__name__}"
-            )
+        data = stdin_bytes("write", data)
         self._send(
             pb.OpenSessionRequest(command=Oneof("stdin_data", pb.StdinData(data=data)))
         )

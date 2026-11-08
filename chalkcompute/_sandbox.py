@@ -85,7 +85,7 @@ from chalkcompute._chalk_identity import (
     OIDCTokenFile,
     split_oidc_token_files,
 )
-from chalkcompute._naming import validate_env, validate_exec_command
+from chalkcompute._naming import stdin_bytes, validate_env, validate_exec_command
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -528,14 +528,7 @@ class ExecProcess:
         data
             Bytes or string to write to stdin. Strings are UTF-8 encoded.
         """
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        elif isinstance(data, (bytearray, memoryview)):
-            data = bytes(data)
-        elif not isinstance(data, bytes):
-            raise TypeError(
-                f"write_stdin() data must be str or bytes, got {type(data).__name__}"
-            )
+        data = stdin_bytes("write_stdin", data)
         self._request_queue.put(
             process_pb.OpenSessionRequest(
                 command=Oneof("stdin_data", process_pb.StdinData(data=data))
@@ -1733,16 +1726,20 @@ class Sandbox:
             and errors.
         """
         validate_exec_command("Sandbox.exec_stream", command, args)
-        self._require_started()
-        process = self.exec_start(
-            command,
-            *args,
-            timeout_secs=timeout_secs,
-            workdir=workdir,
-            env=env,
-        )
-        process.close_stdin()
-        yield from process.output()
+
+        def events() -> Iterator[ExecEvent]:
+            self._require_started()
+            process = self.exec_start(
+                command,
+                *args,
+                timeout_secs=timeout_secs,
+                workdir=workdir,
+                env=env,
+            )
+            process.close_stdin()
+            yield from process.output()
+
+        return events()
 
     def exec_start(
         self,

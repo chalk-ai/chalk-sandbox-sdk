@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, TypeVar
@@ -199,12 +199,11 @@ class RequestErrorInterceptor:
         ctx: RequestContext[_REQ, _RES],
         /,
     ) -> _RES:
-        recorded: list[Exception] = []
+        state = _StreamState()
         try:
-            return call_next(_checked_requests(request, recorded), ctx)
+            return call_next(_tracked_requests(request, state), ctx)
         except ConnectError as exc:
-            if recorded:
-                raise recorded[0] from exc
+            state.raise_request_error(exc)
             raise
 
     def intercept_bidi_stream_sync(
@@ -216,12 +215,11 @@ class RequestErrorInterceptor:
         ctx: RequestContext[_REQ, _RES],
         /,
     ) -> Iterator[_RES]:
-        recorded: list[Exception] = []
+        state = _StreamState()
         try:
-            yield from call_next(_checked_requests(request, recorded), ctx)
+            yield from call_next(_tracked_requests(request, state), ctx)
         except ConnectError as exc:
-            if recorded:
-                raise recorded[0] from exc
+            state.raise_request_error(exc)
             raise
 
 
@@ -234,21 +232,36 @@ def _raise_encode_error(request: object, exc: ConnectError) -> None:
         raise request_error from exc
 
 
-def _checked_requests(
-    requests: Iterator[_REQ], recorded: list[Exception]
-) -> Iterator[_REQ]:
-    codec = proto_binary_codec()
+class _StreamState:
+    """Per-call state for a request stream: the last message handed to
+    connectrpc and any exception the caller's request iterator raised."""
+
+    def __init__(self) -> None:
+        self.last: object | None = None
+        self.error: Exception | None = None
+
+    def raise_request_error(self, exc: ConnectError) -> None:
+        if self.error is not None:
+            raise self.error from exc
+        if self.last is not None:
+            # connectrpc encodes each message right after pulling it, so a
+            # failed encode is always of the last message yielded. Only
+            # re-encoded after a failed call: a successful stream is never
+            # encoded twice.
+            _raise_encode_error(self.last, exc)
+
+
+def _tracked_requests(requests: Iterable[_REQ], state: _StreamState) -> Iterator[_REQ]:
+    iterator = iter(requests)
     while True:
         try:
-            request = next(requests)
-            # connectrpc encodes again in a frame we can't see; encoding here
-            # first makes a failure raise where we can record it.
-            codec.encode(request)
+            request = next(iterator)
         except StopIteration:
             return
         except Exception as exc:
-            recorded.append(exc)
+            state.error = exc
             raise
+        state.last = request
         yield request
 
 

@@ -1780,6 +1780,26 @@ def test_sandbox_exec_over_h2_transport_happy_path() -> None:
     assert transport.calls == ["OpenSession"]
 
 
+def test_successful_bidi_stream_encodes_each_message_once() -> None:
+    codec_type = type(proto_binary_codec())
+    real_encode = codec_type.encode
+    encoded: list[object] = []
+
+    def counting_encode(self, message):
+        encoded.append(message)
+        return real_encode(self, message)
+
+    with _h2_transport(), patch.object(codec_type, "encode", counting_encode):
+        client, sandbox = _h2_sandbox()
+        try:
+            result = sandbox.exec("echo", "hello")
+        finally:
+            client.close()
+    assert result.exit_code == 0
+    # new_process + stdin_eof, each encoded only by the transport.
+    assert [m.command.field for m in encoded] == ["new_process", "stdin_eof"]
+
+
 def test_upload_request_iterator_error_surfaces_as_itself() -> None:
     with _h2_transport() as transport:
         client, sandbox = _h2_sandbox()
@@ -1843,7 +1863,7 @@ def test_sandbox_exec_stream_list_command_names_exec_stream() -> None:
             with pytest.raises(
                 TypeError, match=r"^Sandbox\.exec_stream\(\) .*exec_stream\("
             ):
-                list(sandbox.exec_stream(["echo", "hello"]))  # type: ignore[arg-type]
+                sandbox.exec_stream(["echo", "hello"])  # type: ignore[arg-type]
         finally:
             client.close()
     assert transport.calls == []
