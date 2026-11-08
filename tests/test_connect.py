@@ -1628,7 +1628,7 @@ class TestStubAndCall:
         assert captured == {
             "address": "http://localhost:50051",
             "protocol": ProtocolType.GRPC,
-            "interceptor_count": 2,
+            "interceptor_count": 3,
             "http_client": SYNC_HTTP_CLIENT,
             "read_max_bytes": RPC_READ_MAX_BYTES,
         }

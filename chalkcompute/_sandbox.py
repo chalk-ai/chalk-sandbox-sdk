@@ -69,7 +69,6 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
     process_service_connect as process_connect,
 )
 from chalkcompute._image_build import normalize_image_volumes
-from chalkcompute._session_stream import open_session_stream
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
@@ -693,14 +692,8 @@ class ExecProcess:
                     yield request
 
             self._request_queue = request_queue
-            client = self._client
-            self._response_iterator = open_session_stream(
-                lambda requests: client._process_stub.open_session(
-                    requests, headers=client._headers
-                ),
-                request_iterator(),
-                sandbox_id=self._sandbox_id,
-                session_id=self.session_id,
+            self._response_iterator = self._client._process_stub.open_session(
+                request_iterator(), headers=self._client._headers
             )
 
         return ExecResult(
@@ -1823,12 +1816,8 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = open_session_stream(
-                lambda requests: client._process_stub.open_session(
-                    requests, headers=client._headers
-                ),
-                request_iterator(),
-                sandbox_id=sandbox_id,
+            response_iterator = client._process_stub.open_session(
+                request_iterator(), headers=client._headers
             )
         except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)

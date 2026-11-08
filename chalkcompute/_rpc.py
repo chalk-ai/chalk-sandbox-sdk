@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from connectrpc.code import Code
+from connectrpc.codec import proto_binary_codec
 from connectrpc.errors import ConnectError
 from connectrpc.request import RequestContext
 from opentelemetry import propagate
@@ -152,9 +153,112 @@ class RetryInterceptor:
         raise last_error
 
 
-def rpc_interceptors() -> tuple[RetryInterceptor, TracingInterceptor]:
+class RequestErrorInterceptor:
+    """Raise request-side errors that the HTTP/2 transport hides.
+
+    connectrpc encodes request messages inside the generator it hands to the
+    HTTP/2 transport as the request body (unary requests too, under the gRPC
+    protocol). If producing or encoding a request raises there, hyper swallows
+    the exception, resets the stream, and the caller only sees
+    ``ConnectError(UNAVAILABLE): ... stream error sent by user`` -- a code
+    that also looks transient, so it gets retried. This interceptor finds the
+    request-side error in a frame it can see and raises it in place of that
+    ``ConnectError``.
+    """
+
+    def intercept_unary_sync(
+        self,
+        call_next: Callable[[_REQ, RequestContext[_REQ, _RES]], _RES],
+        request: _REQ,
+        ctx: RequestContext[_REQ, _RES],
+        /,
+    ) -> _RES:
+        try:
+            return call_next(request, ctx)
+        except ConnectError as exc:
+            _raise_encode_error(request, exc)
+            raise
+
+    def intercept_server_stream_sync(
+        self,
+        call_next: Callable[[_REQ, RequestContext[_REQ, _RES]], Iterator[_RES]],
+        request: _REQ,
+        ctx: RequestContext[_REQ, _RES],
+        /,
+    ) -> Iterator[_RES]:
+        try:
+            yield from call_next(request, ctx)
+        except ConnectError as exc:
+            _raise_encode_error(request, exc)
+            raise
+
+    def intercept_client_stream_sync(
+        self,
+        call_next: Callable[[Iterator[_REQ], RequestContext[_REQ, _RES]], _RES],
+        request: Iterator[_REQ],
+        ctx: RequestContext[_REQ, _RES],
+        /,
+    ) -> _RES:
+        recorded: list[Exception] = []
+        try:
+            return call_next(_checked_requests(request, recorded), ctx)
+        except ConnectError as exc:
+            if recorded:
+                raise recorded[0] from exc
+            raise
+
+    def intercept_bidi_stream_sync(
+        self,
+        call_next: Callable[
+            [Iterator[_REQ], RequestContext[_REQ, _RES]], Iterator[_RES]
+        ],
+        request: Iterator[_REQ],
+        ctx: RequestContext[_REQ, _RES],
+        /,
+    ) -> Iterator[_RES]:
+        recorded: list[Exception] = []
+        try:
+            yield from call_next(_checked_requests(request, recorded), ctx)
+        except ConnectError as exc:
+            if recorded:
+                raise recorded[0] from exc
+            raise
+
+
+def _raise_encode_error(request: object, exc: ConnectError) -> None:
+    # Only reached after a failed call, so successful calls never pay for a
+    # second encode.
+    try:
+        proto_binary_codec().encode(request)
+    except Exception as request_error:
+        raise request_error from exc
+
+
+def _checked_requests(
+    requests: Iterator[_REQ], recorded: list[Exception]
+) -> Iterator[_REQ]:
+    codec = proto_binary_codec()
+    while True:
+        try:
+            request = next(requests)
+            # connectrpc encodes again in a frame we can't see; encoding here
+            # first makes a failure raise where we can record it.
+            codec.encode(request)
+        except StopIteration:
+            return
+        except Exception as exc:
+            recorded.append(exc)
+            raise
+        yield request
+
+
+def rpc_interceptors() -> tuple[
+    RetryInterceptor, TracingInterceptor, RequestErrorInterceptor
+]:
     """Return the common interceptors for a generated synchronous client.
 
-    Retry runs outermost so each attempt is traced independently.
+    Retry runs outermost so each attempt is traced independently. Request
+    errors are surfaced innermost, so tracing records the real error and
+    retry never replays it (it is not a ``ConnectError``).
     """
-    return (RetryInterceptor(), TracingInterceptor())
+    return (RetryInterceptor(), TracingInterceptor(), RequestErrorInterceptor())
