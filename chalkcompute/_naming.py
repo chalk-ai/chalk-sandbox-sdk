@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from chalkcompute._chalk_identity import OIDCTokenFile
 from chalkcompute._secret import Secret
@@ -90,6 +90,30 @@ def sanitize_dns_label(name: str, max_length: int = 63) -> str:
             "the name must contain at least one letter and not start with a digit."
         )
     return name
+
+
+def validate_exec_command(method: str, command: object, args: Sequence[object]) -> None:
+    """Validate an exec-style ``command`` and ``args`` before any RPC.
+
+    ``method`` is the user-facing name (e.g. ``"Sandbox.exec"``) used in the
+    error message. A list or tuple passed as the command gets a hint to pass
+    the command and its args as separate strings.
+    """
+    short = method.rsplit(".", 1)[-1]
+    if isinstance(command, (list, tuple)):
+        raise TypeError(
+            f"{method}() takes the command and its args as separate "
+            f'strings: {short}("echo", "hello"), not {short}(["echo", "hello"])'
+        )
+    if not isinstance(command, str):
+        raise TypeError(
+            f"{method}() command must be a str, got {type(command).__name__}"
+        )
+    for arg in args:
+        if not isinstance(arg, str):
+            raise TypeError(
+                f"{method}() args must be str, got {type(arg).__name__}: {arg!r}"
+            )
 
 
 def validate_env(env: Mapping[str, str] | None) -> None:

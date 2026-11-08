@@ -1751,7 +1751,13 @@ def test_sandbox_exec_request_error_after_attach_does_not_reattach() -> None:
             process = sandbox.exec_start("cat")
             first = next(process.output())
             assert first.session_id == "session-123"
-            process.write_stdin(123)  # type: ignore[arg-type]
+            # write_stdin rejects 123 up front, so enqueue a request that
+            # only fails at encode time to exercise the mid-stream path.
+            process._request_queue.put(
+                process_pb.OpenSessionRequest(
+                    command=Oneof("stdin_data", process_pb.StdinData(data=123))  # type: ignore[arg-type]
+                )
+            )
             process.close_stdin()
             with patch("chalkcompute._sandbox.time.sleep"):
                 with pytest.raises(TypeError, match="expected bytes") as exc_info:
@@ -1791,22 +1797,90 @@ def test_upload_request_iterator_error_surfaces_as_itself() -> None:
     assert transport.calls == ["UploadFile"]
 
 
-def test_container_exec_list_command_raises_type_error_after_one_attempt() -> None:
+def _h2_container():
     from chalkcompute._container import Container, ContainerSessionClient
 
+    container = Container(image="ubuntu:latest")
+    container._container_id = "container-123"
+    container._session_client = ContainerSessionClient(
+        "localhost:1", credentials=None, metadata=[]
+    )
+    return container, container._session_client
+
+
+def test_container_exec_list_command_raises_hint_without_rpc() -> None:
     with _h2_transport() as transport:
-        container = Container(image="ubuntu:latest")
-        container._container_id = "container-123"
-        container._session_client = ContainerSessionClient(
-            "localhost:1", credentials=None, metadata=[]
-        )
+        container, session_client = _h2_container()
+        try:
+            with pytest.raises(
+                TypeError,
+                match=r'Container\.exec\(\) .*exec\("echo", "hello"\), not exec\(\["echo", "hello"\]\)',
+            ):
+                container.exec(["echo", "hello"])  # type: ignore[arg-type]
+            with pytest.raises(TypeError, match=r"Container\.new_session\(\)"):
+                container.new_session(["echo", "hello"])  # type: ignore[arg-type]
+        finally:
+            session_client.close()
+    assert transport.calls == []
+
+
+def test_container_unary_request_encode_error_after_one_attempt() -> None:
+    with _h2_transport() as transport:
+        _container, session_client = _h2_container()
         try:
             with pytest.raises(TypeError, match="expected string") as exc_info:
-                container.exec(["echo", "hello"])  # type: ignore[arg-type]
+                session_client.exec_command("container-123", ["echo"])  # type: ignore[arg-type]
         finally:
-            container._session_client.close()
+            session_client.close()
     assert isinstance(exc_info.value.__cause__, ConnectRpcError)
     assert transport.calls == ["ExecCommand"]
+
+
+def test_sandbox_exec_stream_list_command_names_exec_stream() -> None:
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        try:
+            with pytest.raises(
+                TypeError, match=r"^Sandbox\.exec_stream\(\) .*exec_stream\("
+            ):
+                list(sandbox.exec_stream(["echo", "hello"]))  # type: ignore[arg-type]
+        finally:
+            client.close()
+    assert transport.calls == []
+
+
+def test_write_stdin_rejects_non_bytes_at_call() -> None:
+    with _h2_transport():
+        client, sandbox = _h2_sandbox()
+        try:
+            process = sandbox.exec_start("cat")
+            pending = process._request_queue.qsize()
+            with pytest.raises(
+                TypeError, match="write_stdin\\(\\) data must be str or bytes, got int"
+            ):
+                process.write_stdin(123)  # type: ignore[arg-type]
+            assert process._request_queue.qsize() == pending
+            process.close_stdin()
+            process.wait()
+        finally:
+            client.close()
+
+
+def test_container_session_write_rejects_non_bytes_at_call() -> None:
+    from chalkcompute._container import ContainerSession
+
+    request_queue: queue.Queue = queue.Queue()
+    session = ContainerSession(
+        _client=None,  # type: ignore[arg-type]
+        _container_id="container-123",
+        _request_queue=request_queue,
+        _response_iterator=iter([]),
+    )
+    with pytest.raises(
+        TypeError, match=r"write\(\) data must be str or bytes, got int"
+    ):
+        session.write(123)  # type: ignore[arg-type]
+    assert request_queue.empty()
 
 
 def test_rpc_span_records_masked_request_error(monkeypatch) -> None:

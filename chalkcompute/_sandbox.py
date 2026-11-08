@@ -85,7 +85,7 @@ from chalkcompute._chalk_identity import (
     OIDCTokenFile,
     split_oidc_token_files,
 )
-from chalkcompute._naming import validate_env
+from chalkcompute._naming import validate_env, validate_exec_command
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -530,6 +530,12 @@ class ExecProcess:
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
+        elif isinstance(data, (bytearray, memoryview)):
+            data = bytes(data)
+        elif not isinstance(data, bytes):
+            raise TypeError(
+                f"write_stdin() data must be str or bytes, got {type(data).__name__}"
+            )
         self._request_queue.put(
             process_pb.OpenSessionRequest(
                 command=Oneof("stdin_data", process_pb.StdinData(data=data))
@@ -704,25 +710,6 @@ class ExecProcess:
             error=error,
             session_id=self.session_id,
         )
-
-
-def _validate_exec_command(
-    method: str, command: object, args: tuple[object, ...]
-) -> None:
-    if isinstance(command, (list, tuple)):
-        raise TypeError(
-            f"Sandbox.{method}() takes the command and its args as separate "
-            f'strings: {method}("echo", "hello"), not {method}(["echo", "hello"])'
-        )
-    if not isinstance(command, str):
-        raise TypeError(
-            f"Sandbox.{method}() command must be a str, got {type(command).__name__}"
-        )
-    for arg in args:
-        if not isinstance(arg, str):
-            raise TypeError(
-                f"Sandbox.{method}() args must be str, got {type(arg).__name__}: {arg!r}"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -1677,7 +1664,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
-        _validate_exec_command("exec", command, args)
+        validate_exec_command("Sandbox.exec", command, args)
         _set_sandbox_span_id(self._id)
         sandbox_id = self._require_started()
         validate_env(env)
@@ -1745,6 +1732,7 @@ class Sandbox:
             Events for process start, stdout/stderr output, process exit,
             and errors.
         """
+        validate_exec_command("Sandbox.exec_stream", command, args)
         self._require_started()
         process = self.exec_start(
             command,
@@ -1786,7 +1774,7 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
-        _validate_exec_command("exec_start", command, args)
+        validate_exec_command("Sandbox.exec_start", command, args)
         sandbox_id = self._require_session()
         client = self._require_client()
         init = process_pb.NewProcess(
