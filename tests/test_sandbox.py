@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Iterator
 from unittest.mock import ANY, MagicMock, patch
 
@@ -13,6 +15,7 @@ from chalkcompute import (
     Secret,
 )
 from connectrpc.code import Code
+from connectrpc.codec import proto_binary_codec
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import Duration, Timestamp
@@ -1600,6 +1603,143 @@ def test_sandbox_reattach() -> None:
     assert result.session_id == "session-123"
     assert result.stdout == b"hello"
     assert result.exit_code == 0
+
+
+_H2_RESET = object()
+_H2_STREAM_END = object()
+_H2_RESET_MESSAGE = (
+    "client error (SendRequest): http2 error: stream error sent by user: "
+    "unexpected internal error encountered"
+)
+
+
+class _H2TransportProcessStub:
+    """Behaves like pyqwest/hyper: drains requests on a thread and turns any
+    request-side exception into an opaque h2 reset on the response side."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def open_session(self, requests, **_kwargs: object):
+        self.calls += 1
+        events: queue.Queue[object] = queue.Queue()
+
+        def drain() -> None:
+            codec = proto_binary_codec()
+            try:
+                for request in requests:
+                    codec.encode(request)
+                    events.put(request)
+                    if request.command.field == "stdin_eof":
+                        return
+            except Exception:
+                events.put(_H2_RESET)
+                return
+            events.put(_H2_STREAM_END)
+
+        threading.Thread(target=drain, daemon=True).start()
+        return self._responses(events)
+
+    @staticmethod
+    def _responses(events: queue.Queue[object]):
+        while True:
+            item = events.get(timeout=5)
+            if item is _H2_RESET:
+                raise ConnectRpcError(Code.UNAVAILABLE, _H2_RESET_MESSAGE)
+            if item is _H2_STREAM_END:
+                return
+            assert isinstance(item, process_pb.OpenSessionRequest)
+            match item.command.field:
+                case "new_process" | "attach_session":
+                    yield process_pb.OpenSessionResponse(
+                        event=Oneof(
+                            "session_attached",
+                            process_pb.SessionAttached(session_id="session-123"),
+                        )
+                    )
+                case "stdin_eof":
+                    yield process_pb.OpenSessionResponse(
+                        event=Oneof(
+                            "output_data",
+                            process_pb.OutputData(
+                                stream=process_pb.OutputData.Stream.STDOUT,
+                                data=b"hello\n",
+                            ),
+                        )
+                    )
+                    yield process_pb.OpenSessionResponse(
+                        event=Oneof(
+                            "process_exited", process_pb.ProcessExited(exit_code=0)
+                        )
+                    )
+                    return
+
+
+def _h2_sandbox() -> tuple[SandboxClient, _H2TransportProcessStub, Sandbox]:
+    client = SandboxClient()
+    stub = _H2TransportProcessStub()
+    client._process_stub = stub  # type: ignore[assignment]
+    client._stub = _Stub()  # type: ignore[assignment]
+    return client, stub, Sandbox(client=client, sandbox_id="sandbox-123")
+
+
+def test_sandbox_exec_list_command_raises_type_error_without_rpc() -> None:
+    client, stub, sandbox = _h2_sandbox()
+    try:
+        with pytest.raises(TypeError, match=r'exec\("echo", "hello"\)'):
+            sandbox.exec(["echo", "hello"])  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="args must be str"):
+            sandbox.exec_start("echo", 1)  # type: ignore[arg-type]
+    finally:
+        client.close()
+    assert stub.calls == 0
+
+
+def test_open_session_stream_surfaces_request_encode_error() -> None:
+    from chalkcompute._session_stream import open_session_stream
+
+    stub = _H2TransportProcessStub()
+    bad = process_pb.OpenSessionRequest(
+        command=Oneof(
+            "new_process",
+            process_pb.NewProcess(sandbox_id="sandbox-123", command=["echo"]),  # type: ignore[arg-type]
+        )
+    )
+    responses = open_session_stream(
+        stub.open_session, iter([bad]), sandbox_id="sandbox-123"
+    )
+    with pytest.raises(TypeError, match="expected string") as exc_info:
+        list(responses)
+    assert isinstance(exc_info.value.__cause__, ConnectRpcError)
+    assert exc_info.value.__cause__.code == Code.UNAVAILABLE
+
+
+def test_sandbox_exec_request_error_after_attach_does_not_reattach() -> None:
+    client, stub, sandbox = _h2_sandbox()
+    try:
+        process = sandbox.exec_start("cat")
+        first = next(process.output())
+        assert first.session_id == "session-123"
+        process.write_stdin(123)  # type: ignore[arg-type]
+        process.close_stdin()
+        with patch("chalkcompute._sandbox.time.sleep"):
+            with pytest.raises(TypeError, match="expected bytes") as exc_info:
+                process.wait()
+    finally:
+        client.close()
+    assert isinstance(exc_info.value.__cause__, ConnectRpcError)
+    assert stub.calls == 1
+
+
+def test_sandbox_exec_over_h2_transport_happy_path() -> None:
+    client, stub, sandbox = _h2_sandbox()
+    try:
+        result = sandbox.exec("echo", "hello")
+    finally:
+        client.close()
+    assert result.stdout == b"hello\n"
+    assert result.exit_code == 0
+    assert stub.calls == 1
 
 
 class _TerminatedStub:

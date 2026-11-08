@@ -67,6 +67,7 @@ from chalkcompute._naming import (
 )
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
+from chalkcompute._session_stream import open_session_stream
 from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     merge_workload_tracing_env,
@@ -648,9 +649,13 @@ class ContainerSessionClient:
                 yield request
 
         try:
-            response_iterator = self._stub.open_session(
+            response_iterator = open_session_stream(
+                lambda requests: self._stub.open_session(
+                    requests,
+                    headers=dict(self._metadata),
+                ),
                 request_iterator(),
-                headers=dict(self._metadata),
+                sandbox_id=container_id,
             )
         except ConnectRpcError as e:
             _handle_container_rpc_error(e, container_id)

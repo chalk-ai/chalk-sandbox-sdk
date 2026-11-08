@@ -69,6 +69,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
     process_service_connect as process_connect,
 )
 from chalkcompute._image_build import normalize_image_volumes
+from chalkcompute._session_stream import open_session_stream
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
@@ -692,8 +693,14 @@ class ExecProcess:
                     yield request
 
             self._request_queue = request_queue
-            self._response_iterator = self._client._process_stub.open_session(
-                request_iterator(), headers=self._client._headers
+            client = self._client
+            self._response_iterator = open_session_stream(
+                lambda requests: client._process_stub.open_session(
+                    requests, headers=client._headers
+                ),
+                request_iterator(),
+                sandbox_id=self._sandbox_id,
+                session_id=self.session_id,
             )
 
         return ExecResult(
@@ -704,6 +711,25 @@ class ExecProcess:
             error=error,
             session_id=self.session_id,
         )
+
+
+def _validate_exec_command(
+    method: str, command: object, args: tuple[object, ...]
+) -> None:
+    if isinstance(command, (list, tuple)):
+        raise TypeError(
+            f"Sandbox.{method}() takes the command and its args as separate "
+            f'strings: {method}("echo", "hello"), not {method}(["echo", "hello"])'
+        )
+    if not isinstance(command, str):
+        raise TypeError(
+            f"Sandbox.{method}() command must be a str, got {type(command).__name__}"
+        )
+    for arg in args:
+        if not isinstance(arg, str):
+            raise TypeError(
+                f"Sandbox.{method}() args must be str, got {type(arg).__name__}: {arg!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1658,6 +1684,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
+        _validate_exec_command("exec", command, args)
         _set_sandbox_span_id(self._id)
         sandbox_id = self._require_started()
         validate_env(env)
@@ -1766,6 +1793,7 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
+        _validate_exec_command("exec_start", command, args)
         sandbox_id = self._require_session()
         client = self._require_client()
         init = process_pb.NewProcess(
@@ -1795,8 +1823,12 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = client._process_stub.open_session(
-                request_iterator(), headers=client._headers
+            response_iterator = open_session_stream(
+                lambda requests: client._process_stub.open_session(
+                    requests, headers=client._headers
+                ),
+                request_iterator(),
+                sandbox_id=sandbox_id,
             )
         except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
