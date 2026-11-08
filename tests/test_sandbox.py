@@ -1869,6 +1869,20 @@ def test_sandbox_exec_stream_list_command_names_exec_stream() -> None:
     assert transport.calls == []
 
 
+def test_sandbox_exec_stream_k8s_raises_at_call() -> None:
+    from chalkcompute import ComputeClass
+
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        sandbox._compute_class = ComputeClass.K8S
+        try:
+            with pytest.raises(SandboxError, match="require a HOST compute class"):
+                sandbox.exec_stream("ls")
+        finally:
+            client.close()
+    assert transport.calls == []
+
+
 def test_write_stdin_rejects_non_bytes_at_call() -> None:
     with _h2_transport():
         client, sandbox = _h2_sandbox()
