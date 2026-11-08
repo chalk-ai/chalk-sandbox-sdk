@@ -1726,9 +1726,9 @@ class Sandbox:
             and errors.
         """
         validate_exec_command("Sandbox.exec_stream", command, args)
+        self._require_started()
 
         def events() -> Iterator[ExecEvent]:
-            self._require_started()
             process = self.exec_start(
                 command,
                 *args,
