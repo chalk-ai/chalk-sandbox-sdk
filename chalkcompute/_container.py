@@ -63,7 +63,9 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import (
     sanitize_dns_label,
+    stdin_bytes,
     validate_env,
+    validate_exec_command,
 )
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
@@ -329,8 +331,7 @@ class ContainerSession:
 
     def write(self, data: str | bytes) -> None:
         """Write data to the session process's stdin."""
-        if isinstance(data, str):
-            data = data.encode("utf-8")
+        data = stdin_bytes("write", data)
         self._send(
             pb.OpenSessionRequest(command=Oneof("stdin_data", pb.StdinData(data=data)))
         )
@@ -1305,6 +1306,7 @@ class Container:
 
         if not command:
             raise ValueError("exec() requires a command")
+        validate_exec_command("Container.exec", command[0], command[1:])
 
         response = self._get_session_client().exec_command(
             self._container_id,
@@ -1333,6 +1335,7 @@ class Container:
         The returned :class:`ContainerSession` can stream output, accept stdin,
         detach, and later be reattached with :meth:`attach_session`.
         """
+        validate_exec_command("Container.new_session", command, args)
         container_id = self._require_container_id()
         return self._get_session_client().new_session(
             container_id,

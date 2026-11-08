@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -12,7 +15,9 @@ from chalkcompute import (
     SandboxSnapshot,
     Secret,
 )
+from connectrpc.client import ConnectClientSync
 from connectrpc.code import Code
+from connectrpc.codec import proto_binary_codec
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import Duration, Timestamp
@@ -1600,6 +1605,353 @@ def test_sandbox_reattach() -> None:
     assert result.session_id == "session-123"
     assert result.stdout == b"hello"
     assert result.exit_code == 0
+
+
+_H2_RESET = object()
+_H2_STREAM_END = object()
+_H2_RESET_MESSAGE = (
+    "client error (SendRequest): http2 error: stream error sent by user: "
+    "unexpected internal error encountered"
+)
+
+
+class _H2Transport:
+    """Stands in for ``ConnectClientSync._send_request_bidi_stream`` over
+    pyqwest/hyper: drains requests on a thread, encodes them, and turns any
+    request-side exception into the opaque h2 reset on the response side."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def send(self, requests, ctx):
+        self.calls.append(ctx.method.name)
+        events: queue.Queue[object] = queue.Queue()
+
+        def drain() -> None:
+            codec = proto_binary_codec()
+            try:
+                for request in requests:
+                    codec.encode(request)
+                    events.put(request)
+                    if (
+                        isinstance(request, process_pb.OpenSessionRequest)
+                        and request.command.field == "stdin_eof"
+                    ):
+                        return
+            except Exception:
+                events.put(_H2_RESET)
+                return
+            events.put(_H2_STREAM_END)
+
+        threading.Thread(target=drain, daemon=True).start()
+        return self._responses(events)
+
+    @staticmethod
+    def _responses(events: queue.Queue[object]):
+        while True:
+            item = events.get(timeout=5)
+            if item is _H2_RESET:
+                raise ConnectRpcError(Code.UNAVAILABLE, _H2_RESET_MESSAGE)
+            if item is _H2_STREAM_END:
+                return
+            if not isinstance(item, process_pb.OpenSessionRequest):
+                continue
+            match item.command.field:
+                case "new_process" | "attach_session":
+                    yield process_pb.OpenSessionResponse(
+                        event=Oneof(
+                            "session_attached",
+                            process_pb.SessionAttached(session_id="session-123"),
+                        )
+                    )
+                case "stdin_eof":
+                    yield process_pb.OpenSessionResponse(
+                        event=Oneof(
+                            "output_data",
+                            process_pb.OutputData(
+                                stream=process_pb.OutputData.Stream.STDOUT,
+                                data=b"hello\n",
+                            ),
+                        )
+                    )
+                    yield process_pb.OpenSessionResponse(
+                        event=Oneof(
+                            "process_exited", process_pb.ProcessExited(exit_code=0)
+                        )
+                    )
+                    return
+
+
+@contextmanager
+def _h2_transport() -> Iterator[_H2Transport]:
+    """Patch the transport under every generated stub. Stubs built inside the
+    block keep their production ``rpc_interceptors()`` chain; the patch must
+    stay active for their calls too, since the chain binds it at construction.
+    Retry backoff sleeps are skipped."""
+    transport = _H2Transport()
+
+    def send(_client: object, requests, ctx):
+        return transport.send(requests, ctx)
+
+    with (
+        patch.object(ConnectClientSync, "_send_request_bidi_stream", send),
+        patch("chalkcompute._rpc.time.sleep"),
+    ):
+        yield transport
+
+
+def _h2_sandbox() -> tuple[SandboxClient, Sandbox]:
+    client = SandboxClient()
+    client._stub = _Stub()  # type: ignore[assignment]
+    return client, Sandbox(client=client, sandbox_id="sandbox-123")
+
+
+def _list_command_new_process() -> process_pb.OpenSessionRequest:
+    return process_pb.OpenSessionRequest(
+        command=Oneof(
+            "new_process",
+            process_pb.NewProcess(sandbox_id="sandbox-123", command=["echo"]),  # type: ignore[arg-type]
+        )
+    )
+
+
+def test_sandbox_exec_list_command_raises_type_error_without_rpc() -> None:
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        try:
+            with pytest.raises(TypeError, match=r'exec\("echo", "hello"\)'):
+                sandbox.exec(["echo", "hello"])  # type: ignore[arg-type]
+            with pytest.raises(TypeError, match="args must be str"):
+                sandbox.exec_start("echo", 1)  # type: ignore[arg-type]
+        finally:
+            client.close()
+    assert transport.calls == []
+
+
+def test_open_session_surfaces_request_encode_error() -> None:
+    with _h2_transport() as transport:
+        client, _sandbox = _h2_sandbox()
+        try:
+            responses = client._process_stub.open_session(
+                iter([_list_command_new_process()])
+            )
+            with pytest.raises(TypeError, match="expected string") as exc_info:
+                list(responses)
+        finally:
+            client.close()
+    assert isinstance(exc_info.value.__cause__, ConnectRpcError)
+    assert exc_info.value.__cause__.code == Code.UNAVAILABLE
+    assert transport.calls == ["OpenSession"]
+
+
+def test_sandbox_exec_request_error_after_attach_does_not_reattach() -> None:
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        try:
+            process = sandbox.exec_start("cat")
+            first = next(process.output())
+            assert first.session_id == "session-123"
+            # write_stdin rejects 123 up front, so enqueue a request that
+            # only fails at encode time to exercise the mid-stream path.
+            process._request_queue.put(
+                process_pb.OpenSessionRequest(
+                    command=Oneof("stdin_data", process_pb.StdinData(data=123))  # type: ignore[arg-type]
+                )
+            )
+            process.close_stdin()
+            with patch("chalkcompute._sandbox.time.sleep"):
+                with pytest.raises(TypeError, match="expected bytes") as exc_info:
+                    process.wait()
+        finally:
+            client.close()
+    assert isinstance(exc_info.value.__cause__, ConnectRpcError)
+    assert transport.calls == ["OpenSession"]
+
+
+def test_sandbox_exec_over_h2_transport_happy_path() -> None:
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        try:
+            result = sandbox.exec("echo", "hello")
+        finally:
+            client.close()
+    assert result.stdout == b"hello\n"
+    assert result.exit_code == 0
+    assert transport.calls == ["OpenSession"]
+
+
+def test_successful_bidi_stream_encodes_each_message_once() -> None:
+    codec_type = type(proto_binary_codec())
+    real_encode = codec_type.encode
+    encoded: list[object] = []
+
+    def counting_encode(self, message):
+        encoded.append(message)
+        return real_encode(self, message)
+
+    with _h2_transport(), patch.object(codec_type, "encode", counting_encode):
+        client, sandbox = _h2_sandbox()
+        try:
+            result = sandbox.exec("echo", "hello")
+        finally:
+            client.close()
+    assert result.exit_code == 0
+    # new_process + stdin_eof, each encoded only by the transport.
+    assert [m.command.field for m in encoded] == ["new_process", "stdin_eof"]
+
+
+def test_upload_request_iterator_error_surfaces_as_itself() -> None:
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        try:
+            with pytest.raises(TypeError, match="upload chunks must be bytes") as exc:
+                sandbox.fs._upload(
+                    iter([b"ok", "not-bytes"]),  # type: ignore[list-item]
+                    "/tmp/x",
+                    mode=None,
+                    timeout_secs=None,
+                )
+        finally:
+            client.close()
+    assert isinstance(exc.value.__cause__, ConnectRpcError)
+    assert transport.calls == ["UploadFile"]
+
+
+def _h2_container():
+    from chalkcompute._container import Container, ContainerSessionClient
+
+    container = Container(image="ubuntu:latest")
+    container._container_id = "container-123"
+    container._session_client = ContainerSessionClient(
+        "localhost:1", credentials=None, metadata=[]
+    )
+    return container, container._session_client
+
+
+def test_container_exec_list_command_raises_hint_without_rpc() -> None:
+    with _h2_transport() as transport:
+        container, session_client = _h2_container()
+        try:
+            with pytest.raises(
+                TypeError,
+                match=r'Container\.exec\(\) .*exec\("echo", "hello"\), not exec\(\["echo", "hello"\]\)',
+            ):
+                container.exec(["echo", "hello"])  # type: ignore[arg-type]
+            with pytest.raises(TypeError, match=r"Container\.new_session\(\)"):
+                container.new_session(["echo", "hello"])  # type: ignore[arg-type]
+        finally:
+            session_client.close()
+    assert transport.calls == []
+
+
+def test_container_unary_request_encode_error_after_one_attempt() -> None:
+    with _h2_transport() as transport:
+        _container, session_client = _h2_container()
+        try:
+            with pytest.raises(TypeError, match="expected string") as exc_info:
+                session_client.exec_command("container-123", ["echo"])  # type: ignore[arg-type]
+        finally:
+            session_client.close()
+    assert isinstance(exc_info.value.__cause__, ConnectRpcError)
+    assert transport.calls == ["ExecCommand"]
+
+
+def test_sandbox_exec_stream_list_command_names_exec_stream() -> None:
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        try:
+            with pytest.raises(
+                TypeError, match=r"^Sandbox\.exec_stream\(\) .*exec_stream\("
+            ):
+                sandbox.exec_stream(["echo", "hello"])  # type: ignore[arg-type]
+        finally:
+            client.close()
+    assert transport.calls == []
+
+
+def test_sandbox_exec_stream_k8s_raises_at_call() -> None:
+    from chalkcompute import ComputeClass
+
+    with _h2_transport() as transport:
+        client, sandbox = _h2_sandbox()
+        sandbox._compute_class = ComputeClass.K8S
+        try:
+            with pytest.raises(SandboxError, match="require a HOST compute class"):
+                sandbox.exec_stream("ls")
+        finally:
+            client.close()
+    assert transport.calls == []
+
+
+def test_write_stdin_rejects_non_bytes_at_call() -> None:
+    with _h2_transport():
+        client, sandbox = _h2_sandbox()
+        try:
+            process = sandbox.exec_start("cat")
+            pending = process._request_queue.qsize()
+            with pytest.raises(
+                TypeError, match="write_stdin\\(\\) data must be str or bytes, got int"
+            ):
+                process.write_stdin(123)  # type: ignore[arg-type]
+            assert process._request_queue.qsize() == pending
+            process.close_stdin()
+            process.wait()
+        finally:
+            client.close()
+
+
+def test_container_session_write_rejects_non_bytes_at_call() -> None:
+    from chalkcompute._container import ContainerSession
+
+    request_queue: queue.Queue = queue.Queue()
+    session = ContainerSession(
+        _client=None,  # type: ignore[arg-type]
+        _container_id="container-123",
+        _request_queue=request_queue,
+        _response_iterator=iter([]),
+    )
+    with pytest.raises(
+        TypeError, match=r"write\(\) data must be str or bytes, got int"
+    ):
+        session.write(123)  # type: ignore[arg-type]
+    assert request_queue.empty()
+
+
+def test_rpc_span_records_masked_request_error(monkeypatch) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from chalkcompute import _rpc
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(_rpc, "get_tracer", lambda: provider.get_tracer("test"))
+
+    with _h2_transport():
+        client, _sandbox = _h2_sandbox()
+        try:
+            with pytest.raises(TypeError):
+                list(
+                    client._process_stub.open_session(
+                        iter([_list_command_new_process()])
+                    )
+                )
+        finally:
+            client.close()
+
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes is not None
+    assert span.attributes["rpc.response.status_code"] == "UNKNOWN"
+    exception_types = [
+        event.attributes["exception.type"]
+        for event in span.events
+        if event.name == "exception" and event.attributes is not None
+    ]
+    assert exception_types == ["TypeError"]
 
 
 class _TerminatedStub:

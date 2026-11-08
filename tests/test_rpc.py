@@ -98,9 +98,10 @@ def test_rpc_span_marks_failed_calls_as_errors(monkeypatch) -> None:
 
 def test_rpc_interceptors_include_retry_and_tracing() -> None:
     interceptors = _rpc.rpc_interceptors()
-    assert len(interceptors) == 2
+    assert len(interceptors) == 3
     assert isinstance(interceptors[0], _rpc.RetryInterceptor)
     assert isinstance(interceptors[1], _rpc.TracingInterceptor)
+    assert isinstance(interceptors[2], _rpc.RequestErrorInterceptor)
 
 
 def test_retry_interceptor_recovers_from_unavailable(monkeypatch) -> None:

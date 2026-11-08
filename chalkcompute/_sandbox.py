@@ -85,7 +85,7 @@ from chalkcompute._chalk_identity import (
     OIDCTokenFile,
     split_oidc_token_files,
 )
-from chalkcompute._naming import validate_env
+from chalkcompute._naming import stdin_bytes, validate_env, validate_exec_command
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -528,8 +528,7 @@ class ExecProcess:
         data
             Bytes or string to write to stdin. Strings are UTF-8 encoded.
         """
-        if isinstance(data, str):
-            data = data.encode("utf-8")
+        data = stdin_bytes("write_stdin", data)
         self._request_queue.put(
             process_pb.OpenSessionRequest(
                 command=Oneof("stdin_data", process_pb.StdinData(data=data))
@@ -1658,6 +1657,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
+        validate_exec_command("Sandbox.exec", command, args)
         _set_sandbox_span_id(self._id)
         sandbox_id = self._require_started()
         validate_env(env)
@@ -1725,16 +1725,21 @@ class Sandbox:
             Events for process start, stdout/stderr output, process exit,
             and errors.
         """
-        self._require_started()
-        process = self.exec_start(
-            command,
-            *args,
-            timeout_secs=timeout_secs,
-            workdir=workdir,
-            env=env,
-        )
-        process.close_stdin()
-        yield from process.output()
+        validate_exec_command("Sandbox.exec_stream", command, args)
+        self._require_session()
+
+        def events() -> Iterator[ExecEvent]:
+            process = self.exec_start(
+                command,
+                *args,
+                timeout_secs=timeout_secs,
+                workdir=workdir,
+                env=env,
+            )
+            process.close_stdin()
+            yield from process.output()
+
+        return events()
 
     def exec_start(
         self,
@@ -1766,6 +1771,7 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
+        validate_exec_command("Sandbox.exec_start", command, args)
         sandbox_id = self._require_session()
         client = self._require_client()
         init = process_pb.NewProcess(

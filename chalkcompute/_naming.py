@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from chalkcompute._chalk_identity import OIDCTokenFile
 from chalkcompute._secret import Secret
@@ -90,6 +90,47 @@ def sanitize_dns_label(name: str, max_length: int = 63) -> str:
             "the name must contain at least one letter and not start with a digit."
         )
     return name
+
+
+def validate_exec_command(method: str, command: object, args: Sequence[object]) -> None:
+    """Validate an exec-style ``command`` and ``args`` before any RPC.
+
+    ``method`` is the user-facing name (e.g. ``"Sandbox.exec"``) used in the
+    error message. A list or tuple passed as the command gets a hint to pass
+    the command and its args as separate strings.
+    """
+    short = method.rsplit(".", 1)[-1]
+    if isinstance(command, (list, tuple)):
+        raise TypeError(
+            f"{method}() takes the command and its args as separate "
+            f'strings: {short}("echo", "hello"), not {short}(["echo", "hello"])'
+        )
+    if not isinstance(command, str):
+        raise TypeError(
+            f"{method}() command must be a str, got {type(command).__name__}"
+        )
+    for arg in args:
+        if not isinstance(arg, str):
+            raise TypeError(
+                f"{method}() args must be str, got {type(arg).__name__}: {arg!r}"
+            )
+
+
+def stdin_bytes(method: str, data: object) -> bytes:
+    """Return stdin ``data`` as bytes, UTF-8 encoding a ``str``.
+
+    ``method`` is the user-facing name (e.g. ``"write_stdin"``) used in the
+    error message for anything that is not str or bytes-like.
+    """
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    if isinstance(data, (bytearray, memoryview)):
+        return bytes(data)
+    if not isinstance(data, bytes):
+        raise TypeError(
+            f"{method}() data must be str or bytes, got {type(data).__name__}"
+        )
+    return data
 
 
 def validate_env(env: Mapping[str, str] | None) -> None:
