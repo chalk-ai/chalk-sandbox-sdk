@@ -155,7 +155,6 @@ def _load_dataset(
 
     ctl_path = Path(data_dir) / ".chalk-volume" / "ctl"
     if ctl_path.exists():
-        # The FUSE control stream is duplex but cannot seek for buffered IO.
         with open(ctl_path, "r+b", buffering=0) as ctl:
             ctl.write(b"reload\n")
             ctl.flush()
