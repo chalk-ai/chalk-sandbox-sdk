@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Thread
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +16,7 @@ from chalkcompute._training_entrypoint import (
     _deserialize_config,
     _discover_function,
     _load_dataframe,
+    _load_dataset,
     _update_status,
     main,
 )
@@ -118,6 +121,57 @@ def test_deserialize_config_dataclass_fallback() -> None:
     s = Struct.from_python({"unexpected": "data"})
     result = _deserialize_config(s, my_train)
     assert isinstance(result, dict)
+
+
+# --- _load_dataset ---
+
+
+def test_load_dataset_reloads_nonseekable_control_stream(tmp_path: Path) -> None:
+    ctl_path = tmp_path / ".chalk-volume" / "ctl"
+    ctl_path.parent.mkdir()
+    ctl_path.touch()
+    commands: list[bytes] = []
+    errors: list[Exception] = []
+
+    control, server = socket.socketpair()
+    with control, server:
+        server.settimeout(5)
+
+        def respond() -> None:
+            try:
+                command = server.recv(1024)
+                commands.append(command)
+                if command:
+                    server.sendall(b"ok\nreloaded version 1 -> 2\n")
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                server.shutdown(socket.SHUT_WR)
+
+        # A socket supplies real non-seekable duplex IO, like the FUSE ctl file.
+        def open_control(path: Path, mode: str, **kwargs: Any) -> Any:
+            assert path == ctl_path
+            return open(control.fileno(), mode, closefd=False, **kwargs)
+
+        worker = Thread(target=respond)
+        worker.start()
+        client = MagicMock()
+        try:
+            with (
+                patch("chalkcompute._volume.Volume") as volume,
+                patch("chalkcompute._volume.VolumeClient") as volume_client,
+                patch("chalkcompute._training_entrypoint.open", open_control),
+            ):
+                _load_dataset(client, "training-data", "revision-2", str(tmp_path))
+                volume_client.from_connect.assert_called_once_with(client)
+                volume.return_value.load_dataset.assert_called_once_with("revision-2")
+        finally:
+            control.shutdown(socket.SHUT_WR)
+            worker.join(timeout=6)
+
+    assert not worker.is_alive()
+    assert not errors
+    assert commands == [b"reload\n"]
 
 
 # --- _load_dataframe ---
