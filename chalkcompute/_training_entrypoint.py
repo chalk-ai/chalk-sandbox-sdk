@@ -155,7 +155,7 @@ def _load_dataset(
 
     ctl_path = Path(data_dir) / ".chalk-volume" / "ctl"
     if ctl_path.exists():
-        with open(ctl_path, "r+b") as ctl:
+        with open(ctl_path, "r+b", buffering=0) as ctl:
             ctl.write(b"reload\n")
             ctl.flush()
             response = ctl.read().decode(errors="replace").strip()
