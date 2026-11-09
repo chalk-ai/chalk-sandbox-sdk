@@ -1,0 +1,1 @@
+Add opt-in `vllm-sparse` serving with explicit content-pinned, source-bound tensor layouts, generic resident indexed updates, and layout/schema-bound acknowledgments. Keep ordinary vLLM serving unchanged and conservative runtime qualification explicit.

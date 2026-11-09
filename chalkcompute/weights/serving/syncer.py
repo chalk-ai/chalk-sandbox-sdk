@@ -154,6 +154,9 @@ class WeightSyncer:
             self._model_elements = sum(math.prod(e.shape) for e in first.tensors)
             try:
                 await launch(self.root / version_dir(first.version))
+                initialize = getattr(self.adapter, "initialize", None)
+                if initialize is not None:
+                    await initialize(self.root / version_dir(first.version), first)
                 for manifest in patches:
                     await self.adapter.apply(
                         self.root / version_dir(manifest.version), manifest
