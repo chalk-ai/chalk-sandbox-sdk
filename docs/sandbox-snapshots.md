@@ -36,8 +36,9 @@ with SandboxClient.from_env() as client:
         sandbox.terminate()
 ```
 
-Pass `wait=False` to `snapshot()` to return while capture is still in progress,
-then use `snapshot.wait(timeout=...)` before restoring. `snapshot.refresh()`
+Pass `wait=False` to `snapshot()` to skip SDK completion polling, then use
+`snapshot.wait(timeout=...)` before restoring. The initial capture request can
+still take time. `snapshot.refresh()`
 fetches its current status. `SandboxSnapshot.from_id(snapshot_id, client=client)`
 loads a previously saved handle, and `client.list_snapshots(sandbox.id)` lists
 snapshots created from that sandbox. Use `snapshot.delete()` or
@@ -58,8 +59,7 @@ This differs from `snapshot.restore()`, which creates a new sandbox from a saved
 snapshot. `sandbox.restore()` brings a suspended sandbox back under its existing
 identity.
 
-Snapshot capture currently requires a HOST-compute sandbox. The CLI defaults
-sandbox creation to HOST compute; the SDK preserves its existing compute-class
-default, so pass `compute_class=ComputeClass.HOST` when creating a sandbox you
-intend to snapshot. Snapshot retention and the precise set of runtime state
-captured are determined by the service.
+Snapshot capture requires a HOST-compute sandbox. Pass
+`compute_class=ComputeClass.HOST` when creating a sandbox you intend to snapshot.
+For capture and restore boundaries, GPU support, and CLI commands, see
+[Sandbox snapshots](https://docs.chalk.ai/docs/sandboxes/snapshots).
