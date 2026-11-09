@@ -1,0 +1,1 @@
+- Add a layout-driven BF16 resident sparse-update core with a complete initial byte audit, schema/layout-bound acknowledgments, manifest-bound retries and fail-closed device failure handling; keep optional Torch and serving imports lazy.
