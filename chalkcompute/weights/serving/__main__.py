@@ -28,12 +28,27 @@ def _listen(value: str) -> tuple[str, int]:
 
 async def serve(args: argparse.Namespace) -> None:
     engine = getattr(args, "engine", "vllm")
-    if engine == "vllm-sparse" and (
+    if engine in ("vllm-sparse", "sglang-sparse") and (
         not getattr(args, "weight_layout", None)
         or not getattr(args, "weight_layout_sha256", None)
     ):
         raise ValueError("Sparse engines require an explicit layout file and SHA256")
-    if engine == "vllm-sparse":
+    if engine == "sglang-sparse":
+        from chalkcompute.weights.serving.adapters.sglang_resident import (
+            SGLangResidentAdapter,
+        )
+        from chalkcompute.weights.serving.sparse_syncer import SparseWeightSyncer
+
+        if getattr(args, "sglang_profile", None) is not None:
+            raise ValueError("Sparse SGLang uses its fixed runtime profile")
+        adapter = SGLangResidentAdapter(
+            args.engine_port,
+            args.engine_args,
+            weight_layout=Path(args.weight_layout),
+            weight_layout_sha256=args.weight_layout_sha256,
+        )
+        syncer_class = SparseWeightSyncer
+    elif engine == "vllm-sparse":
         from chalkcompute.weights.serving.adapters.vllm_resident import (
             VLLMResidentAdapter,
         )
@@ -169,6 +184,7 @@ def main() -> None:
             "vllm",
             "vllm-sparse",
             "sglang-experimental",
+            "sglang-sparse",
         ],
         default=os.environ.get("CHALK_ENGINE", "vllm"),
     )
@@ -188,7 +204,7 @@ def main() -> None:
     parser.add_argument("--startup-timeout", type=float, default=1800)
     parser.add_argument("engine_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.engine == "vllm-sparse" and (
+    if args.engine in ("vllm-sparse", "sglang-sparse") and (
         not args.weight_layout or not args.weight_layout_sha256
     ):
         parser.error(
