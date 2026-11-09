@@ -52,13 +52,35 @@ Suspending a sandbox captures its state and releases its CPU, memory, and any GP
 while keeping its identity. Calling `restore()` on that sandbox allocates compatible
 compute resources and restores the saved state with the same sandbox ID:
 
+For example, clone a repository, leave a note in its working tree, and suspend
+the workspace until you are ready to continue:
+
 ```python
-sandbox.suspend()
+import chalkcompute
+
+sandbox = chalkcompute.Sandbox(
+    compute_class=chalkcompute.ComputeClass.HOST,
+).run()
+sandbox.exec("git", "clone", "--depth", "1", "https://github.com/psf/requests.git", "/workspace/requests")
+sandbox.exec("sh", "-c", "echo 'Investigate the failing login test' > /workspace/requests/NOTES.md")
+print(sandbox.id)  # Save the ID so you can reconnect later.
+sandbox.suspend()  # Release the sandbox's compute resources.
+
+# Later, restore the same sandbox and workspace.
 sandbox.restore()
+print(sandbox.refresh().status)
 ```
 
-`sandbox.restore()` initiates restoration. Use `sandbox.refresh()` to check when
-the sandbox is running before issuing commands.
+`sandbox.restore()` initiates restoration. Once `sandbox.refresh().status` is
+`running`, inspect the working tree and continue without cloning it again:
+
+```python
+print(sandbox.exec("git", "-C", "/workspace/requests", "status", "--short").stdout_text)  # ?? NOTES.md
+sandbox.terminate()
+```
+
+To reconnect from another process, use
+`chalkcompute.Sandbox.from_id("sandbox-id")` with the saved ID.
 
 This differs from `snapshot.restore()`, which creates a new sandbox from a saved
 snapshot. `sandbox.restore()` brings a suspended sandbox back under its existing
