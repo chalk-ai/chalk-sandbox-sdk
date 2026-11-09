@@ -2,6 +2,8 @@
 
 The SDK exposes Chalk's sandbox snapshot API. A snapshot captures a running
 HOST-compute sandbox and can be restored into one or more new sandboxes.
+To save state and release the sandbox's compute resources, use `sandbox.suspend()`;
+`sandbox.restore()` later resumes it with the same sandbox ID.
 
 ## Capture and restore
 
@@ -46,14 +48,17 @@ snapshots created from that sandbox. Use `snapshot.delete()` or
 
 ## Suspend and restore in place
 
-Suspending a sandbox captures its state and releases its running resources while
-keeping its identity. Calling `restore()` on that sandbox restores the saved state
-in place and keeps the same sandbox ID:
+Suspending a sandbox captures its state and releases its CPU, memory, and any GPUs
+while keeping its identity. Calling `restore()` on that sandbox allocates compatible
+compute resources and restores the saved state with the same sandbox ID:
 
 ```python
 sandbox.suspend()
 sandbox.restore()
 ```
+
+`sandbox.restore()` initiates restoration. Use `sandbox.refresh()` to check when
+the sandbox is running before issuing commands.
 
 This differs from `snapshot.restore()`, which creates a new sandbox from a saved
 snapshot. `sandbox.restore()` brings a suspended sandbox back under its existing
