@@ -151,6 +151,10 @@ class _RecordingScalingGroup:
     def deploy(self) -> _RecordingScalingGroup:
         return self
 
+    @property
+    def info(self) -> None:
+        return None
+
 
 def test_deploy_workflow_worker_builds_a_task_queue_triggered_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
