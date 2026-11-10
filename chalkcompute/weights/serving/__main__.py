@@ -28,7 +28,27 @@ def _listen(value: str) -> tuple[str, int]:
 
 async def serve(args: argparse.Namespace) -> None:
     engine = getattr(args, "engine", "vllm")
-    if engine == "sglang-experimental":
+    if engine == "vllm-sparse" and (
+        not getattr(args, "weight_layout", None)
+        or not getattr(args, "weight_layout_sha256", None)
+    ):
+        raise ValueError("Sparse engines require an explicit layout file and SHA256")
+    if engine == "vllm-sparse":
+        from chalkcompute.weights.serving.adapters.vllm_resident import (
+            VLLMResidentAdapter,
+        )
+        from chalkcompute.weights.serving.sparse_syncer import SparseWeightSyncer
+
+        if getattr(args, "sglang_profile", None) is not None:
+            raise ValueError("SGLang profile requires --engine sglang-experimental")
+        adapter = VLLMResidentAdapter(
+            args.engine_port,
+            args.engine_args,
+            weight_layout=Path(args.weight_layout),
+            weight_layout_sha256=args.weight_layout_sha256,
+        )
+        syncer_class = SparseWeightSyncer
+    elif engine == "sglang-experimental":
         adapter = SGLangAdapter(
             args.engine_port,
             args.engine_args,
@@ -145,7 +165,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--engine",
-        choices=["vllm", "sglang-experimental"],
+        choices=[
+            "vllm",
+            "vllm-sparse",
+            "sglang-experimental",
+        ],
         default=os.environ.get("CHALK_ENGINE", "vllm"),
     )
     parser.add_argument(
@@ -154,10 +178,22 @@ def main() -> None:
         help="Pinned experimental SGLang profile (default: deterministic-triton)",
     )
     parser.add_argument("--weights", default=os.environ.get("CHALK_WEIGHT_STREAM_DIR"))
+    parser.add_argument(
+        "--weight-layout", help="Explicit serialized source-bound WeightLayout JSON"
+    )
+    parser.add_argument(
+        "--weight-layout-sha256", help="SHA256 of the exact layout file bytes"
+    )
     parser.add_argument("--engine-port", type=int, default=8001)
     parser.add_argument("--startup-timeout", type=float, default=1800)
     parser.add_argument("engine_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.engine == "vllm-sparse" and (
+        not args.weight_layout or not args.weight_layout_sha256
+    ):
+        parser.error(
+            "Sparse engines require --weight-layout and --weight-layout-sha256"
+        )
     if not args.weights:
         parser.error("--weights or CHALK_WEIGHT_STREAM_DIR is required")
     if not 0 < args.engine_port < 65536 or args.startup_timeout <= 0:

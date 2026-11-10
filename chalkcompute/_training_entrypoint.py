@@ -101,7 +101,7 @@ def _deserialize_config(config_struct: object | None, func: object) -> object:
     if config_struct is None:
         return None
 
-    config_dict: dict = config_struct.to_python()  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+    config_dict: dict = config_struct.to_python()  # type: ignore[union-attr]  # ty: ignore[missing-attribute]
 
     underlying = getattr(func, "_func", func)
     try:
