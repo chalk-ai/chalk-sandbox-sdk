@@ -196,6 +196,35 @@ def test_empty_application_404_finishes_immediately(
     assert "route check skipped" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        # Chunked: content-type but no content-length.
+        {"content-type": "text/html; charset=utf-8", "transfer-encoding": "chunked"},
+        {"content-length": "0"},
+    ],
+)
+def test_application_404_with_either_header_finishes_after_one_probe(
+    clock: Clock,
+    route_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    headers: dict[str, str],
+) -> None:
+    response = StreamResponse(404, [b"do not read"], headers)
+    route_client.stream.return_value = response
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 1
+    assert response.content_accesses == 0
+    assert response.closed
+    assert clock.now == 0
+    assert clock.delays == []
+    assert "route check skipped" not in caplog.text
+
+
 def test_unrouted_gateway_404_is_retried_until_app_answers(
     clock: Clock, route_client: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
