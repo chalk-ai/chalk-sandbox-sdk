@@ -1,0 +1,1 @@
+Add opt-in `sglang-sparse` serving with generic resident layout binding, immutable layout-byte handoff, serialized scheduler control/cache flush, and layout/schema acknowledgment validation. Preserve the separate full-checkpoint SGLang path.
