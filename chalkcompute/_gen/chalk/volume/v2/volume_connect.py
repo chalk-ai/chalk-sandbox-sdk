@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .volume_pb import AllocateInodeRangeRequest, AllocateInodeRangeResponse, CommitVersionRequest, CommitVersionResponse, CreateRefRequest, CreateRefResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteRefRequest, DeleteRefResponse, DeleteVolumeRequest, DeleteVolumeResponse, GetCommitStatusRequest, GetCommitStatusResponse, GetFileRequest, GetFileResponse, GetVolumeCredentialsRequest, GetVolumeCredentialsResponse, GetVolumeRequest, GetVolumeResponse, GetVolumeStatsRequest, GetVolumeStatsResponse, ListFilesRequest, ListFilesResponse, ListMountFilesRequest, ListMountFilesResponse, ListRefsRequest, ListRefsResponse, ListVolumeVersionsRequest, ListVolumeVersionsResponse, ListVolumesRequest, ListVolumesResponse, RequestUploadURLsRequest, RequestUploadURLsResponse
+from .volume_pb import AllocateInodeRangeRequest, AllocateInodeRangeResponse, CommitVerifiedVersionRequest, CommitVerifiedVersionResponse, CommitVersionRequest, CommitVersionResponse, CreateRefRequest, CreateRefResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteRefRequest, DeleteRefResponse, DeleteVolumeRequest, DeleteVolumeResponse, GetCommitStatusRequest, GetCommitStatusResponse, GetFileRequest, GetFileResponse, GetVolumeCredentialsRequest, GetVolumeCredentialsResponse, GetVolumeRequest, GetVolumeResponse, GetVolumeStatsRequest, GetVolumeStatsResponse, ListFilesRequest, ListFilesResponse, ListMountFilesRequest, ListMountFilesResponse, ListRefsRequest, ListRefsResponse, ListVolumeVersionsRequest, ListVolumeVersionsResponse, ListVolumesRequest, ListVolumesResponse, RequestUploadURLsRequest, RequestUploadURLsResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -241,6 +241,31 @@ class VolumeServiceClientSync(ConnectClientSync):
                 service_name="chalk.volume.v2.VolumeService",
                 input=CommitVersionRequest,
                 output=CommitVersionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def commit_verified_version(
+        self,
+        request: CommitVerifiedVersionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CommitVerifiedVersionResponse:
+        """
+        Compare the full canonical request with the persisted commit-ID binding
+        before staging/applying any effect. Reject a reused ID with different
+        contents, an unverifiable legacy record, or an unsupported format. Preserve
+        caller ID and explicit base presence; never silently rebase a request.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CommitVerifiedVersion",
+                service_name="chalk.volume.v2.VolumeService",
+                input=CommitVerifiedVersionRequest,
+                output=CommitVerifiedVersionResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
