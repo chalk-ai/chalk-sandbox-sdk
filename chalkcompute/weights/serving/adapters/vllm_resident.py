@@ -25,19 +25,22 @@ from chalkcompute.weights.serving.resident_runtime import check_runtime_sources
 
 
 def validate_environment(*, worker: bool = False) -> None:
-    allowed = {
-        "VLLM_BATCH_INVARIANT": "1",
+    required = {
         "VLLM_SERVER_DEV_MODE": "1",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     }
+    allowed = {key: {value} for key, value in required.items()}
+    # Verification can opt into batch-invariant kernels; sparse writes do not
+    # require them. Preserve an explicit choice or leave vLLM's default alone.
+    allowed["VLLM_BATCH_INVARIANT"] = {"0", "1"}
     if worker:
-        if any(os.environ.get(key) != value for key, value in allowed.items()):
+        if any(os.environ.get(key) != value for key, value in required.items()):
             raise ValueError("Required native resident worker environment differs")
         # Pinned native worker startup sets this internal marker. It may be
         # absent when OMP_NUM_THREADS was already supplied by the container.
-        allowed["VLLM_OMP_NUM_THREADS_SET_BY_VLLM"] = "1"
+        allowed["VLLM_OMP_NUM_THREADS_SET_BY_VLLM"] = {"1"}
     if any(
-        key.startswith("VLLM_") and allowed.get(key) != value
+        key.startswith("VLLM_") and value not in allowed.get(key, set())
         for key, value in os.environ.items()
     ):
         raise ValueError("Unreviewed VLLM environment override")

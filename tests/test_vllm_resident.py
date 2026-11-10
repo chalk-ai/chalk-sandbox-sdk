@@ -109,7 +109,6 @@ def ack(manifest, digest, identity="b" * 64):
 
 def worker_environment(monkeypatch):
     for key, value in {
-        "VLLM_BATCH_INVARIANT": "1",
         "VLLM_SERVER_DEV_MODE": "1",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     }.items():
@@ -328,22 +327,47 @@ def test_native_startup_spawn_and_internal_omp_marker_are_exact(monkeypatch):
             context.setenv(key, value)
             with pytest.raises(ValueError):
                 vllm_resident.validate_environment(worker=True)
-    monkeypatch.delenv("VLLM_BATCH_INVARIANT")
+
+
+@pytest.mark.parametrize(
+    "name", ["VLLM_SERVER_DEV_MODE", "VLLM_WORKER_MULTIPROC_METHOD"]
+)
+def test_worker_requires_bridge_environment(monkeypatch, name):
+    worker_environment(monkeypatch)
+    monkeypatch.delenv(name)
     with pytest.raises(ValueError, match="Required"):
         vllm_resident.validate_environment(worker=True)
 
 
-def test_server_sets_required_environment_before_native_import(monkeypatch):
+@pytest.mark.parametrize("value", [None, "0", "1"])
+def test_worker_accepts_optional_batch_invariance(tmp_path, monkeypatch, value):
+    instance, model = worker(tmp_path, monkeypatch)
+    if value is not None:
+        monkeypatch.setenv("VLLM_BATCH_INVARIANT", value)
+    assert vllm_resident_worker.check_worker(instance) is model
+
+
+@pytest.mark.parametrize("worker_mode", [False, True])
+def test_batch_invariance_rejects_invalid_value(monkeypatch, worker_mode):
+    worker_environment(monkeypatch)
+    monkeypatch.setenv("VLLM_BATCH_INVARIANT", "true")
+    with pytest.raises(ValueError, match="Unreviewed"):
+        vllm_resident.validate_environment(worker=worker_mode)
+
+
+@pytest.mark.parametrize("batch_invariant", [None, "0", "1"])
+def test_server_sets_bridge_environment_and_preserves_verification_choice(
+    monkeypatch, batch_invariant
+):
     monkeypatch.setattr(resident_runtime, "check_runtime_sources", lambda _: None)
+    if batch_invariant is not None:
+        monkeypatch.setenv("VLLM_BATCH_INVARIANT", batch_invariant)
     calls = []
 
     def run_module(name, run_name):
         calls.append((name, run_name))
-        assert (
-            os.environ["VLLM_BATCH_INVARIANT"]
-            == os.environ["VLLM_SERVER_DEV_MODE"]
-            == "1"
-        )
+        assert os.environ.get("VLLM_BATCH_INVARIANT") == batch_invariant
+        assert os.environ["VLLM_SERVER_DEV_MODE"] == "1"
         assert os.environ["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
 
     monkeypatch.setattr(vllm_resident_server.runpy, "run_module", run_module)

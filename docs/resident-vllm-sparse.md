@@ -37,6 +37,22 @@ claim that every model or GPU satisfying them is qualified. A new model/layout
 still needs native initial-byte, indexed-write, cache/drain and fresh-native
 output verification. Quantized and multi-rank deployments are not supported.
 
+Batch invariance is optional: the bridge does not set `VLLM_BATCH_INVARIANT`.
+For verification against a freshly loaded reference, explicitly set
+`VLLM_BATCH_INVARIANT=1` in both serving environments to reduce numerical
+differences caused by batching. Leaving it unset uses vLLM's default; an explicit
+`0` is also accepted. Sparse indexed writes do not require batch-invariant
+kernels. Historical output comparisons used the enabled setting and do not
+qualify the default setting or additional attention backends.
+
+The bridge sets `VLLM_SERVER_DEV_MODE=1` because its current implementation uses
+vLLM's development-mode `/collective_rpc` and cache-reset endpoints. This is a
+control-interface dependency, not a property of sparse patches. The native vLLM
+server binds only to loopback behind the supervisor; do not expose those control
+endpoints publicly. The bridge also sets `VLLM_WORKER_MULTIPROC_METHOD=spawn` so
+CUDA workers start in fresh processes instead of inheriting parent state through
+`fork`. Neither setting enables batch invariance.
+
 The supervisor drains active requests before applying forward sparse patches,
 resets the native cache before reopening admissions and advances its served
 version after acknowledgment. Dense publications, incompatible keyframes or

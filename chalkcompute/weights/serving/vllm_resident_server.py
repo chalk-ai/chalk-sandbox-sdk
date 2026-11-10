@@ -1,4 +1,4 @@
-"""Set the measured environment before importing vLLM's official HTTP server."""
+"""Set bridge requirements before importing vLLM's official HTTP server."""
 
 from __future__ import annotations
 
@@ -12,8 +12,9 @@ def main() -> None:
 
     validate_environment()
     check_runtime_sources("vllm")
-    os.environ["VLLM_BATCH_INVARIANT"] = "1"
+    # The bridge uses dev-mode worker RPC/cache controls on a loopback server.
     os.environ["VLLM_SERVER_DEV_MODE"] = "1"
+    # Start CUDA workers without inheriting initialized state through fork.
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")
 
