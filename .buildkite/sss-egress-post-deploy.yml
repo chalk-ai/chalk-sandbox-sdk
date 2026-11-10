@@ -1,0 +1,34 @@
+# API-triggered after SSS HOST pools have replaced their hosts in both clouds.
+on: {}
+
+steps:
+  - label: ":shield: SSS HOST egress after deployment ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    if: build.branch == "main"
+    concurrency: 1
+    concurrency_group: "sss-egress-post-deploy"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+
+      .buildkite/sops.sh install
+      source .buildkite/select-env-file.sh "{{matrix}}"
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/sss-egress.env
+      set -a
+      source /tmp/sss-egress.env
+      set +a
+      rm /tmp/sss-egress.env
+      : "$${CHALK_CLIENT_ID:?}"
+      : "$${CHALK_CLIENT_SECRET:?}"
+      : "$${CHALK_API_SERVER:?}"
+      : "$${CHALK_ENVIRONMENT_ID:?}"
+      export CHALK_ACTIVE_ENVIRONMENT="$$CHALK_ENVIRONMENT_ID"
+
+      source .buildkite/install-uv.sh
+      uv sync --locked --extra dev --reinstall-package chalkcompute
+      uv run python -m pytest e2etests/test_sss_egress_post_deploy.py -v -s --tb=short
+    agents:
+      queue: compile-runner-s
+    timeout_in_minutes: 20
