@@ -4,6 +4,7 @@ from collections.abc import Iterable, Iterator
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pyqwest
 import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
@@ -26,15 +27,16 @@ class Clock:
         self.now += delay
 
 
-# What Flask/Werkzeug sends through the gateway; header names are lowercase,
-# as the probe looks them up.
-APP_HEADERS = {
-    "content-type": "text/html; charset=utf-8",
-    "content-length": "207",
-    "server": "Werkzeug/3.1.9",
-}
+# What Flask/Werkzeug sends through the gateway.
+APP_HEADERS = pyqwest.Headers(
+    {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": "207",
+        "Server": "Werkzeug/3.1.9",
+    }
+)
 # The gateway's 404 for a host it has not routed yet: empty body, only `date`.
-UNROUTED_HEADERS = {"date": "Tue, 10 Nov 2026 12:00:00 GMT"}
+UNROUTED_HEADERS = pyqwest.Headers({"date": "Tue, 10 Nov 2026 12:00:00 GMT"})
 
 
 class StreamResponse:
@@ -44,7 +46,7 @@ class StreamResponse:
         self,
         status: int,
         chunks: Iterable[bytes | bytearray | memoryview | Exception],
-        headers: dict[str, str] | None = None,
+        headers: pyqwest.Headers | None = None,
     ) -> None:
         self.status = status
         self.chunks = chunks
@@ -177,11 +179,13 @@ def test_empty_application_404_finishes_immediately(
     response = StreamResponse(
         404,
         [],
-        {
-            "content-type": "text/html; charset=utf-8",
-            "content-length": "0",
-            "server": "Werkzeug/3.1.9",
-        },
+        pyqwest.Headers(
+            {
+                "content-type": "text/html; charset=utf-8",
+                "content-length": "0",
+                "server": "Werkzeug/3.1.9",
+            }
+        ),
     )
     route_client.stream.return_value = response
     group = ScalingGroup(image="nginx:alpine")
@@ -200,15 +204,17 @@ def test_empty_application_404_finishes_immediately(
     "headers",
     [
         # Chunked: content-type but no content-length.
-        {"content-type": "text/html; charset=utf-8", "transfer-encoding": "chunked"},
-        {"content-length": "0"},
+        pyqwest.Headers(
+            {"content-type": "text/html; charset=utf-8", "transfer-encoding": "chunked"}
+        ),
+        pyqwest.Headers({"content-length": "0"}),
     ],
 )
 def test_application_404_with_either_header_finishes_after_one_probe(
     clock: Clock,
     route_client: MagicMock,
     caplog: pytest.LogCaptureFixture,
-    headers: dict[str, str],
+    headers: pyqwest.Headers,
 ) -> None:
     response = StreamResponse(404, [b"do not read"], headers)
     route_client.stream.return_value = response
@@ -225,12 +231,16 @@ def test_application_404_with_either_header_finishes_after_one_probe(
     assert "route check skipped" not in caplog.text
 
 
+@pytest.mark.parametrize("answer_status", [404, 200], ids=["app_404", "ok"])
 def test_unrouted_gateway_404_is_retried_until_app_answers(
-    clock: Clock, route_client: MagicMock, caplog: pytest.LogCaptureFixture
+    clock: Clock,
+    route_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    answer_status: int,
 ) -> None:
     unrouted = StreamResponse(404, [b"do not read"], UNROUTED_HEADERS)
-    app_404 = StreamResponse(404, [b"do not read"])
-    route_client.stream.side_effect = [unrouted, app_404]
+    answer = StreamResponse(answer_status, [b"do not read"])
+    route_client.stream.side_effect = [unrouted, answer]
     group = ScalingGroup(image="nginx:alpine")
     group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
 
@@ -239,28 +249,8 @@ def test_unrouted_gateway_404_is_retried_until_app_answers(
     assert route_client.stream.call_count == 2
     assert clock.delays == [0.25]
     assert unrouted.content_accesses == 0
-    assert app_404.content_accesses == 0
-    assert unrouted.closed and app_404.closed
-    assert "route check skipped" not in caplog.text
-    assert "route was not ready" not in caplog.text
-
-
-def test_unrouted_gateway_404_is_retried_until_200(
-    clock: Clock, route_client: MagicMock, caplog: pytest.LogCaptureFixture
-) -> None:
-    unrouted = StreamResponse(404, [], UNROUTED_HEADERS)
-    ready = StreamResponse(200, [b"root body need not be read"])
-    route_client.stream.side_effect = [unrouted, ready]
-    group = ScalingGroup(image="nginx:alpine")
-    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
-
-    group.deploy()
-
-    assert route_client.stream.call_count == 2
-    assert clock.delays == [0.25]
-    assert unrouted.content_accesses == 0
-    assert ready.content_accesses == 0
-    assert unrouted.closed and ready.closed
+    assert answer.content_accesses == 0
+    assert unrouted.closed and answer.closed
     assert "route check skipped" not in caplog.text
     assert "route was not ready" not in caplog.text
 
