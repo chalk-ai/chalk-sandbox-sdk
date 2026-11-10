@@ -57,6 +57,7 @@ from chalkcompute._deployment_proto import scaling_spec as build_scaling_spec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._http import (
+    HTTPHeaders,
     HTTPResponse,
     HTTP_TRANSPORT_ERRORS,
     SYNC_HTTP_CLIENT,
@@ -878,7 +879,18 @@ class ScalingGroup:
         url, headers = self._prepare_http_request("/", None)
         with client.stream("GET", url, headers=headers, timeout=timeout) as response:
             status = str(response.status)
-            # Accept non-503 responses without reading their body.
+            if response.status == 404:
+                # Until the new host is routed, the gateway answers 404 with an
+                # empty body and no headers but `date`. An app response always
+                # carries content-type or content-length (even an empty 404).
+                response_headers: HTTPHeaders = response.headers
+                if (
+                    "content-type" not in response_headers
+                    and "content-length" not in response_headers
+                ):
+                    return False, "404 (unrouted)"
+                return True, status
+            # Accept other non-503 responses without reading their body.
             if response.status != 503:
                 return True, status
 

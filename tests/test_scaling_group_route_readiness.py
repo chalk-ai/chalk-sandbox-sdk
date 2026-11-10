@@ -26,6 +26,17 @@ class Clock:
         self.now += delay
 
 
+# What Flask/Werkzeug sends through the gateway; header names are lowercase,
+# as the probe looks them up.
+APP_HEADERS = {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": "207",
+    "server": "Werkzeug/3.1.9",
+}
+# The gateway's 404 for a host it has not routed yet: empty body, only `date`.
+UNROUTED_HEADERS = {"date": "Tue, 10 Nov 2026 12:00:00 GMT"}
+
+
 class StreamResponse:
     """Track body reads and cleanup without opening a network connection."""
 
@@ -33,9 +44,11 @@ class StreamResponse:
         self,
         status: int,
         chunks: Iterable[bytes | bytearray | memoryview | Exception],
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status = status
         self.chunks = chunks
+        self.headers = APP_HEADERS if headers is None else headers
         self.content_accesses = 0
         self.chunks_read = 0
         self.closed = False
@@ -138,7 +151,10 @@ def test_deploy_retries_gateway_errors_then_allows_first_call(
 
 @pytest.mark.parametrize("status", [200, 301, 302, 401, 404, 405, 500])
 def test_application_headers_finish_without_reading_the_body(
-    clock: Clock, route_client: MagicMock, status: int
+    clock: Clock,
+    route_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    status: int,
 ) -> None:
     response = StreamResponse(status, [TimeoutError("body never finishes")])
     route_client.stream.return_value = response
@@ -152,12 +168,21 @@ def test_application_headers_finish_without_reading_the_body(
     assert response.closed
     assert clock.now == 0
     assert clock.delays == []
+    assert "route check skipped" not in caplog.text
 
 
 def test_empty_application_404_finishes_immediately(
-    clock: Clock, route_client: MagicMock
+    clock: Clock, route_client: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    response = StreamResponse(404, [])
+    response = StreamResponse(
+        404,
+        [],
+        {
+            "content-type": "text/html; charset=utf-8",
+            "content-length": "0",
+            "server": "Werkzeug/3.1.9",
+        },
+    )
     route_client.stream.return_value = response
     group = ScalingGroup(image="nginx:alpine")
     group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
@@ -168,6 +193,47 @@ def test_empty_application_404_finishes_immediately(
     assert response.content_accesses == 0
     assert response.closed
     assert clock.now == 0
+    assert "route check skipped" not in caplog.text
+
+
+def test_unrouted_gateway_404_is_retried_until_app_answers(
+    clock: Clock, route_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    unrouted = StreamResponse(404, [b"do not read"], UNROUTED_HEADERS)
+    app_404 = StreamResponse(404, [b"do not read"])
+    route_client.stream.side_effect = [unrouted, app_404]
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 2
+    assert clock.delays == [0.25]
+    assert unrouted.content_accesses == 0
+    assert app_404.content_accesses == 0
+    assert unrouted.closed and app_404.closed
+    assert "route check skipped" not in caplog.text
+    assert "route was not ready" not in caplog.text
+
+
+def test_unrouted_gateway_404_is_retried_until_200(
+    clock: Clock, route_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    unrouted = StreamResponse(404, [], UNROUTED_HEADERS)
+    ready = StreamResponse(200, [b"root body need not be read"])
+    route_client.stream.side_effect = [unrouted, ready]
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    assert route_client.stream.call_count == 2
+    assert clock.delays == [0.25]
+    assert unrouted.content_accesses == 0
+    assert ready.content_accesses == 0
+    assert unrouted.closed and ready.closed
+    assert "route check skipped" not in caplog.text
+    assert "route was not ready" not in caplog.text
 
 
 def test_gateway_marker_split_across_chunks_is_retried(
@@ -232,7 +298,9 @@ def test_503_body_read_error_returns_without_restarting_the_retry_budget(
     assert clock.delays == []
 
 
-@pytest.mark.parametrize("failure", ["gateway", "connection", "timeout"])
+@pytest.mark.parametrize(
+    "failure", ["gateway", "unrouted_404", "connection", "timeout"]
+)
 @pytest.mark.parametrize("request_seconds", [0.0, 5.0])
 @pytest.mark.parametrize(
     "readiness_probe", [None, ReadinessProbe.http("/health", timeout_seconds=5)]
@@ -256,7 +324,10 @@ def test_route_wait_warns_and_returns_at_twenty_second_deadline(
             raise ConnectionError("offline")
         if failure == "timeout":
             raise TimeoutError("offline")
-        response = StreamResponse(503, [b"no healthy upstream"])
+        if failure == "unrouted_404":
+            response = StreamResponse(404, [], UNROUTED_HEADERS)
+        else:
+            response = StreamResponse(503, [b"no healthy upstream"])
         responses.append(response)
         return response
 
@@ -274,6 +345,10 @@ def test_route_wait_warns_and_returns_at_twenty_second_deadline(
     assert all(response.closed for response in responses)
     route_transport.return_value.__exit__.assert_called_once()
     assert "route-timeout route was not ready after 20.0s" in caplog.text
+    assert "route check skipped" not in caplog.text
+    if failure == "unrouted_404":
+        assert "last status=404 (unrouted)" in caplog.text
+        assert all(response.content_accesses == 0 for response in responses)
 
 
 def test_route_transport_setup_failure_warns_and_returns(
