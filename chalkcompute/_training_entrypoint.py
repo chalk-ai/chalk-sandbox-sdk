@@ -35,7 +35,7 @@ import typing
 from pathlib import Path
 from typing import Any
 
-from protobuf.wkt import FieldMask
+from protobuf.wkt import FieldMask, Struct
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.server.v1 import (
@@ -97,11 +97,11 @@ def _discover_function(module_path: str) -> Any:
     return func
 
 
-def _deserialize_config(config_struct: object | None, func: object) -> object:
+def _deserialize_config(config_struct: Struct | None, func: object) -> object:
     if config_struct is None:
         return None
 
-    config_dict: dict = config_struct.to_python()  # type: ignore[union-attr]  # ty: ignore[missing-attribute]
+    config_dict: dict = config_struct.to_python()
 
     underlying = getattr(func, "_func", func)
     try:
