@@ -138,12 +138,8 @@ def test_source_mount_rejects_user_volume_at_same_path(tmp_path):
 
     with pytest.raises(ValueError, match="overlaps.*'/app'"):
         deployment.resolve_function_volumes(
-            Client([]),
             image=image,
-            volume_name="function",
             referenced=[VolumeMount("user", "/app")],
-            poll_interval=0,
-            timeout=5,
         )
 
 
@@ -168,17 +164,12 @@ def test_source_resolution_preserves_nested_and_duplicate_mounts(
     monkeypatch.setattr(deployment.VolumeClient, "from_connect", factory)
 
     mounts = deployment.resolve_function_volumes(
-        Client([]),
         image=image,
-        volume_name="function",
         referenced=referenced,
-        poll_interval=0,
-        timeout=5,
     )
 
-    assert mounts == [*referenced, *sources]
-    if not with_source:
-        factory.assert_not_called()
+    assert mounts == referenced
+    factory.assert_not_called()
 
 
 def test_generated_function_sources_are_stable_between_runs(monkeypatch):
@@ -264,7 +255,7 @@ def test_redeploy_preserves_callable_and_desired_spec(
     monkeypatch.setattr(function_module, "ConnectClient", lambda **kwargs: client)
     prepared_sources = []
 
-    def resolve(client, *, image, referenced, **kwargs):
+    def resolve(*, image, referenced):
         prepared_sources.append(
             {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
         )
@@ -327,3 +318,135 @@ def test_function_deploy_forwards_execution_target(monkeypatch, target):
                 spec.execution_target.backend
                 == container_pb.ExecutionBackend[target.name]
             )
+
+
+def test_source_manifest_and_upload_use_server_allocation(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume
+
+    path = tmp_path / "main.py"
+    path.write_bytes(b"hello")
+    image = Image("python:3.11").add_local_file(str(path), "/app/main.py")
+    mounts, manifests, prepared = deployment._source_manifests(image)
+    manifest = manifests[mounts[0].tree_digest]
+    digest = manifest.files[0].content_digest
+    assert prepared[digest].source_manifest()["files"][0]["path"] == "main.py"
+    target = volume.VolumeRef(name="server-owned", volume_id="env/immutable")
+    intent = volume.CommitIntent(
+        uploaded_object_references=[],
+        deltas=Oneof(
+            "path_deltas",
+            volume.PathDeltaList(upserts=[volume.PathFileDelta(path=digest)]),
+        ),
+    )
+    driver = MagicMock()
+    driver._stage_source_inputs.return_value = intent
+    monkeypatch.setattr(deployment.VolumeClient, "from_connect", lambda client: driver)
+    client = Client(
+        [
+            pb.EnsureExternalFunctionResponse(
+                result=Oneof(
+                    "missing_inputs",
+                    pb.MissingFunctionDeploymentInputs(
+                        tree_digests=[manifest.tree_digest]
+                    ),
+                )
+            ),
+            pb.EnsureExternalFunctionResponse(
+                result=Oneof(
+                    "missing_inputs",
+                    pb.MissingFunctionDeploymentInputs(
+                        file_digests=[digest], upload_volume=target
+                    ),
+                )
+            ),
+            complete(),
+        ]
+    )
+    run(client, image)
+    assert client.requests[0].spec.sources == mounts
+    assert client.requests[0].spec.version_spec.volume_commits == []
+    assert client.requests[1].supplied_inputs.manifests == [manifest]
+    assert client.requests[2].supplied_inputs.upload_volume == target
+    assert client.requests[2].supplied_inputs.files[0].path == digest
+    driver._stage_source_inputs.assert_called_once()
+    assert driver._stage_source_inputs.call_args.args[0] == "server-owned"
+    driver.create.assert_not_called()
+    driver._resolve_lazy_files.assert_not_called()
+
+
+def test_function_source_identity_is_independent_of_local_path(tmp_path):
+    left = tmp_path / "left.py"
+    right = tmp_path / "right.py"
+    left.write_text("print(42)")
+    right.write_bytes(left.read_bytes())
+    left.chmod(0o644)
+    right.chmod(0o644)
+    first = deployment._source_manifests(
+        Image("python").add_local_file(str(left), "/app/main.py")
+    )
+    second = deployment._source_manifests(
+        Image("python").add_local_file(str(right), "/app/main.py")
+    )
+    assert first[:2] == second[:2]
+
+
+@pytest.mark.parametrize(
+    "code", ["unavailable", "deadline_exceeded", "permission_denied"]
+)
+def test_source_upload_retries_only_transient_native_failures(
+    tmp_path, monkeypatch, code
+):
+    from unittest.mock import MagicMock
+    import chalkcompute._volume as volume_module
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume
+
+    path = tmp_path / "main.py"
+    path.write_bytes(b"hello")
+    image = Image("python").add_local_file(str(path), "/app/main.py")
+    mounts, manifests, _ = deployment._source_manifests(image)
+    digest = manifests[mounts[0].tree_digest].files[0].content_digest
+    intent = volume.CommitIntent(
+        deltas=Oneof(
+            "path_deltas",
+            volume.PathDeltaList(upserts=[volume.PathFileDelta(path=digest)]),
+        )
+    )
+    driver = volume_module.VolumeClient.__new__(volume_module.VolumeClient)
+    driver._closed = False
+    driver._owns_connect = False
+    driver._inner = MagicMock()
+    native_error = volume_module._NativeVolumeRpcError(code, "injected upload failure")
+    driver._inner.stage_prepared_files.side_effect = [native_error, MagicMock()]
+    driver._inner.staged_intent.return_value = intent.to_binary()
+    monkeypatch.setattr(deployment.VolumeClient, "from_connect", lambda _: driver)
+    missing = pb.EnsureExternalFunctionResponse(
+        result=Oneof(
+            "missing_inputs",
+            pb.MissingFunctionDeploymentInputs(
+                file_digests=[digest], upload_volume=volume.VolumeRef(name="owned")
+            ),
+        )
+    )
+    client = Client([missing, missing, complete()])
+    if code == "permission_denied":
+        with pytest.raises(volume_module.VolumeError) as raised:
+            run(client, image)
+        assert raised.value.code == code
+        assert driver._inner.stage_prepared_files.call_count == 1
+    else:
+        assert run(client, image).reused_version
+        assert driver._inner.stage_prepared_files.call_count == 2
+        assert len({request.request_id for request in client.requests}) == 1
+
+
+def test_source_manifest_and_selection_do_not_reopen_prepared_files(tmp_path):
+    path = tmp_path / "main.py"
+    path.write_bytes(b"hello")
+    image = Image("python").add_local_file(str(path), "/app/main.py")
+    mounts, manifests, prepared = deployment._source_manifests(image)
+    manifest = manifests[mounts[0].tree_digest]
+    digest = manifest.files[0].content_digest
+    path.unlink()
+    assert prepared[digest].source_manifest()["tree_digest"] == manifest.tree_digest
+    assert len(prepared[digest].select_by_digest([digest])) == 1
