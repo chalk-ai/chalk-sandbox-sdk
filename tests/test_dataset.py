@@ -515,7 +515,18 @@ def test_read_rejects_an_empty_revision_and_a_revision_with_no_output() -> None:
 
 
 @pytest.mark.parametrize("as_ref", [False, True])
-def test_read_by_name_resolves_exact_match_across_pages(as_ref: bool) -> None:
+@pytest.mark.parametrize(
+    ("name", "search"),
+    [
+        ("goldens", "goldens"),
+        (r"foo\bar", r"foo\\bar"),
+        ("foo\\", "foo\\\\"),
+        (r"foo\\bar", r"foo\\\\bar"),
+    ],
+)
+def test_read_by_name_resolves_exact_match_across_pages(
+    as_ref: bool, name: str, search: str
+) -> None:
     table = pa.table({"id": [1, 2]})
     buffer = pa.BufferOutputStream()
     pq.write_table(table, buffer)
@@ -524,17 +535,17 @@ def test_read_by_name_resolves_exact_match_across_pages(as_ref: bool) -> None:
 
     def handler(method: str, request: Any) -> Any:
         if method == "list_datasets":
-            assert request.filters.search == "goldens"
+            assert request.filters.search == search
             if not request.cursor:
                 return datasets_pb.ListDatasetsResponse(
-                    datasets=[datasets_pb.DatasetMeta(dataset_name="goldens-old")],
+                    datasets=[datasets_pb.DatasetMeta(dataset_name=f"{name}-old")],
                     cursor="page-2",
                 )
             assert request.cursor == "page-2"
             return datasets_pb.ListDatasetsResponse(
                 datasets=[
                     datasets_pb.DatasetMeta(
-                        dataset_name="goldens",
+                        dataset_name=name,
                         most_recent_revision=datasets_pb.DatasetRevisionMeta(
                             offline_query_id="latest"
                         ),
@@ -546,7 +557,7 @@ def test_read_by_name_resolves_exact_match_across_pages(as_ref: bool) -> None:
         return _download_links("https://signed/part-0")
 
     connect = FakeConnectClient(handler=handler)
-    reference = DatasetRevisionRef(dataset_name="goldens") if as_ref else " goldens "
+    reference = DatasetRevisionRef(dataset_name=name) if as_ref else f" {name} "
     read = DatasetClient(connect_client=connect, http_client=http).read(
         reference, timeout=12
     )  # type: ignore[arg-type]

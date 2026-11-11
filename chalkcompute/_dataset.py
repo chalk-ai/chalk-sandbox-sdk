@@ -301,12 +301,14 @@ class DatasetClient:
         *,
         timeout: float,
     ) -> str:
+        # Catalog search uses ILIKE, where backslashes are escape characters.
+        search = name.replace("\\", "\\\\")
         cursor: str | None = None
         while True:
             response = self._call(
                 stub.list_datasets,
                 datasets_pb.ListDatasetsRequest(
-                    filters=datasets_pb.ListDatasetsFilters(search=name),
+                    filters=datasets_pb.ListDatasetsFilters(search=search),
                     cursor=cursor,
                 ),
                 timeout=timeout,
