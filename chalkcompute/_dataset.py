@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
+from uuid import UUID
 from xml.etree import ElementTree
 
 from connectrpc.code import Code
@@ -231,19 +232,31 @@ class DatasetClient:
     ) -> Any:
         """Read a dataset revision and return it as a PyArrow table.
 
-        ``revision`` is a revision id, or a :class:`DatasetRevisionRef` such as
+        ``revision`` is a revision UUID, a dataset name, or a
+        :class:`DatasetRevisionRef` such as
         the one :meth:`upload` returns or an evaluation run's
         ``result_dataset``. The revision's own columns come back as they were
         written: for an evaluation result that is the dataset's columns plus
         ``output``, ``output_error``, and one ``<scorer>_value``,
-        ``<scorer>_error`` and ``<scorer>_metadata`` per scorer.
+        ``<scorer>_error`` and ``<scorer>_metadata`` per scorer. Names resolve to
+        the dataset's latest revision. For a UUID-shaped dataset name, pass
+        ``DatasetRevisionRef(dataset_name=...)`` to distinguish it from a
+        revision UUID.
         """
         revision_id = (
             revision.revision_id
             if isinstance(revision, DatasetRevisionRef)
             else revision
         )
-        if not revision_id or not revision_id.strip():
+        dataset_name = (
+            revision.dataset_name if isinstance(revision, DatasetRevisionRef) else None
+        )
+        if isinstance(revision, str) and revision.strip():
+            try:
+                UUID(revision.strip())
+            except ValueError:
+                dataset_name = revision.strip()
+        if not dataset_name and (not revision_id or not revision_id.strip()):
             raise ValueError("revision_id is required")
         if (
             not isinstance(timeout, (int, float))
@@ -257,6 +270,11 @@ class DatasetClient:
         import pyarrow.parquet as pq
 
         stub = self._connect.stub(datasets_connect.DatasetMetadataServiceClientSync)
+        if dataset_name:
+            revision_id = self._revision_id_for_name(
+                stub, dataset_name, timeout=timeout
+            )
+        assert revision_id is not None
         response = self._call(
             stub.get_dataset_revision_download_links,
             datasets_pb.GetDatasetRevisionDownloadLinksRequest(
@@ -275,6 +293,33 @@ class DatasetClient:
             pq.read_table(BytesIO(self._download(url, timeout=timeout))) for url in urls
         ]
         return tables[0] if len(tables) == 1 else pa.concat_tables(tables)
+
+    def _revision_id_for_name(
+        self,
+        stub: datasets_connect.DatasetMetadataServiceClientSync,
+        name: str,
+        *,
+        timeout: float,
+    ) -> str:
+        cursor: str | None = None
+        while True:
+            response = self._call(
+                stub.list_datasets,
+                datasets_pb.ListDatasetsRequest(
+                    filters=datasets_pb.ListDatasetsFilters(search=name),
+                    cursor=cursor,
+                ),
+                timeout=timeout,
+            )
+            for dataset in response.datasets:
+                if dataset.dataset_name == name:
+                    revision = dataset.most_recent_revision
+                    if revision is None or not revision.offline_query_id:
+                        raise DatasetError(f"dataset {name!r} has no revision to read")
+                    return revision.offline_query_id
+            cursor = response.cursor
+            if not cursor:
+                raise DatasetError(f"dataset {name!r} not found", status_code=404)
 
     def _download(self, url: str, *, timeout: float) -> bytes:
         if not url:
