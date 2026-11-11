@@ -243,20 +243,17 @@ class DatasetClient:
         ``DatasetRevisionRef(dataset_name=...)`` to distinguish it from a
         revision UUID.
         """
-        revision_id = (
-            revision.revision_id
-            if isinstance(revision, DatasetRevisionRef)
-            else revision
-        )
-        dataset_name = (
-            revision.dataset_name if isinstance(revision, DatasetRevisionRef) else None
-        )
-        if isinstance(revision, str) and revision.strip():
+        if isinstance(revision, DatasetRevisionRef):
+            revision_id = revision.revision_id or ""
+            dataset_name = revision.dataset_name
+        else:
+            revision_id = revision.strip()
+            dataset_name = None
             try:
-                UUID(revision.strip())
+                UUID(revision_id)
             except ValueError:
-                dataset_name = revision.strip()
-        if not dataset_name and (not revision_id or not revision_id.strip()):
+                dataset_name = revision_id
+        if not dataset_name and not revision_id:
             raise ValueError("revision_id is required")
         if (
             not isinstance(timeout, (int, float))
@@ -274,12 +271,9 @@ class DatasetClient:
             revision_id = self._revision_id_for_name(
                 stub, dataset_name, timeout=timeout
             )
-        assert revision_id is not None
         response = self._call(
             stub.get_dataset_revision_download_links,
-            datasets_pb.GetDatasetRevisionDownloadLinksRequest(
-                revision_id=revision_id.strip()
-            ),
+            datasets_pb.GetDatasetRevisionDownloadLinksRequest(revision_id=revision_id),
             timeout=timeout,
         )
         urls = list(response.output_urls)
