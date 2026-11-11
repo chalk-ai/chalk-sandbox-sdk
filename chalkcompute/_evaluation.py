@@ -184,7 +184,7 @@ class DatasetRevisionRef:
     """Completed dataset revision identifier. Must be paired with ``dataset_id``."""
 
     dataset_name: str | None = None
-    """Dataset whose latest revision should be resolved when creating an evaluation."""
+    """Dataset whose latest revision should be resolved when reading or evaluating."""
 
     def __post_init__(self) -> None:
         dataset_id = self.dataset_id.strip() if self.dataset_id is not None else None
