@@ -210,6 +210,84 @@ def test_metadata_to_proto() -> None:
     assert result["version"].kind.value == pytest.approx(2.0)
 
 
+# --- reward functions ---
+
+
+def _lcs_ratio(output: str, expected: str) -> float:
+    """Longest common subsequence
+    with the target.
+
+    Longer explanation that stays out of the summary.
+    """
+    return 1.0
+
+
+def _format_ok(output: str) -> float:
+    return 1.0
+
+
+def test_reward_functions_mapping_records_weight_summary_and_source() -> None:
+    @training(data="ds", reward_functions={_lcs_ratio: 1, _format_ok: 0.2})
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    assert isinstance(train, TrainingFunction)
+    lcs, fmt = train._metadata["reward_functions"]
+    assert lcs["name"] == "_lcs_ratio"
+    assert lcs["weight"] == 1.0
+    assert lcs["description"] == "Longest common subsequence with the target."
+    assert lcs["source"].startswith("def _lcs_ratio(output: str, expected: str)")
+    assert fmt == {
+        "name": "_format_ok",
+        "weight": 0.2,
+        "source": "def _format_ok(output: str) -> float:\n    return 1.0\n",
+    }
+    # The entry must survive the proto conversion run_training performs.
+    _metadata_to_proto(train._metadata)
+
+
+def test_reward_functions_list_has_no_weights() -> None:
+    @training(data="ds", metadata={"team": "ml"}, reward_functions=[_format_ok])
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    assert isinstance(train, TrainingFunction)
+    assert train._metadata["team"] == "ml"
+    assert "weight" not in train._metadata["reward_functions"][0]
+
+
+def test_reward_functions_rejects_metadata_conflict() -> None:
+    with pytest.raises(ValueError, match="not both"):
+        training(
+            data="ds",
+            metadata={"reward_functions": {"a": 1}},
+            reward_functions=[_format_ok],
+        )(lambda df, config: None)
+
+
+def test_reward_functions_rejects_lambda_and_duplicate_names() -> None:
+    with pytest.raises(ValueError, match="named function"):
+        training(data="ds", reward_functions=[lambda output: 1.0])(
+            lambda df, config: None
+        )
+
+    def _format_ok(output: str) -> float:  # same name as the module-level one
+        return 0.0
+
+    with pytest.raises(ValueError, match="duplicate"):
+        training(data="ds", reward_functions=[globals()["_format_ok"], _format_ok])(
+            lambda df, config: None
+        )
+
+
+def test_reward_functions_omits_oversized_source() -> None:
+    from chalkcompute import _training
+
+    with patch.object(_training, "_MAX_REWARD_FUNCTION_SOURCE_BYTES", 10):
+        entries = _training._reward_functions_metadata([_format_ok])
+    assert entries == [{"name": "_format_ok"}]
+
+
 # --- data source proto ---
 
 

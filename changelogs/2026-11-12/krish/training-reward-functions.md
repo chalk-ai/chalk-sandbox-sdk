@@ -1,0 +1,1 @@
+- Add `reward_functions=` to `@chalkcompute.training`, which records each reward function's name, weight, docstring summary and source in the run's `reward_functions` metadata for the dashboard's Reward functions table.
