@@ -14,19 +14,25 @@ from protobuf.wkt.google.protobuf import timestamp_pb
 
 from ...auth.v1 import permissions_pb
 from ...flags.v1 import flags_pb
+from ...server.v1 import model_registry_pb
+from ...volume.v2 import volume_pb
 
 if TYPE_CHECKING:
     from protobuf import DescFile, Oneof
     from protobuf.wkt.google.protobuf.timestamp_pb import Timestamp
 
+    from ...server.v1.model_registry_pb import ModelVersionKey
+    from ...volume.v2.volume_pb import VolumeRef
 
-_WeightStreamFields: TypeAlias = Literal["id", "name", "volume_name", "base_model", "architecture_hash", "current_version", "pinned_version", "created_at", "updated_at"]
+
+_WeightStreamFields: TypeAlias = Literal["id", "name", "base_model", "architecture_hash", "current_version", "pinned_version", "created_at", "updated_at", "base_model_version", "volume"]
 
 class WeightStream(Message[_WeightStreamFields]):
     """
-    A weight stream is scoped to the authenticated environment and owns a ChalkFS
-    volume. CURRENT/PIN on its main ref are authoritative desired state; this
-    resource is a queryable metadata index, not an independent serving control.
+    An environment-scoped history of compatible, immutable weight publications.
+    A ChalkFS volume stores the history. CURRENT/PIN on its main ref select the
+    stream's shared default, not a deployment-specific target or applied state.
+    This resource is an eventually consistent metadata index of that history.
 
     ```proto
     message chalk.weightstream.v1.WeightStream
@@ -41,29 +47,32 @@ class WeightStream(Message[_WeightStreamFields]):
             ```proto
             string name = 2;
             ```
-        volume_name:
-            ```proto
-            string volume_name = 3;
-            ```
         base_model:
+            Model label, not an identity or checksum of the starting weight values.
+
             ```proto
             string base_model = 4;
             ```
         architecture_hash:
-            Empty until the first keyframe is recorded, then immutable.
+            Hash of model configuration and logical tensor structure, not weight bytes
+            or a serving engine's packed layout. Fixed by a verified keyframe/replay
+            chain (or the expected architecture at creation), then immutable.
 
             ```proto
             string architecture_hash = 5;
             ```
         current_version:
-            Latest indexed logical weight version, not a ChalkFS snapshot id. A newly
-            created stream has no current_version; version zero is the seed checkpoint.
+            Highest indexed logical publication number. May lag CURRENT and is neither
+            the authoritative stream head, a deployment target, nor an applied version.
+            Absent before any publication is indexed; zero is a valid seed version.
 
             ```proto
             optional uint64 current_version = 6;
             ```
         pinned_version:
-            Last observed PIN. Absent means follow CURRENT.
+            Last indexed observation of the stream-wide PIN; may be stale. An absent
+            authoritative PIN means follow CURRENT only for consumers opting to follow
+            the stream default. Explicit deployment targets are managed separately.
 
             ```proto
             optional uint64 pinned_version = 7;
@@ -76,9 +85,25 @@ class WeightStream(Message[_WeightStreamFields]):
             ```proto
             optional google.protobuf.Timestamp updated_at = 9;
             ```
+        base_model_version:
+            Optional registered starting artifact, scoped to this environment. This is
+            a concrete registry version, not a deployment or a mutable alias. The
+            base_model label may differ from its registry model name. Absent means no
+            association is reported for an external seed, not a verified registry base.
+
+            ```proto
+            optional chalk.server.v1.ModelVersionKey base_model_version = 10;
+            ```
+        volume:
+            Resolved storage association, with canonical volume id and name. Referencing
+            an existing volume transfers no ownership and grants no deletion authority.
+
+            ```proto
+            optional chalk.volume.v2.VolumeRef volume = 11;
+            ```
     """
 
-    __slots__ = ("id", "name", "volume_name", "base_model", "architecture_hash", "current_version", "pinned_version", "created_at", "updated_at")
+    __slots__ = ("id", "name", "base_model", "architecture_hash", "current_version", "pinned_version", "created_at", "updated_at", "base_model_version", "volume")
 
     if TYPE_CHECKING:
 
@@ -87,30 +112,36 @@ class WeightStream(Message[_WeightStreamFields]):
             *,
             id: str = "",
             name: str = "",
-            volume_name: str = "",
             base_model: str = "",
             architecture_hash: str = "",
             current_version: int | None = None,
             pinned_version: int | None = None,
             created_at: Timestamp | None = None,
             updated_at: Timestamp | None = None,
+            base_model_version: ModelVersionKey | None = None,
+            volume: VolumeRef | None = None,
         ) -> None:
             pass
 
         id: str
         name: str
-        volume_name: str
         base_model: str
         architecture_hash: str
         current_version: int
         pinned_version: int
         created_at: Timestamp | None
         updated_at: Timestamp | None
+        base_model_version: ModelVersionKey | None
+        volume: VolumeRef | None
 
-_WeightStreamVersionFields: TypeAlias = Literal["weight_stream_id", "version", "parent_version", "kind", "volume_version_id", "architecture_hash", "trainer_step", "training_run_id", "payload_bytes", "changed_element_fraction", "created_at"]
+_WeightStreamVersionFields: TypeAlias = Literal["weight_stream_id", "version", "parent_version", "kind", "volume_version_id", "architecture_hash", "trainer_step", "training_run_id", "payload_bytes", "changed_element_fraction", "created_at", "manifest_sha256", "weight_schema_sha256"]
 
 class WeightStreamVersion(Message[_WeightStreamVersionFields]):
     """
+    One immutable publication identifying a resulting logical weight state and
+    one representation of it: a full keyframe or replacements relative to a parent.
+    (weight_stream_id, version) cannot be reused for different manifest content.
+
     ```proto
     message chalk.weightstream.v1.WeightStreamVersion
     ```
@@ -121,12 +152,16 @@ class WeightStreamVersion(Message[_WeightStreamVersionFields]):
             string weight_stream_id = 1;
             ```
         version:
-            Logical publication number used by CURRENT/PIN and replica version headers.
+            Logical publication number, not a trainer step, registry model version, or
+            ChalkFS snapshot id. Numbers may have gaps; parent_version defines ancestry.
 
             ```proto
             uint64 version = 2;
             ```
         parent_version:
+            Required for patches and must precede version. A patch only applies to its
+            exact parent state, not any state with a matching architecture.
+
             ```proto
             optional uint64 parent_version = 3;
             ```
@@ -136,7 +171,8 @@ class WeightStreamVersion(Message[_WeightStreamVersionFields]):
             ```
         volume_version_id:
             Immutable ChalkFS snapshot containing v%06d/manifest.json and its payloads.
-            It differs from the logical publication number above.
+            This is a filesystem snapshot, not a running inference process snapshot.
+            It locates storage; it does not require inference to boot from that volume.
 
             ```proto
             uint64 volume_version_id = 5;
@@ -167,9 +203,28 @@ class WeightStreamVersion(Message[_WeightStreamVersionFields]):
             ```proto
             optional google.protobuf.Timestamp created_at = 11;
             ```
+        manifest_sha256:
+            SHA-256 of the exact immutable manifest bytes, as 64 lowercase hex digits.
+            Derived by the server; Record verifies it when supplied, or computes it
+            when omitted. This identifies the publication's
+            representation, not a hash of all reconstructed model weight bytes.
+
+            ```proto
+            optional string manifest_sha256 = 12;
+            ```
+        weight_schema_sha256:
+            SHA-256 of the complete logical tensor schema, using the SDK WeightSchema
+            canonical JSON format. Derived from the verified complete keyframe in the
+            replay chain, never just the tensors named by a sparse patch. Record verifies
+            a supplied digest or computes an omitted one.
+            Neither this nor architecture_hash identifies the starting weight values.
+
+            ```proto
+            optional string weight_schema_sha256 = 13;
+            ```
     """
 
-    __slots__ = ("weight_stream_id", "version", "parent_version", "kind", "volume_version_id", "architecture_hash", "trainer_step", "training_run_id", "payload_bytes", "changed_element_fraction", "created_at")
+    __slots__ = ("weight_stream_id", "version", "parent_version", "kind", "volume_version_id", "architecture_hash", "trainer_step", "training_run_id", "payload_bytes", "changed_element_fraction", "created_at", "manifest_sha256", "weight_schema_sha256")
 
     if TYPE_CHECKING:
 
@@ -187,6 +242,8 @@ class WeightStreamVersion(Message[_WeightStreamVersionFields]):
             payload_bytes: int = 0,
             changed_element_fraction: float = 0,
             created_at: Timestamp | None = None,
+            manifest_sha256: str | None = None,
+            weight_schema_sha256: str | None = None,
         ) -> None:
             pass
 
@@ -201,8 +258,10 @@ class WeightStreamVersion(Message[_WeightStreamVersionFields]):
         payload_bytes: int
         changed_element_fraction: float
         created_at: Timestamp | None
+        manifest_sha256: str
+        weight_schema_sha256: str
 
-_CreateWeightStreamRequestFields: TypeAlias = Literal["name", "base_model", "volume_name", "architecture_hash"]
+_CreateWeightStreamRequestFields: TypeAlias = Literal["name", "base_model", "architecture_hash", "base_model_version", "volume"]
 
 class CreateWeightStreamRequest(Message[_CreateWeightStreamRequestFields]):
     """
@@ -219,22 +278,33 @@ class CreateWeightStreamRequest(Message[_CreateWeightStreamRequestFields]):
             ```proto
             string base_model = 2;
             ```
-        volume_name:
-            If omitted, create a volume named after the stream. An existing volume must
-            belong to the authenticated environment and be writable by the caller.
-
-            ```proto
-            optional string volume_name = 3;
-            ```
         architecture_hash:
             Optional expected architecture; otherwise fixed by the first keyframe.
 
             ```proto
             optional string architecture_hash = 4;
             ```
+        base_model_version:
+            Optional concrete registered starting artifact in this environment. The
+            server validates its existence/access and persists the resolved association.
+            This is provenance, not proof that arbitrary seed/resident bytes match it.
+            Unset preserves externally seeded streams; base_model remains their label.
+
+            ```proto
+            optional chalk.server.v1.ModelVersionKey base_model_version = 5;
+            ```
+        volume:
+            Existing storage selected by volume id or name. At least one must be nonempty;
+            if both are supplied they must identify the same environment-scoped volume.
+            The caller must have write access. If unset, create a volume named after
+            the stream. Existing-volume ownership is unchanged.
+
+            ```proto
+            optional chalk.volume.v2.VolumeRef volume = 6;
+            ```
     """
 
-    __slots__ = ("name", "base_model", "volume_name", "architecture_hash")
+    __slots__ = ("name", "base_model", "architecture_hash", "base_model_version", "volume")
 
     if TYPE_CHECKING:
 
@@ -243,15 +313,17 @@ class CreateWeightStreamRequest(Message[_CreateWeightStreamRequestFields]):
             *,
             name: str = "",
             base_model: str = "",
-            volume_name: str | None = None,
             architecture_hash: str | None = None,
+            base_model_version: ModelVersionKey | None = None,
+            volume: VolumeRef | None = None,
         ) -> None:
             pass
 
         name: str
         base_model: str
-        volume_name: str
         architecture_hash: str
+        base_model_version: ModelVersionKey | None
+        volume: VolumeRef | None
 
 _CreateWeightStreamResponseFields: TypeAlias = Literal["weight_stream"]
 
@@ -457,11 +529,16 @@ class RecordWeightStreamVersionRequest(Message[_RecordWeightStreamVersionRequest
 
     Attributes:
         version:
-            Called after the volume commit. The server verifies the manifest at the
-            immutable volume snapshot and rejects conflicting metadata. Retrying the
-            same (stream, logical version) with identical data is idempotent. Recording
-            metadata never moves CURRENT or PIN. Workload identity callers may record
-            only their own training_run_id in their authenticated environment.
+            Called after atomic publication of payloads, manifest, and CURRENT in one
+            volume commit. The server verifies the immutable manifest/replay chain and
+            rejects conflicting publication identities, including rewritten ancestors.
+            Index reconciliation may arrive out of order and never moves CURRENT/PIN.
+            Identical retries are idempotent after server-derived fields are normalized;
+            a caller omitting digests must not conflict with a previously computed
+            digest. Publishers serialize the stream head with the volume's commit CAS;
+            recording metadata is not a publication lock or training cancellation fence.
+            Workload identity callers may record only their own training_run_id in their
+            authenticated environment. Training provenance may be absent for a seed.
 
             ```proto
             optional chalk.weightstream.v1.WeightStreamVersion version = 1;
@@ -646,7 +723,10 @@ class SetWeightStreamPinRequest(Message[_SetWeightStreamPinRequestFields]):
             ```
         version:
             Logical weight version, including zero. The full keyframe/replay chain must
-            exist. Commit PIN before returning; rollback uses this same operation.
+            exist. Commit PIN before returning. Selects only the shared stream default:
+            it does not override an explicit deployment target or await replica updates.
+            Selecting an older version is not an inverse patch or a promise of hot
+            rollback; it requires a supported reconstruction/restore path.
 
             ```proto
             uint64 version = 2;
@@ -706,6 +786,9 @@ class ClearWeightStreamPinRequest(Message[_ClearWeightStreamPinRequestFields]):
 
     Attributes:
         weight_stream_id:
+            Clear the shared PIN so followers use CURRENT. Explicit deployment targets
+            remain independent, and successful return does not establish applied state.
+
             ```proto
             string weight_stream_id = 1;
             ```
@@ -801,7 +884,7 @@ class PromoteWeightStreamVersionRequest(Message[_PromoteWeightStreamVersionReque
         model_name: str
         aliases: list[str]
 
-_PromoteWeightStreamVersionResponseFields: TypeAlias = Literal["model_name", "model_version_id", "model_version", "model_volume_version_id"]
+_PromoteWeightStreamVersionResponseFields: TypeAlias = Literal["model_version_id", "model_volume_version_id", "model_version_key"]
 
 class PromoteWeightStreamVersionResponse(Message[_PromoteWeightStreamVersionResponseFields]):
     """
@@ -810,19 +893,11 @@ class PromoteWeightStreamVersionResponse(Message[_PromoteWeightStreamVersionResp
     ```
 
     Attributes:
-        model_name:
-            ```proto
-            string model_name = 1;
-            ```
         model_version_id:
-            Registry row UUID and registry version number, not logical weight versions.
+            Registry row UUID, not a logical weight version.
 
             ```proto
             string model_version_id = 2;
-            ```
-        model_version:
-            ```proto
-            uint64 model_version = 3;
             ```
         model_volume_version_id:
             Immutable ChalkFS snapshot containing the promoted complete checkpoint.
@@ -830,26 +905,30 @@ class PromoteWeightStreamVersionResponse(Message[_PromoteWeightStreamVersionResp
             ```proto
             uint64 model_volume_version_id = 4;
             ```
+        model_version_key:
+            Concrete model registry version produced by promotion, in this environment.
+
+            ```proto
+            optional chalk.server.v1.ModelVersionKey model_version_key = 5;
+            ```
     """
 
-    __slots__ = ("model_name", "model_version_id", "model_version", "model_volume_version_id")
+    __slots__ = ("model_version_id", "model_volume_version_id", "model_version_key")
 
     if TYPE_CHECKING:
 
         def __init__(
             self,
             *,
-            model_name: str = "",
             model_version_id: str = "",
-            model_version: int = 0,
             model_volume_version_id: int = 0,
+            model_version_key: ModelVersionKey | None = None,
         ) -> None:
             pass
 
-        model_name: str
         model_version_id: str
-        model_version: int
         model_volume_version_id: int
+        model_version_key: ModelVersionKey | None
 
 class WeightStreamVersionKind(Enum):
     """
@@ -878,10 +957,12 @@ class WeightStreamVersionKind(Enum):
 
 
 _DESC = file_desc(
-    b'\n#chalk/weightstream/v1/service.proto\x12\x15chalk.weightstream.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x96\x03\n\x0cWeightStream\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0bvolume_name\x18\x03 \x01(\tR\nvolumeName\x12\x1d\n\nbase_model\x18\x04 \x01(\tR\tbaseModel\x12+\n\x11architecture_hash\x18\x05 \x01(\tR\x10architectureHash\x12,\n\x0fcurrent_version\x18\x06 \x01(\x04H\x00R\x0ecurrentVersion\x88\x01\x01\x12*\n\x0epinned_version\x18\x07 \x01(\x04H\x01R\rpinnedVersion\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x12\n\x10_current_versionB\x11\n\x0f_pinned_version"\xc9\x04\n\x13WeightStreamVersion\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12*\n\x0eparent_version\x18\x03 \x01(\x04H\x00R\rparentVersion\x88\x01\x01\x12B\n\x04kind\x18\x04 \x01(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x04kind\x12*\n\x11volume_version_id\x18\x05 \x01(\x04R\x0fvolumeVersionId\x12+\n\x11architecture_hash\x18\x06 \x01(\tR\x10architectureHash\x12&\n\x0ctrainer_step\x18\x07 \x01(\x04H\x01R\x0btrainerStep\x88\x01\x01\x12+\n\x0ftraining_run_id\x18\x08 \x01(\tH\x02R\rtrainingRunId\x88\x01\x01\x12#\n\rpayload_bytes\x18\t \x01(\x04R\x0cpayloadBytes\x128\n\x18changed_element_fraction\x18\n \x01(\x01R\x16changedElementFraction\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\x11\n\x0f_parent_versionB\x0f\n\r_trainer_stepB\x12\n\x10_training_run_id"\xcc\x01\n\x19CreateWeightStreamRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nbase_model\x18\x02 \x01(\tR\tbaseModel\x12$\n\x0bvolume_name\x18\x03 \x01(\tH\x00R\nvolumeName\x88\x01\x01\x120\n\x11architecture_hash\x18\x04 \x01(\tH\x01R\x10architectureHash\x88\x01\x01B\x0e\n\x0c_volume_nameB\x14\n\x12_architecture_hash"f\n\x1aCreateWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\x89\x01\n\x16GetWeightStreamRequest\x12*\n\x10weight_stream_id\x18\x01 \x01(\tH\x00R\x0eweightStreamId\x12.\n\x12weight_stream_name\x18\x02 \x01(\tH\x00R\x10weightStreamNameB\x13\n\x11weight_stream_key"c\n\x17GetWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"Q\n\x18ListWeightStreamsFilters\x12\x14\n\x05names\x18\x01 \x03(\tR\x05names\x12\x1f\n\x0bbase_models\x18\x02 \x03(\tR\nbaseModels"\xb2\x01\n\x18ListWeightStreamsRequest\x12I\n\x07filters\x18\x01 \x01(\x0b2/.chalk.weightstream.v1.ListWeightStreamsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\x9d\x01\n\x19ListWeightStreamsResponse\x12J\n\x0eweight_streams\x18\x01 \x03(\x0b2#.chalk.weightstream.v1.WeightStreamR\rweightStreams\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"h\n RecordWeightStreamVersionRequest\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"i\n!RecordWeightStreamVersionResponse\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"\xd3\x01\n\x1fListWeightStreamVersionsFilters\x12D\n\x05kinds\x18\x01 \x03(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x05kinds\x12$\n\x0bmin_version\x18\x02 \x01(\x04H\x00R\nminVersion\x88\x01\x01\x12$\n\x0bmax_version\x18\x03 \x01(\x04H\x01R\nmaxVersion\x88\x01\x01B\x0e\n\x0c_min_versionB\x0e\n\x0c_max_version"\xea\x01\n\x1fListWeightStreamVersionsRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12P\n\x07filters\x18\x02 \x01(\x0b26.chalk.weightstream.v1.ListWeightStreamVersionsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\xa0\x01\n ListWeightStreamVersionsResponse\x12F\n\x08versions\x18\x01 \x03(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x08versions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"_\n\x19SetWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version"f\n\x1aSetWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"G\n\x1bClearWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId"h\n\x1cClearWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\xa0\x01\n!PromoteWeightStreamVersionRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12\x1d\n\nmodel_name\x18\x03 \x01(\tR\tmodelName\x12\x18\n\x07aliases\x18\x04 \x03(\tR\x07aliases"\xc9\x01\n"PromoteWeightStreamVersionResponse\x12\x1d\n\nmodel_name\x18\x01 \x01(\tR\tmodelName\x12(\n\x10model_version_id\x18\x02 \x01(\tR\x0emodelVersionId\x12#\n\rmodel_version\x18\x03 \x01(\x04R\x0cmodelVersion\x125\n\x17model_volume_version_id\x18\x04 \x01(\x04R\x14modelVolumeVersionId*\x94\x01\n\x17WeightStreamVersionKind\x12*\n&WEIGHT_STREAM_VERSION_KIND_UNSPECIFIED\x10\x00\x12\'\n#WEIGHT_STREAM_VERSION_KIND_KEYFRAME\x10\x01\x12$\n WEIGHT_STREAM_VERSION_KIND_PATCH\x10\x022\xa9\t\n\x13WeightStreamService\x12~\n\x12CreateWeightStream\x120.chalk.weightstream.v1.CreateWeightStreamRequest\x1a1.chalk.weightstream.v1.CreateWeightStreamResponse"\x03\x80}\x0c\x12u\n\x0fGetWeightStream\x12-.chalk.weightstream.v1.GetWeightStreamRequest\x1a..chalk.weightstream.v1.GetWeightStreamResponse"\x03\x80}\x0b\x12{\n\x11ListWeightStreams\x12/.chalk.weightstream.v1.ListWeightStreamsRequest\x1a0.chalk.weightstream.v1.ListWeightStreamsResponse"\x03\x80}\x0b\x12\x93\x01\n\x19RecordWeightStreamVersion\x127.chalk.weightstream.v1.RecordWeightStreamVersionRequest\x1a8.chalk.weightstream.v1.RecordWeightStreamVersionResponse"\x03\x80}\x0e\x12\x90\x01\n\x18ListWeightStreamVersions\x126.chalk.weightstream.v1.ListWeightStreamVersionsRequest\x1a7.chalk.weightstream.v1.ListWeightStreamVersionsResponse"\x03\x80}\x0b\x12~\n\x12SetWeightStreamPin\x120.chalk.weightstream.v1.SetWeightStreamPinRequest\x1a1.chalk.weightstream.v1.SetWeightStreamPinResponse"\x03\x80}\x0e\x12\x84\x01\n\x14ClearWeightStreamPin\x122.chalk.weightstream.v1.ClearWeightStreamPinRequest\x1a3.chalk.weightstream.v1.ClearWeightStreamPinResponse"\x03\x80}\x0e\x12\xed\x01\n\x1aPromoteWeightStreamVersion\x128.chalk.weightstream.v1.PromoteWeightStreamVersionRequest\x1a9.chalk.weightstream.v1.PromoteWeightStreamVersionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16model_registry_enabled\x129This action is not enabled. Please contact Chalk Support.B\xbf\x01\n\x19com.chalk.weightstream.v1B\x0cServiceProtoP\x01Z\x1eweightstream/v1;weightstreamv1\xa2\x02\x03CWX\xaa\x02\x15Chalk.Weightstream.V1\xca\x02\x15Chalk\\Weightstream\\V1\xe2\x02!Chalk\\Weightstream\\V1\\GPBMetadata\xea\x02\x17Chalk::Weightstream::V1b\x06proto3',
+    b'\n#chalk/weightstream/v1/service.proto\x12\x15chalk.weightstream.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a$chalk/server/v1/model_registry.proto\x1a\x1cchalk/volume/v2/volume.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xf9\x03\n\x0cWeightStream\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n\nbase_model\x18\x04 \x01(\tR\tbaseModel\x12+\n\x11architecture_hash\x18\x05 \x01(\tR\x10architectureHash\x12,\n\x0fcurrent_version\x18\x06 \x01(\x04H\x00R\x0ecurrentVersion\x88\x01\x01\x12*\n\x0epinned_version\x18\x07 \x01(\x04H\x01R\rpinnedVersion\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12N\n\x12base_model_version\x18\n \x01(\x0b2 .chalk.server.v1.ModelVersionKeyR\x10baseModelVersion\x122\n\x06volume\x18\x0b \x01(\x0b2\x1a.chalk.volume.v2.VolumeRefR\x06volumeB\x12\n\x10_current_versionB\x11\n\x0f_pinned_version"\xdb\x05\n\x13WeightStreamVersion\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12*\n\x0eparent_version\x18\x03 \x01(\x04H\x00R\rparentVersion\x88\x01\x01\x12B\n\x04kind\x18\x04 \x01(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x04kind\x12*\n\x11volume_version_id\x18\x05 \x01(\x04R\x0fvolumeVersionId\x12+\n\x11architecture_hash\x18\x06 \x01(\tR\x10architectureHash\x12&\n\x0ctrainer_step\x18\x07 \x01(\x04H\x01R\x0btrainerStep\x88\x01\x01\x12+\n\x0ftraining_run_id\x18\x08 \x01(\tH\x02R\rtrainingRunId\x88\x01\x01\x12#\n\rpayload_bytes\x18\t \x01(\x04R\x0cpayloadBytes\x128\n\x18changed_element_fraction\x18\n \x01(\x01R\x16changedElementFraction\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12,\n\x0fmanifest_sha256\x18\x0c \x01(\tH\x03R\x0emanifestSha256\x88\x01\x01\x125\n\x14weight_schema_sha256\x18\r \x01(\tH\x04R\x12weightSchemaSha256\x88\x01\x01B\x11\n\x0f_parent_versionB\x0f\n\r_trainer_stepB\x12\n\x10_training_run_idB\x12\n\x10_manifest_sha256B\x17\n\x15_weight_schema_sha256"\x9a\x02\n\x19CreateWeightStreamRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nbase_model\x18\x02 \x01(\tR\tbaseModel\x120\n\x11architecture_hash\x18\x04 \x01(\tH\x00R\x10architectureHash\x88\x01\x01\x12N\n\x12base_model_version\x18\x05 \x01(\x0b2 .chalk.server.v1.ModelVersionKeyR\x10baseModelVersion\x122\n\x06volume\x18\x06 \x01(\x0b2\x1a.chalk.volume.v2.VolumeRefR\x06volumeB\x14\n\x12_architecture_hash"f\n\x1aCreateWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\x89\x01\n\x16GetWeightStreamRequest\x12*\n\x10weight_stream_id\x18\x01 \x01(\tH\x00R\x0eweightStreamId\x12.\n\x12weight_stream_name\x18\x02 \x01(\tH\x00R\x10weightStreamNameB\x13\n\x11weight_stream_key"c\n\x17GetWeightStreamResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"Q\n\x18ListWeightStreamsFilters\x12\x14\n\x05names\x18\x01 \x03(\tR\x05names\x12\x1f\n\x0bbase_models\x18\x02 \x03(\tR\nbaseModels"\xb2\x01\n\x18ListWeightStreamsRequest\x12I\n\x07filters\x18\x01 \x01(\x0b2/.chalk.weightstream.v1.ListWeightStreamsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\x9d\x01\n\x19ListWeightStreamsResponse\x12J\n\x0eweight_streams\x18\x01 \x03(\x0b2#.chalk.weightstream.v1.WeightStreamR\rweightStreams\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"h\n RecordWeightStreamVersionRequest\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"i\n!RecordWeightStreamVersionResponse\x12D\n\x07version\x18\x01 \x01(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x07version"\xd3\x01\n\x1fListWeightStreamVersionsFilters\x12D\n\x05kinds\x18\x01 \x03(\x0e2..chalk.weightstream.v1.WeightStreamVersionKindR\x05kinds\x12$\n\x0bmin_version\x18\x02 \x01(\x04H\x00R\nminVersion\x88\x01\x01\x12$\n\x0bmax_version\x18\x03 \x01(\x04H\x01R\nmaxVersion\x88\x01\x01B\x0e\n\x0c_min_versionB\x0e\n\x0c_max_version"\xea\x01\n\x1fListWeightStreamVersionsRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12P\n\x07filters\x18\x02 \x01(\x0b26.chalk.weightstream.v1.ListWeightStreamVersionsFiltersR\x07filters\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\xa0\x01\n ListWeightStreamVersionsResponse\x12F\n\x08versions\x18\x01 \x03(\x0b2*.chalk.weightstream.v1.WeightStreamVersionR\x08versions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"_\n\x19SetWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version"f\n\x1aSetWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"G\n\x1bClearWeightStreamPinRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId"h\n\x1cClearWeightStreamPinResponse\x12H\n\rweight_stream\x18\x01 \x01(\x0b2#.chalk.weightstream.v1.WeightStreamR\x0cweightStream"\xa0\x01\n!PromoteWeightStreamVersionRequest\x12(\n\x10weight_stream_id\x18\x01 \x01(\tR\x0eweightStreamId\x12\x18\n\x07version\x18\x02 \x01(\x04R\x07version\x12\x1d\n\nmodel_name\x18\x03 \x01(\tR\tmodelName\x12\x18\n\x07aliases\x18\x04 \x03(\tR\x07aliases"\xd3\x01\n"PromoteWeightStreamVersionResponse\x12(\n\x10model_version_id\x18\x02 \x01(\tR\x0emodelVersionId\x125\n\x17model_volume_version_id\x18\x04 \x01(\x04R\x14modelVolumeVersionId\x12L\n\x11model_version_key\x18\x05 \x01(\x0b2 .chalk.server.v1.ModelVersionKeyR\x0fmodelVersionKey*\x94\x01\n\x17WeightStreamVersionKind\x12*\n&WEIGHT_STREAM_VERSION_KIND_UNSPECIFIED\x10\x00\x12\'\n#WEIGHT_STREAM_VERSION_KIND_KEYFRAME\x10\x01\x12$\n WEIGHT_STREAM_VERSION_KIND_PATCH\x10\x022\xa9\t\n\x13WeightStreamService\x12~\n\x12CreateWeightStream\x120.chalk.weightstream.v1.CreateWeightStreamRequest\x1a1.chalk.weightstream.v1.CreateWeightStreamResponse"\x03\x80}\x0c\x12u\n\x0fGetWeightStream\x12-.chalk.weightstream.v1.GetWeightStreamRequest\x1a..chalk.weightstream.v1.GetWeightStreamResponse"\x03\x80}\x0b\x12{\n\x11ListWeightStreams\x12/.chalk.weightstream.v1.ListWeightStreamsRequest\x1a0.chalk.weightstream.v1.ListWeightStreamsResponse"\x03\x80}\x0b\x12\x93\x01\n\x19RecordWeightStreamVersion\x127.chalk.weightstream.v1.RecordWeightStreamVersionRequest\x1a8.chalk.weightstream.v1.RecordWeightStreamVersionResponse"\x03\x80}\x0e\x12\x90\x01\n\x18ListWeightStreamVersions\x126.chalk.weightstream.v1.ListWeightStreamVersionsRequest\x1a7.chalk.weightstream.v1.ListWeightStreamVersionsResponse"\x03\x80}\x0b\x12~\n\x12SetWeightStreamPin\x120.chalk.weightstream.v1.SetWeightStreamPinRequest\x1a1.chalk.weightstream.v1.SetWeightStreamPinResponse"\x03\x80}\x0e\x12\x84\x01\n\x14ClearWeightStreamPin\x122.chalk.weightstream.v1.ClearWeightStreamPinRequest\x1a3.chalk.weightstream.v1.ClearWeightStreamPinResponse"\x03\x80}\x0e\x12\xed\x01\n\x1aPromoteWeightStreamVersion\x128.chalk.weightstream.v1.PromoteWeightStreamVersionRequest\x1a9.chalk.weightstream.v1.PromoteWeightStreamVersionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16model_registry_enabled\x129This action is not enabled. Please contact Chalk Support.B\xbf\x01\n\x19com.chalk.weightstream.v1B\x0cServiceProtoP\x01Z\x1eweightstream/v1;weightstreamv1\xa2\x02\x03CWX\xaa\x02\x15Chalk.Weightstream.V1\xca\x02\x15Chalk\\Weightstream\\V1\xe2\x02!Chalk\\Weightstream\\V1\\GPBMetadata\xea\x02\x17Chalk::Weightstream::V1b\x06proto3',
     [
         permissions_pb.desc(),
         flags_pb.desc(),
+        model_registry_pb.desc(),
+        volume_pb.desc(),
         timestamp_pb.desc(),
     ],
     {
