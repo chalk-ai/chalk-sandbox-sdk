@@ -54,7 +54,6 @@ class ModelServingConfig:
 
         value = json.loads(raw, object_pairs_hook=unique)
         required = {
-            "schema_version",
             "engine",
             "engine_args",
             "weights_dir",
@@ -69,9 +68,7 @@ class ModelServingConfig:
             or value.keys() - required - {"initial_model_dir"}
         ):
             raise ValueError("Exact managed serving config fields required")
-        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
-            raise ValueError("Unsupported managed serving config schema")
-        if value["engine"] not in ("vllm-sparse", "sglang-sparse"):
+        if value["engine"] not in ("SERVING_ENGINE_VLLM", "SERVING_ENGINE_SGLANG"):
             raise ValueError("Managed runtime requires a supported sparse engine")
         args = value["engine_args"]
         if not isinstance(args, list) or any(
@@ -98,7 +95,9 @@ class ModelServingConfig:
         if type(timeout) is not int or not 1 <= timeout <= 1800:
             raise ValueError("Startup timeout must be between 1 and 1800 seconds")
         return cls(
-            value["engine"],
+            "vllm-sparse"
+            if value["engine"] == "SERVING_ENGINE_VLLM"
+            else "sglang-sparse",
             list(args),
             Path(value["weights_dir"]),
             Path(value["weight_layout"]),
@@ -106,6 +105,65 @@ class ModelServingConfig:
             port,
             float(timeout),
             Path(value["initial_model_dir"]) if "initial_model_dir" in value else None,
+        )
+
+
+@dataclass(frozen=True)
+class ModelServingBinding:
+    environment_id: str
+    model_scaling_group_id: str
+    model_scaling_group_revision_id: str
+    weight_stream_id: str
+    volume_id: str
+
+    @classmethod
+    def from_dict(cls, value: object) -> ModelServingBinding:
+        fields = set(cls.__dataclass_fields__)
+        if (
+            not isinstance(value, dict)
+            or value.keys() != fields
+            or any(
+                not isinstance(item, str)
+                or not item
+                or item.strip() != item
+                or "\x00" in item
+                for item in value.values()
+            )
+        ):
+            raise ValueError("Exact authoritative model serving binding required")
+        return cls(**value)
+
+
+@dataclass(frozen=True)
+class ModelServingBootstrap:
+    config: ModelServingConfig
+    binding: ModelServingBinding
+
+    @classmethod
+    def from_json(cls, raw: str) -> ModelServingBootstrap:
+        if len(raw.encode("utf-8")) > 64 * 1024:
+            raise ValueError("Model serving bootstrap exceeds size bound")
+
+        def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate model serving bootstrap field")
+                result[key] = value
+            return result
+
+        value = json.loads(raw, object_pairs_hook=unique)
+        if not isinstance(value, dict) or value.keys() != {
+            "schema_version",
+            "config",
+            "binding",
+        }:
+            raise ValueError("Exact model serving bootstrap fields required")
+        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("Unsupported model serving bootstrap schema")
+        return cls(
+            ModelServingConfig.from_json(json.dumps(value["config"])),
+            ModelServingBinding.from_dict(value["binding"]),
         )
 
 
@@ -131,36 +189,31 @@ class ManagedModelRuntime:
         self.failure: BaseException | None = None
 
     @classmethod
-    def from_env(cls, serving_handle: NativeServingHandle) -> ManagedModelRuntime:
+    def from_bootstrap(
+        cls, raw: str, serving_handle: NativeServingHandle
+    ) -> ManagedModelRuntime:
+        bootstrap = ModelServingBootstrap.from_json(raw)
         from chalkcompute.weights.serving.model_target import (
             ModelDeploymentTargetProvider,
         )
 
-        required = (
-            "CHALK_MODEL_SERVING_CONFIG",
-            "CHALK_MODEL_SCALING_GROUP_ID",
-            "CHALK_MODEL_SCALING_GROUP_REVISION_ID",
-            "CHALK_WEIGHT_STREAM_ID",
-            "CHALK_WEIGHT_VOLUME_ID",
-            "CHALK_ENVIRONMENT_ID",
-            "CHALK_FUNCTION_QUEUE_TOKEN_FILE",
-        )
-        if any(not os.environ.get(name) for name in required):
-            raise ValueError(
-                "Managed runtime requires authoritative model and FNQ identity"
-            )
-        config = ModelServingConfig.from_json(os.environ["CHALK_MODEL_SERVING_CONFIG"])
+        token_file = os.environ.get("CHALK_FUNCTION_QUEUE_TOKEN_FILE")
+        if not token_file:
+            raise ValueError("Managed runtime requires the platform FNQ token file")
+        binding = bootstrap.binding
         provider = ModelDeploymentTargetProvider(
             api_server=os.environ.get("CHALK_API_SERVER", "https://api.chalk.ai"),
-            token_file=Path(os.environ["CHALK_FUNCTION_QUEUE_TOKEN_FILE"]),
-            expected_environment_id=os.environ["CHALK_ENVIRONMENT_ID"],
-            expected_deployment_id=os.environ["CHALK_MODEL_SCALING_GROUP_ID"],
-            expected_revision_id=os.environ["CHALK_MODEL_SCALING_GROUP_REVISION_ID"],
-            expected_stream_id=os.environ["CHALK_WEIGHT_STREAM_ID"],
-            expected_volume_id=os.environ["CHALK_WEIGHT_VOLUME_ID"],
+            token_file=Path(token_file),
+            expected_environment_id=binding.environment_id,
+            expected_deployment_id=binding.model_scaling_group_id,
+            expected_revision_id=binding.model_scaling_group_revision_id,
+            expected_stream_id=binding.weight_stream_id,
+            expected_volume_id=binding.volume_id,
         )
-        runtime = cls(config, serving_handle, provider)
-        os.environ["CHALK_MODEL_ENGINE_URL"] = f"http://127.0.0.1:{config.engine_port}"
+        runtime = cls(bootstrap.config, serving_handle, provider)
+        os.environ["CHALK_MODEL_ENGINE_URL"] = (
+            f"http://127.0.0.1:{bootstrap.config.engine_port}"
+        )
         return runtime
 
     def start(self) -> None:
