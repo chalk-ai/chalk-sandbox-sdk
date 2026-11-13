@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, hdrs, web
@@ -77,6 +78,7 @@ class AdmissionGate:
                 not self.managed_target
                 or (
                     self.applied_target is not None
+                    and self.version == self.applied_target.get("logical_version")
                     and self.applied_lease_deadline is not None
                     and time.monotonic() < self.applied_lease_deadline
                 )
@@ -104,6 +106,10 @@ class AdmissionGate:
             )
 
     def mark_applied_target(self, target: ManagedWeightTarget) -> None:
+        if self.version != target.logical_version:
+            raise UnhealthyError(
+                "Applied target version differs from installed weights"
+            )
         expires_at = target.lease_expires_at.timestamp()
         if (
             self.applied_lease_expires_at is not None
@@ -123,10 +129,11 @@ class AdmissionGate:
 
     def renew_native_lease(self, target: ManagedWeightTarget) -> None:
         if (
-            self.ready
-            and self.applied_target is not None
-            and self.applied_target.get("target_generation") == target.target_generation
+            self.applied_target is not None
+            and target.observation() != self.applied_target
         ):
+            raise UnhealthyError("Lease renewal differs from the applied target")
+        if self.ready and self.applied_target is not None:
             expires_at = target.lease_expires_at.timestamp()
             if (
                 self.applied_lease_expires_at is not None
@@ -142,6 +149,31 @@ class AdmissionGate:
                 self.applied_lease_expires_at = expires_at
                 self.applied_lease_deadline = time.monotonic() + remaining
             self._open_native_admission()
+
+    def health_report(self) -> dict[str, object]:
+        ready = self.ready
+        report: dict[str, object] = {"applied_version": self.version, "healthy": ready}
+        if self.managed_target:
+            report["applied_target"] = (
+                None if self.applied_target is None else self.applied_target.copy()
+            )
+            expires_at = self.applied_lease_expires_at
+            report["lease_expires_at"] = (
+                None
+                if expires_at is None
+                else datetime.fromtimestamp(expires_at, timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            # A stale/paused report cannot lend freshness to an old target. The
+            # native monotonic deadline also bounds this value after wall-clock jumps.
+            deadline = self.applied_lease_deadline
+            report["lease_remaining_seconds"] = (
+                max(0.0, deadline - time.monotonic())
+                if ready and deadline is not None
+                else 0.0
+            )
+        return report
 
     async def pause(self) -> None:
         async with self._condition:
@@ -320,18 +352,15 @@ def create_app(
     app.cleanup_ctx.append(clients)
 
     async def health(request: web.Request) -> web.Response:
-        ready = gate.ready
+        body = gate.health_report()
         headers = (
             {}
             if gate.version is None
             else {"x-chalk-weight-version": str(gate.version)}
         )
-        body: dict[str, object] = {"applied_version": gate.version, "healthy": ready}
-        if gate.managed_target:
-            body["applied_target"] = gate.applied_target
         return web.json_response(
             body,
-            status=200 if ready else 503,
+            status=200 if body["healthy"] else 503,
             headers=headers,
         )
 
