@@ -357,25 +357,54 @@ def test_missing_source_tree_is_committed_to_server_volume(tmp_path, monkeypatch
     driver._resolve_lazy_files.assert_not_called()
 
 
-def test_server_requesting_a_manifest_is_rejected(tmp_path):
+def test_old_server_falls_back_to_manifest_upload(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume
+
     path = tmp_path / "main.py"
     path.write_bytes(b"hello")
     image = Image("python:3.11").add_local_file(str(path), "/app/main.py")
-    mounts, _ = deployment._source_trees(image)
+    mounts, prepared = deployment._source_trees(image)
+    manifest_mounts, manifests, _ = deployment._source_manifests(mounts, prepared)
+    manifest = manifests[manifest_mounts[0].tree_digest]
+    digest = manifest.files[0].content_digest
+    target = volume.VolumeRef(name="server-owned", volume_id="env/immutable")
+    intent = volume.CommitIntent(
+        uploaded_object_references=[],
+        deltas=Oneof(
+            "path_deltas",
+            volume.PathDeltaList(upserts=[volume.PathFileDelta(path=digest)]),
+        ),
+    )
+    driver = MagicMock()
+    driver._stage_source_inputs.return_value = intent
+    monkeypatch.setattr(deployment.VolumeClient, "from_connect", lambda client: driver)
+
+    def missing(**inputs):
+        return pb.EnsureExternalFunctionResponse(
+            result=Oneof("missing_inputs", pb.MissingFunctionDeploymentInputs(**inputs))
+        )
+
     client = Client(
         [
-            pb.EnsureExternalFunctionResponse(
-                result=Oneof(
-                    "missing_inputs",
-                    pb.MissingFunctionDeploymentInputs(
-                        tree_digests=[mounts[0].tree_digest]
-                    ),
-                )
-            ),
+            missing(tree_digests=[mounts[0].tree_digest]),
+            missing(tree_digests=[manifest.tree_digest]),
+            missing(file_digests=[digest], upload_volume=target),
+            complete(),
         ]
     )
-    with pytest.raises(deployment.ConnectError, match="upgrade the Chalk server"):
-        run(client, image)
+    run(client, image)
+    first, retry, manifest_request, files_request = client.requests
+    assert first.spec.sources == mounts
+    assert retry.spec.sources == manifest_mounts
+    assert retry.request_id != first.request_id
+    assert not retry.supplied_inputs
+    assert manifest_request.supplied_inputs.manifests == [manifest]
+    assert files_request.supplied_inputs.upload_volume == target
+    assert files_request.supplied_inputs.files[0].path == digest
+    assert len({r.request_id for r in client.requests[1:]}) == 1
+    driver._stage_source_inputs.assert_called_once()
+    driver._resolve_prepared.assert_not_called()
 
 
 def test_function_source_identity_is_independent_of_local_path(tmp_path):

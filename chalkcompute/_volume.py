@@ -1738,6 +1738,31 @@ class VolumeClient:
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
 
+    def _stage_source_inputs(
+        self, volume: str, groups: dict[PreparedFiles, builtins.list[str]]
+    ) -> pb_v2.CommitIntent:
+        """Stage requested content using its prepared identity."""
+        self._raise_if_closed()
+        staged = None
+        try:
+            for prepared, digests in groups.items():
+                batch = self._inner.stage_prepared_files(
+                    volume, prepared.select_by_digest(digests), _default_upload_config()
+                )
+                if staged is None:
+                    staged = batch
+                else:
+                    staged.extend(batch)
+            if staged is None:
+                raise ValueError("source upload requires at least one file")
+            return pb_v2.CommitIntent.from_binary(
+                bytes(
+                    self._inner.staged_intent(volume, staged, "main", [], "source_code")
+                )
+            )
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+
     def _resolve_prepared(
         self,
         name: str,
