@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -193,3 +194,86 @@ class ModelDeploymentTargetProvider:
                 "Target changed while weights were prepared or applied"
             )
         return current
+
+    def manifest_digests(
+        self, expected: ManagedWeightTarget, versions: tuple[int, ...]
+    ) -> dict[int, str]:
+        """Authenticate the bounded replay set through the deployment-scoped identity."""
+        if (
+            not versions
+            or len(versions) > 128
+            or len(set(versions)) != len(versions)
+            or expected.logical_version not in versions
+            or any(
+                type(v) is not int or v < 0 or v > expected.logical_version
+                for v in versions
+            )
+        ):
+            raise ManagedTargetError("Invalid bounded manifest identity request")
+        with self._lock:
+            started = time.monotonic()
+            wall_started = time.time()
+            try:
+                token = read_web_identity_token(str(self._token_file))
+                if (
+                    token.environment_id != self._environment_id
+                    or token.expires_at is None
+                    or token.expires_at <= wall_started
+                ):
+                    raise ManagedTargetError(
+                        "Manifest identity requires a live workload credential"
+                    )
+                response = self._client.get_model_weight_runtime_target(
+                    weight_runtime_pb.GetModelWeightRuntimeTargetRequest(
+                        expected_revision_id=self._revision_id,
+                        manifest_versions=list(versions),
+                    ),
+                    timeout_ms=_RPC_TIMEOUT_MS,
+                    headers={
+                        "authorization": f"Bearer {token.value}",
+                        "x-chalk-env-id": self._environment_id,
+                        "x-chalk-server": "go-api",
+                    },
+                )
+                target = self._decode(
+                    response, min(wall_started + _LEASE_SECONDS, token.expires_at)
+                )
+                deadline = started + target.lease_expires_at.timestamp() - wall_started
+                if (
+                    time.monotonic() >= deadline
+                    or target._immutable_tuple() != expected._immutable_tuple()
+                ):
+                    raise ManagedTargetError(
+                        "Target changed during manifest identity verification"
+                    )
+                result: dict[int, str] = {}
+                for identity in response.manifest_identities:
+                    if (
+                        identity.version not in versions
+                        or identity.version in result
+                        or not re.fullmatch(r"[0-9a-f]{64}", identity.manifest_sha256)
+                    ):
+                        raise ManagedTargetError(
+                            "Invalid immutable manifest identity response"
+                        )
+                    result[identity.version] = identity.manifest_sha256
+                if (
+                    result.keys() != set(versions)
+                    or result[expected.logical_version] != expected.manifest_sha256
+                ):
+                    raise ManagedTargetError(
+                        "Immutable manifest identity response is incomplete or inconsistent"
+                    )
+                target = self._fence.accept(target)
+                self._target = target
+                self._deadline = deadline
+                self._next_poll = started + _POLL_SECONDS
+                return result
+            except ManagedTargetError:
+                self._target = None
+                raise
+            except Exception:
+                self._target = None
+                raise ManagedTargetError(
+                    "Authenticated manifest identity refresh failed"
+                ) from None
