@@ -1,0 +1,1 @@
+- Add authenticated model-deployment target polling with explicit workload identity, bounded leases and fail-closed revision/publication fences; select it with `CHALK_WEIGHT_TARGET_SOURCE=model-deployment`.
