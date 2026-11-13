@@ -149,12 +149,16 @@ class SGLangResidentAdapter:
                 return result
 
     async def _control(
-        self, operation: str, directory: Path, manifest: WeightManifest
+        self,
+        operation: str,
+        directory: Path,
+        manifest: WeightManifest,
+        expected_manifest_sha256: str | None = None,
     ) -> None:
         if self._failed:
             raise RuntimeError("Uncertain sparse adapter; restart required")
         raw = read_profile_file(directory, "manifest.json")
-        digest = hashlib.sha256(raw).hexdigest()
+        digest = expected_manifest_sha256 or hashlib.sha256(raw).hexdigest()
         if load_manifest(directory, manifest.version, digest) != manifest:
             raise ValueError("Control manifest differs from observed manifest")
         try:
@@ -197,7 +201,13 @@ class SGLangResidentAdapter:
             self._failed = True
             raise
 
-    async def initialize(self, model_dir: Path, manifest: WeightManifest) -> None:
+    async def initialize(
+        self,
+        model_dir: Path,
+        manifest: WeightManifest,
+        *,
+        expected_manifest_sha256: str | None = None,
+    ) -> None:
         if (
             self._model_dir is None
             or manifest.kind != "keyframe"
@@ -205,12 +215,18 @@ class SGLangResidentAdapter:
         ):
             raise ValueError("Bind requires the launched initial keyframe")
         self._layout.check_manifest(manifest)
-        await self._control("bind", model_dir, manifest)
+        await self._control("bind", model_dir, manifest, expected_manifest_sha256)
 
-    async def apply(self, version_dir: Path, manifest: WeightManifest) -> None:
+    async def apply(
+        self,
+        version_dir: Path,
+        manifest: WeightManifest,
+        *,
+        expected_manifest_sha256: str | None = None,
+    ) -> None:
         if self._identity is None:
             raise RuntimeError("Native sparse resident is not bound")
-        await self._control("apply", version_dir, manifest)
+        await self._control("apply", version_dir, manifest, expected_manifest_sha256)
 
     async def reset_cache(self) -> None:
         if self._failed or self._identity is None:

@@ -40,9 +40,12 @@ capable of materializing a PIN, restore a retained keyframe before retrying.
 
 ## Local managed-target integration
 
-An opt-in local/test target-file adapter is available with
-`--managed-target-file PATH` or `CHALK_WEIGHT_TARGET_FILE`. It requires these
-expected identities from the launcher:
+The local/test descriptor parser is available with `--managed-target-file PATH`
+or `CHALK_WEIGHT_TARGET_FILE`. Executing a managed update additionally requires a
+programmatic `ManagedTargetProvider(manifest_digests=...)` callback returning the
+immutable indexed digest for every requested ancestor. The standalone target
+file cannot establish this authority and refuses admission without that callback.
+The parser requires these expected identities from the launcher:
 
 | Variable | Target field |
 | --- | --- |
@@ -104,7 +107,10 @@ origin (default `https://api.chalk.ai`).
 
 Each request names the fixed expected revision. The server checks its current
 selection and immutable stream binding; the provider checks every returned target
-identity. Reads use a three-second RPC deadline without automatic retries. A
+identity. During replay preparation it requests the selected manifest and every
+ancestor through the same scoped RPC. The server returns their permanently indexed
+SHA-256 identities. The response must match the exact selected target, live lease
+and requested version set. Reads use a three-second RPC deadline without automatic retries. A
 successful read establishes at most a fifteen-second local lease measured from
 request start and capped by both the server lease and token expiry. Calls share
 a two-second refresh cache; a failed refresh immediately invalidates that cache.
@@ -119,8 +125,14 @@ a pinned qualified serving image, and cross-repository sync/async qualification.
 Until those dependencies pass, backend managed admission stays disabled. Generic
 replica readiness describes container lifecycle; it does not establish an applied
 weight version. Exact per-request native target admission is the execution
-barrier. This RPC does not attest the stream mount's snapshot provenance, and
-initial model storage may remain independent of the stream volume.
+barrier. The mount may follow mutable `main`: every replay manifest must match its
+immutable indexed digest, including the keyframe and skipped intermediate versions.
+Preparation freezes at most 128 manifests, each bounded to the resident profile's
+1 MiB limit. Both engine adapters pass these authoritative digests to workers,
+which recheck them before device writes; a mount rewrite between planning and apply
+fails closed. Payload checksums remain verified before writes. This establishes
+content identity without attesting the mount's snapshot provenance. Initial model
+storage may remain independent of the stream volume.
 
 Configuration:
 

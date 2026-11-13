@@ -6,13 +6,13 @@ import hashlib
 import json
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from chalkcompute._weights_format import WeightManifest, version_dir
+from chalkcompute._weights_format import WeightManifest, WeightStreamError, version_dir
 from chalkcompute.weights.layout import WeightSchema
 
 
@@ -218,6 +218,10 @@ class TargetProvider(Protocol):
 
     def assert_current(self, expected: ManagedWeightTarget) -> ManagedWeightTarget: ...
 
+    def manifest_digests(
+        self, expected: ManagedWeightTarget, versions: tuple[int, ...]
+    ) -> Mapping[int, str]: ...
+
 
 class TargetFence:
     """Reject identity changes, stale generations and mutated publications."""
@@ -272,8 +276,13 @@ class ManagedTargetProvider:
         expected_revision_id: str | None = None,
         expected_stream_id: str | None = None,
         expected_volume_id: str | None = None,
+        manifest_digests: Callable[
+            [ManagedWeightTarget, tuple[int, ...]], Mapping[int, str]
+        ]
+        | None = None,
     ) -> None:
         self.path = path
+        self._manifest_digests = manifest_digests
         self.expected = {
             "deployment_id": expected_deployment_id,
             "revision_id": expected_revision_id,
@@ -299,52 +308,85 @@ class ManagedTargetProvider:
             )
         return current
 
+    def manifest_digests(
+        self, expected: ManagedWeightTarget, versions: tuple[int, ...]
+    ) -> Mapping[int, str]:
+        self.assert_current(expected)
+        if self._manifest_digests is None:
+            raise ManagedTargetError(
+                "Managed sync requires immutable manifest identities"
+            )
+        return self._manifest_digests(expected, versions)
+
 
 def verify_target_manifest(
-    root: Path, target: ManagedWeightTarget
-) -> tuple[WeightManifest, bytes]:
-    """Check the selected manifest and logical schema against a target."""
-    manifest_path = root / version_dir(target.logical_version) / "manifest.json"
-    try:
-        raw = manifest_path.read_bytes()
-    except OSError as exc:
-        raise ManagedTargetError(
-            f"Cannot read target manifest for version {target.logical_version}: {exc}"
-        ) from exc
-    actual_manifest_sha = hashlib.sha256(raw).hexdigest()
-    if actual_manifest_sha != target.manifest_sha256:
-        raise ManagedTargetError(
-            "Target manifest digest does not match mounted volume data"
-        )
-    try:
-        manifest = WeightManifest.from_json(raw)
-    except ValueError as exc:
-        raise ManagedTargetError(f"Target manifest is invalid: {exc}") from exc
-    if manifest.version != target.logical_version:
-        raise ManagedTargetError("Target logical version differs from manifest version")
-    chain = [manifest]
-    cursor = manifest
-    seen = {cursor.version}
-    while cursor.kind != "keyframe":
-        parent = cursor.parent_version
-        if parent is None or parent >= cursor.version or parent in seen:
-            raise ManagedTargetError("Target manifest has an invalid keyframe ancestry")
-        seen.add(parent)
+    root: Path, target: ManagedWeightTarget, provider: TargetProvider
+) -> tuple[tuple[WeightManifest, ...], dict[int, str]]:
+    """Authenticate every frozen replay ancestor against indexed publication identities."""
+    from chalkcompute.weights.serving.resident import load_manifest, read_profile_file
+
+    raw_by_version: dict[int, bytes] = {}
+    untrusted: list[WeightManifest] = []
+    cursor = target.logical_version
+    for _ in range(128):
+        if cursor in raw_by_version:
+            raise ManagedTargetError("Target manifest has cyclic ancestry")
         try:
-            parent_raw = (root / version_dir(parent) / "manifest.json").read_bytes()
-            cursor = WeightManifest.from_json(parent_raw)
-        except (OSError, ValueError) as exc:
+            raw = read_profile_file(root / version_dir(cursor), "manifest.json")
+            manifest = WeightManifest.from_json(raw)
+        except (OSError, ValueError, WeightStreamError) as exc:
             raise ManagedTargetError(
-                f"Cannot read keyframe ancestry for target version {target.logical_version}: {exc}"
+                "Cannot read bounded target manifest ancestry"
             ) from exc
-        if cursor.version != parent:
+        if manifest.version != cursor:
             raise ManagedTargetError(
-                "Target manifest parent version differs from its directory"
+                "Target manifest version differs from its directory"
             )
-        if cursor.architecture_hash != manifest.architecture_hash:
-            raise ManagedTargetError("Target manifest ancestry changes architecture")
-        chain.append(cursor)
-    schema = WeightSchema.from_manifest(cursor)
+        raw_by_version[cursor] = raw
+        untrusted.append(manifest)
+        if manifest.kind == "keyframe":
+            break
+        parent = manifest.parent_version
+        if parent is None or parent < 0 or parent >= cursor:
+            raise ManagedTargetError("Target manifest has invalid keyframe ancestry")
+        cursor = parent
+    else:
+        raise ManagedTargetError("Target manifest ancestry exceeds 128 versions")
+    reader = getattr(provider, "manifest_digests", None)
+    if reader is None:
+        raise ManagedTargetError("Managed sync requires immutable manifest identities")
+    digests = dict(reader(target, tuple(raw_by_version)))
+    if digests.keys() != raw_by_version.keys() or any(
+        type(version) is not int
+        or not isinstance(digest, str)
+        or not _DIGEST.fullmatch(digest)
+        for version, digest in digests.items()
+    ):
+        raise ManagedTargetError(
+            "Immutable manifest identity set differs from replay ancestry"
+        )
+    if digests[target.logical_version] != target.manifest_sha256:
+        raise ManagedTargetError(
+            "Target manifest identity differs from selected publication"
+        )
+    chain = []
+    for candidate in untrusted:
+        expected = digests[candidate.version]
+        if hashlib.sha256(raw_by_version[candidate.version]).hexdigest() != expected:
+            raise ManagedTargetError(
+                "Manifest digest differs from immutable indexed publication"
+            )
+        # Re-reading with the same authoritative hash also rejects a mount race and
+        # enforces the resident profile's duplicate-field and bounded-JSON rules.
+        chain.append(
+            load_manifest(
+                root / version_dir(candidate.version), candidate.version, expected
+            )
+        )
+    leaf = chain[0]
+    if any(m.architecture_hash != leaf.architecture_hash for m in chain):
+        raise ManagedTargetError("Target manifest ancestry changes architecture")
+    schema = WeightSchema.from_manifest(chain[-1])
     schema_by_name = {tensor.name: tensor for tensor in schema.tensors}
     for ancestor in chain:
         for tensor in ancestor.tensors:
@@ -355,4 +397,4 @@ def verify_target_manifest(
                 )
     if schema.sha256 != target.weight_schema_sha256:
         raise ManagedTargetError("Target weight schema digest does not match manifest")
-    return manifest, raw
+    return tuple(reversed(chain)), digests
