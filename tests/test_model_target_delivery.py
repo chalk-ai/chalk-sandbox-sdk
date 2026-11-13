@@ -11,10 +11,17 @@ from unittest.mock import Mock
 import pytest
 
 from chalkcompute._gen.chalk.modeldeployment.v1 import service_pb as pb
+from chalkcompute._gen.chalk.modeldeployment.v1 import weight_runtime_pb as runtime_pb
+from protobuf.wkt import Timestamp
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError
 from chalkcompute._gen.chalk.volume.v2.volume_pb import VolumeRef
 from chalkcompute._gen.chalk.weightstream.v1.service_pb import WeightStreamVersion
 from chalkcompute.weights.serving import model_target as delivery
-from chalkcompute.weights.serving.managed_target import ManagedTargetError
+from chalkcompute.weights.serving.managed_target import (
+    ManagedTargetError,
+    ModelTargetNotSelected,
+)
 
 
 @dataclass
@@ -33,30 +40,25 @@ class Clock:
         self.steady += seconds
 
 
-def response(generation: int = 1, version: int = 0) -> pb.GetModelScalingGroupResponse:
-    return pb.GetModelScalingGroupResponse(
-        model_scaling_group=pb.ModelScalingGroup(
-            id="deployment",
-            revision_id="revision",
-            weight_target=pb.ModelScalingGroupWeightTarget(
-                model_scaling_group_id="deployment",
-                model_scaling_group_revision_id="revision",
-                generation=generation,
-                volume=VolumeRef(volume_id="volume"),
-                version=WeightStreamVersion(
-                    weight_stream_id="stream",
-                    version=version,
-                    volume_version_id=42,
-                    manifest_sha256="a" * 64,
-                    weight_schema_sha256="b" * 64,
-                ),
+def response(
+    generation: int = 1, version: int = 0
+) -> runtime_pb.GetModelWeightRuntimeTargetResponse:
+    expiry = delivery.time.time() + 15
+    return runtime_pb.GetModelWeightRuntimeTargetResponse(
+        target=pb.ModelScalingGroupWeightTarget(
+            model_scaling_group_id="deployment",
+            model_scaling_group_revision_id="revision",
+            generation=generation,
+            volume=VolumeRef(volume_id="volume"),
+            version=WeightStreamVersion(
+                weight_stream_id="stream",
+                version=version,
+                volume_version_id=42,
+                manifest_sha256="a" * 64,
+                weight_schema_sha256="b" * 64,
             ),
         ),
-        current_revision=pb.ModelScalingGroupRevision(
-            id="revision",
-            model_scaling_group_id="deployment",
-            spec=pb.ModelScalingGroupSpec(weight_stream_id="stream"),
-        ),
+        lease_expires_at=Timestamp(seconds=int(expiry), nanos=int((expiry % 1) * 1e9)),
     )
 
 
@@ -77,9 +79,9 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     token_file = tmp_path / "identity"
     token = jwt(token_file, expiry=clock.wall + 60)
     rpc = Mock(return_value=response())
-    client = Mock(return_value=SimpleNamespace(get_model_scaling_group=rpc))
+    client = Mock(return_value=SimpleNamespace(get_model_weight_runtime_target=rpc))
     monkeypatch.setattr(
-        delivery.service_connect, "ModelDeploymentServiceClientSync", client
+        delivery.weight_runtime_connect, "ModelWeightRuntimeServiceClientSync", client
     )
     provider = delivery.ModelDeploymentTargetProvider(
         api_server="https://api.example.test",
@@ -109,7 +111,7 @@ def test_read_zero_and_cache_exact_identity(setup):
     assert setup.provider.current() == target
     assert setup.rpc.call_count == 1
     request = setup.rpc.call_args.args[0]
-    assert request.model_scaling_group_key.value == "deployment"
+    assert request.expected_revision_id == "revision"
     assert setup.rpc.call_args.kwargs["timeout_ms"] == 3000
     assert setup.rpc.call_args.kwargs["headers"] == {
         "authorization": f"Bearer {setup.token}",
@@ -122,6 +124,7 @@ def test_refresh_renews_and_rotates_explicit_token(setup):
     first = setup.provider.current()
     setup.clock.advance(3)
     token = jwt(setup.token_file, expiry=setup.clock.wall + 100)
+    setup.rpc.return_value = response()
     second = setup.provider.assert_current(first)
     assert second.lease_expires_at > first.lease_expires_at
     assert setup.rpc.call_count == 2
@@ -193,12 +196,6 @@ def test_token_expiration_caps_target_lease(setup):
 @pytest.mark.parametrize(
     "field",
     [
-        "group",
-        "group-id",
-        "selected-revision",
-        "revision",
-        "revision-owner",
-        "stream-binding",
         "target",
         "target-owner",
         "target-revision",
@@ -206,31 +203,17 @@ def test_token_expiration_caps_target_lease(setup):
         "volume",
         "snapshot",
         "digest",
+        "lease",
     ],
 )
 def test_mismatched_or_missing_identity_fails_closed(setup, field):
     value = response()
-    group = value.model_scaling_group
-    revision = value.current_revision
-    assert group is not None and revision is not None
-    target = group.weight_target
+    target = value.target
     assert (
         target is not None and target.version is not None and target.volume is not None
     )
-    if field == "group":
-        value.model_scaling_group = None
-    elif field == "group-id":
-        group.id = "other"
-    elif field == "selected-revision":
-        group.revision_id = "other"
-    elif field == "revision":
-        value.current_revision = None
-    elif field == "revision-owner":
-        revision.model_scaling_group_id = "other"
-    elif field == "stream-binding":
-        revision.spec = pb.ModelScalingGroupSpec(weight_stream_id="other")
-    elif field == "target":
-        group.weight_target = None
+    if field == "target":
+        value.target = None
     elif field == "target-owner":
         target.model_scaling_group_id = "other"
     elif field == "target-revision":
@@ -243,9 +226,31 @@ def test_mismatched_or_missing_identity_fails_closed(setup, field):
         target.version.volume_version_id = 0
     elif field == "digest":
         target.version.manifest_sha256 = "bad"
+    elif field == "lease":
+        value.lease_expires_at = None
     setup.rpc.return_value = value
     with pytest.raises(ManagedTargetError):
         setup.provider.current()
+
+
+def test_only_explicit_unselected_response_is_retryable(setup):
+    setup.rpc.side_effect = ConnectError(
+        Code.UNAVAILABLE, "deployment weight target has not been selected"
+    )
+    with pytest.raises(ModelTargetNotSelected):
+        setup.provider.current()
+    setup.rpc.side_effect = ConnectError(Code.UNAVAILABLE, "backend unavailable")
+    with pytest.raises(ManagedTargetError) as error:
+        setup.provider.current()
+    assert not isinstance(error.value, ModelTargetNotSelected)
+
+
+def test_server_lease_caps_observation(setup):
+    value = response()
+    value.lease_expires_at = Timestamp(seconds=int(setup.clock.wall + 4))
+    setup.rpc.return_value = value
+    target = setup.provider.current()
+    assert 3 < target.lease_expires_at.timestamp() - setup.clock.wall <= 4
 
 
 def test_generation_and_publication_fences_survive_refresh(setup):
@@ -293,20 +298,20 @@ def test_cli_explicit_source_and_no_ambient_fallback(setup, monkeypatch):
     monkeypatch.delenv("CHALK_WEIGHT_TARGET_FILE", raising=False)
     monkeypatch.setenv("CHALK_WEIGHT_TARGET_SOURCE", "model-deployment")
     bindings = {
-        "CHALK_MODEL_DEPLOYMENT_ID": "deployment",
-        "CHALK_MODEL_DEPLOYMENT_REVISION_ID": "revision",
+        "CHALK_MODEL_SCALING_GROUP_ID": "deployment",
+        "CHALK_MODEL_SCALING_GROUP_REVISION_ID": "revision",
         "CHALK_WEIGHT_STREAM_ID": "stream",
         "CHALK_WEIGHT_VOLUME_ID": "volume",
         "CHALK_ENVIRONMENT_ID": "environment",
-        "CHALK_WEB_IDENTITY_TOKEN_FILE": str(setup.token_file),
+        "CHALK_FUNCTION_QUEUE_TOKEN_FILE": str(setup.token_file),
     }
     for name, value in bindings.items():
         monkeypatch.setenv(name, value)
     assert cli._managed_target_provider(SimpleNamespace()) is not None
-    monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE")
+    monkeypatch.delenv("CHALK_FUNCTION_QUEUE_TOKEN_FILE")
     monkeypatch.setenv("CHALK_CLIENT_ID", "ambient-client")
     monkeypatch.setenv("CHALK_CLIENT_SECRET", "ambient-secret")
-    with pytest.raises(ValueError, match="CHALK_WEB_IDENTITY_TOKEN_FILE"):
+    with pytest.raises(ValueError, match="CHALK_FUNCTION_QUEUE_TOKEN_FILE"):
         cli._managed_target_provider(SimpleNamespace())
 
 
