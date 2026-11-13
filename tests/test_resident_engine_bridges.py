@@ -130,7 +130,7 @@ def fixture(tmp_path):
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 @pytest.mark.parametrize(
-    "seed", ["stream", "snapshot", "wrong_snapshot", "wrong_source"]
+    "seed", ["stream", "snapshot", "wrong_snapshot", "wrong_source", "wrong_config"]
 )
 def test_bridge_exact_layout_handoff_and_real_generic_sparse_update(
     tmp_path, monkeypatch, engine, seed
@@ -142,6 +142,11 @@ def test_bridge_exact_layout_handoff_and_real_generic_sparse_update(
     monkeypatch.setattr(resident_runtime, "check_cuda", lambda device: None)
     launch_dir = initial_dir if seed == "stream" else tmp_path / "snapshot"
     launch_dir.mkdir(exist_ok=True)
+    if launch_dir != initial_dir:
+        config_value = json.loads((initial_dir / "config.json").read_bytes())
+        if seed == "wrong_config":
+            config_value["hidden_act"] = "different"
+        (launch_dir / "config.json").write_text(json.dumps(config_value, indent=2))
     expected_source = initial_dir if seed == "wrong_source" else launch_dir
     if seed == "wrong_snapshot":
         with torch.no_grad():

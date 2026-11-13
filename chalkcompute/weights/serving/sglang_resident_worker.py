@@ -106,6 +106,7 @@ def control(scheduler: Any, parameters: Any) -> dict[str, Any]:
         ResidentWeights,
         load_manifest,
         read_profile_file,
+        validate_config,
     )
     from chalkcompute.weights.serving.resident_runtime import (
         check_cuda,
@@ -127,6 +128,10 @@ def control(scheduler: Any, parameters: Any) -> dict[str, Any]:
             != Path(request.get("initial_model_directory", str(directory))).resolve()
         ):
             raise ValueError("Initial native model directory differs")
+        if validate_config(
+            read_profile_file(Path(scheduler.server_args.model_path), "config.json")
+        ) != validate_config(read_profile_file(directory, "config.json")):
+            raise ValueError("Initial native model config differs from stream seed")
         check_cuda(next(model.parameters()).device)
         manifest = load_manifest(
             directory, request["version"], request["manifest_sha256"]
