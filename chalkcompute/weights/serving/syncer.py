@@ -240,10 +240,7 @@ class WeightSyncer:
                     if self.gate.applied_target is None:
                         raise ValueError("Managed target has not been applied")
                     next_observation = managed_target.observation()
-                    if (
-                        next_observation != self.gate.applied_target
-                        or self.gate.paused
-                    ):
+                    if next_observation != self.gate.applied_target or self.gate.paused:
                         async with self.gate.update(
                             self.drain_timeout, target=managed_target
                         ):
@@ -261,9 +258,12 @@ class WeightSyncer:
                     managed_target_provider.assert_current, managed_target
                 )
             pause_start = time.perf_counter()
-            async with self.gate.update(
-                self.drain_timeout, target=managed_target
-            ):
+            update = (
+                self.gate.update(self.drain_timeout)
+                if managed_target is None
+                else self.gate.update(self.drain_timeout, target=managed_target)
+            )
+            async with update:
                 apply_start = time.perf_counter()
                 try:
                     if managed_target is not None:

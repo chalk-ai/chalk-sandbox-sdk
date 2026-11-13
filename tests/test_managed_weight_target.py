@@ -11,7 +11,12 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from chalkcompute._weights_codec import checksum
-from chalkcompute._weights_format import TensorEntry, WeightManifest, pointer_json, version_dir
+from chalkcompute._weights_format import (
+    TensorEntry,
+    WeightManifest,
+    pointer_json,
+    version_dir,
+)
 from chalkcompute.weights.layout import WeightSchema
 from chalkcompute.weights.serving.managed_target import (
     ManagedTargetError,
@@ -68,7 +73,9 @@ def _descriptor(
     while schema_manifest.kind != "keyframe":
         assert schema_manifest.parent_version is not None
         schema_manifest = WeightManifest.from_json(
-            (root / version_dir(schema_manifest.parent_version) / "manifest.json").read_bytes()
+            (
+                root / version_dir(schema_manifest.parent_version) / "manifest.json"
+            ).read_bytes()
         )
     return {
         "schema_version": 1,
@@ -81,7 +88,9 @@ def _descriptor(
         "volume_version_id": volume_version_id,
         "manifest_sha256": hashlib.sha256(raw).hexdigest(),
         "weight_schema_sha256": WeightSchema.from_manifest(schema_manifest).sha256,
-        "lease_expires_at": (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds))
+        "lease_expires_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        )
         .isoformat()
         .replace("+00:00", "Z"),
     }
@@ -113,7 +122,9 @@ def test_target_descriptor_is_strict_and_rejects_duplicate_keys(tmp_path):
     assert target.logical_version == 0
     assert target.volume_version_id == 42
 
-    duplicate = json.dumps(document).replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1')
+    duplicate = json.dumps(document).replace(
+        '"schema_version": 1', '"schema_version": 1, "schema_version": 1'
+    )
     target_path.write_text(duplicate, encoding="utf-8")
     with pytest.raises(ManagedTargetError, match="Duplicate"):
         _provider(target_path).current()
@@ -132,7 +143,9 @@ def test_target_descriptor_is_strict_and_rejects_duplicate_keys(tmp_path):
     document["volume_version_id"] = 42
     _write_target(target_path, document)
     with pytest.raises(ManagedTargetError, match="deployment_id"):
-        ManagedTargetProvider(target_path, expected_deployment_id="other-deployment").current()
+        ManagedTargetProvider(
+            target_path, expected_deployment_id="other-deployment"
+        ).current()
 
 
 def test_full_checkpoint_syncer_rejects_direct_managed_target(tmp_path):
@@ -159,7 +172,9 @@ def test_managed_gate_requires_applied_target_and_live_lease():
     asyncio.run(run())
 
 
-def test_managed_cli_requires_expected_deployment_and_source_identity(monkeypatch, tmp_path):
+def test_managed_cli_requires_expected_deployment_and_source_identity(
+    monkeypatch, tmp_path
+):
     from chalkcompute.weights.serving import __main__ as entrypoint
 
     monkeypatch.setenv("CHALK_WEIGHT_TARGET_FILE", str(tmp_path / "target.json"))
@@ -210,7 +225,9 @@ def test_http_only_gate_renews_and_preserves_monotonic_lease_deadline(tmp_path):
         root.mkdir()
         manifest = _put_manifest(root, 0, None)
         target_path = tmp_path / "target.json"
-        _write_target(target_path, _descriptor(root, manifest, generation=1, lease_seconds=0.5))
+        _write_target(
+            target_path, _descriptor(root, manifest, generation=1, lease_seconds=0.5)
+        )
         provider = _provider(target_path)
         first = provider.current()
 
@@ -221,7 +238,9 @@ def test_http_only_gate_renews_and_preserves_monotonic_lease_deadline(tmp_path):
         first_deadline = gate.applied_lease_deadline
         assert gate.ready
 
-        _write_target(target_path, _descriptor(root, manifest, generation=1, lease_seconds=1.5))
+        _write_target(
+            target_path, _descriptor(root, manifest, generation=1, lease_seconds=1.5)
+        )
         renewed = provider.current()
         gate.renew_native_lease(renewed)
         renewed_deadline = gate.applied_lease_deadline
@@ -376,7 +395,9 @@ def test_managed_target_lease_expiry_fails_closed_without_renewal(tmp_path):
         root.mkdir()
         manifest = _put_manifest(root, 0, None)
         target_path = tmp_path / "target.json"
-        _write_target(target_path, _descriptor(root, manifest, generation=1, lease_seconds=0.6))
+        _write_target(
+            target_path, _descriptor(root, manifest, generation=1, lease_seconds=0.6)
+        )
         provider = _provider(target_path)
         handle = Handle()
         gate = AdmissionGate(handle)
@@ -396,7 +417,9 @@ def test_managed_target_lease_expiry_fails_closed_without_renewal(tmp_path):
         await client.start_server()
         ready = await client.get("/chalk/health")
         assert ready.status == 200
-        assert (await ready.json())["applied_target"] == provider.current().observation()
+        assert (await ready.json())[
+            "applied_target"
+        ] == provider.current().observation()
         assert handle.serving
 
         watcher = asyncio.create_task(syncer._watch_managed_target())

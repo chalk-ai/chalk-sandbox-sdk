@@ -113,13 +113,21 @@ class ManagedWeightTarget:
             value["target_generation"], "target_generation", positive=True
         )
         if generation > _INT64_MAX:
-            raise ManagedTargetError("target_generation exceeds the signed 64-bit limit")
+            raise ManagedTargetError(
+                "target_generation exceeds the signed 64-bit limit"
+            )
         manifest_sha256 = value["manifest_sha256"]
         schema_sha256 = value["weight_schema_sha256"]
-        if not isinstance(manifest_sha256, str) or not _DIGEST.fullmatch(manifest_sha256):
-            raise ManagedTargetError("manifest_sha256 must be a lowercase SHA-256 digest")
+        if not isinstance(manifest_sha256, str) or not _DIGEST.fullmatch(
+            manifest_sha256
+        ):
+            raise ManagedTargetError(
+                "manifest_sha256 must be a lowercase SHA-256 digest"
+            )
         if not isinstance(schema_sha256, str) or not _DIGEST.fullmatch(schema_sha256):
-            raise ManagedTargetError("weight_schema_sha256 must be a lowercase SHA-256 digest")
+            raise ManagedTargetError(
+                "weight_schema_sha256 must be a lowercase SHA-256 digest"
+            )
         return cls(
             schema_version=1,
             deployment_id=_nonempty_string(value["deployment_id"], "deployment_id"),
@@ -172,6 +180,7 @@ class ManagedWeightTarget:
             self.volume_id,
         )
 
+
 class ManagedTargetProvider:
     """Read and fence a renewable descriptor delivered by the control plane.
 
@@ -202,7 +211,9 @@ class ManagedTargetProvider:
         try:
             target = ManagedWeightTarget.from_json(self.path.read_bytes())
         except OSError as exc:
-            raise ManagedTargetError(f"Cannot read target descriptor {self.path}: {exc}") from exc
+            raise ManagedTargetError(
+                f"Cannot read target descriptor {self.path}: {exc}"
+            ) from exc
         now = datetime.now(timezone.utc)
         if target.lease_expires_at <= now:
             raise ManagedTargetError("Managed target lease has expired")
@@ -257,7 +268,9 @@ def verify_target_manifest(
         ) from exc
     actual_manifest_sha = hashlib.sha256(raw).hexdigest()
     if actual_manifest_sha != target.manifest_sha256:
-        raise ManagedTargetError("Target manifest digest does not match mounted volume data")
+        raise ManagedTargetError(
+            "Target manifest digest does not match mounted volume data"
+        )
     try:
         manifest = WeightManifest.from_json(raw)
     except ValueError as exc:
@@ -280,7 +293,9 @@ def verify_target_manifest(
                 f"Cannot read keyframe ancestry for target version {target.logical_version}: {exc}"
             ) from exc
         if cursor.version != parent:
-            raise ManagedTargetError("Target manifest parent version differs from its directory")
+            raise ManagedTargetError(
+                "Target manifest parent version differs from its directory"
+            )
         if cursor.architecture_hash != manifest.architecture_hash:
             raise ManagedTargetError("Target manifest ancestry changes architecture")
         chain.append(cursor)

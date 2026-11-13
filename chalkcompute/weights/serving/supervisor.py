@@ -112,7 +112,9 @@ class AdmissionGate:
             raise UnhealthyError("Managed target lease renewal moved backwards")
         remaining = expires_at - time.time()
         if remaining <= 0 or remaining > 300:
-            raise UnhealthyError("Managed target lease is expired or exceeds 300 seconds")
+            raise UnhealthyError(
+                "Managed target lease is expired or exceeds 300 seconds"
+            )
         self.applied_target = target.observation()
         if expires_at > (self.applied_lease_expires_at or 0):
             self.applied_lease_expires_at = expires_at
@@ -123,8 +125,7 @@ class AdmissionGate:
         if (
             self.ready
             and self.applied_target is not None
-            and self.applied_target.get("target_generation")
-            == target.target_generation
+            and self.applied_target.get("target_generation") == target.target_generation
         ):
             expires_at = target.lease_expires_at.timestamp()
             if (
