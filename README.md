@@ -6,6 +6,56 @@ Contributor note: for testing deployed functions against local `chalkcompute`
 or local `chalk-remote-call-python` changes, see
 `local-sdk-remote-call-testing.md`.
 
+## Model bindings
+
+`cc.bind_model("embedding", output_type=pa.list_(pa.float32()))` binds the model's
+latest published version when the name does not resolve directly as a scaling
+group. Model/version selection requires exactly one active deployment with a
+nonempty web URL. If several deployments qualify, select one explicitly:
+
+```python
+import chalkcompute as cc
+import pyarrow as pa
+
+cc.bind_model(
+    "embedding",
+    output_type=pa.list_(pa.float32()),
+    deployment_name="embedding-production",
+    version=7,
+)
+```
+
+With `deployment_name`, the first argument always identifies the owning model.
+Omitting `version` still selects its latest published version; pass the version
+explicitly if the selected deployment serves an older one. Selection checks the
+deployment's current revision when binding; later redeployments can change the
+version behind the same URL. Binding again to the same catalog name is a no-op.
+Direct scaling-group-name bindings continue to work and reject `version`.
+
+Functions and classes accept the same selection through `models=`:
+
+```python
+@cc.function(
+    models={
+        "embedding": cc.ModelBindingSpec(
+            output_type=pa.list_(pa.float32()),
+            deployment_name="embedding-production",
+            version=7,
+        )
+    }
+)
+def embed(text: str) -> str:
+    # F.catalog_call("model.embedding", ...) is bound before module import.
+    return text
+```
+
+Pass the same `models=` mapping to `@cc.cls` for the same behavior. Existing mappings of
+model or scaling-group names to Arrow output types remain supported. Images
+using binding selectors need an SDK with `ModelBindingSpec` support; older
+runtimes reject the versioned payload instead of ignoring the selection.
+For testing from a source checkout, use the local SDK overlay described in
+`local-sdk-remote-call-testing.md` so the deployed image runs the new SDK.
+
 ## Install
 
 ```

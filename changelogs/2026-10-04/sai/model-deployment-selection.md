@@ -1,0 +1,1 @@
+- **BREAKING:** Reject ambiguous model-version bindings and allow exact deployment selection through `bind_model` and function/class `models=` bindings.
