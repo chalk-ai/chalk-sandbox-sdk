@@ -177,3 +177,25 @@ Handlers must finish the engine operation, including consuming or closing its
 response stream, before returning. Detached background inference outliving a
 handler is outside the drain contract; the native permit follows handler and
 generator execution, rather than arbitrary user-created tasks.
+
+### Native/SDK admission boundary check
+
+`scripts/test_managed_native_boundary.py` is an explicit CPU integration check,
+kept outside the default pytest paths. Run it as its own pytest process with the
+newly built native extension from chalk-remote-call-python #116 and this SDK
+checkout on `PYTHONPATH`. Its environment needs `pytest`, `grpcio`, `pyarrow` and
+`aiohttp`; it does not require Torch or load a model. Old native binaries fail the
+required API directly, rather than skipping the test.
+
+```sh
+cd /path/to/chalk-sandbox-sdk
+PYTHONPATH="$PWD:/path/to/chalk-remote-call-python" \
+  /path/to/candidate-native-venv/bin/python -m pytest -q \
+  scripts/test_managed_native_boundary.py
+```
+
+The real native gRPC handler holds an active version A call while the SDK update
+gate drains it. The check proves that mutation waits, version C is admitted only
+after completion, and old/missing/forged fingerprints and an old target generation
+are refused. The instrumented handler establishes the execution boundary; this
+check makes no GPU-weight or performance claim.
