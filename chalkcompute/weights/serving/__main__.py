@@ -13,18 +13,30 @@ from aiohttp import web
 from chalkcompute.weights.serving.adapters.sglang import SGLangAdapter
 from chalkcompute.weights.serving.adapters.vllm import VLLMAdapter
 from chalkcompute.weights.serving.full_checkpoint import FullCheckpointSyncer
-from chalkcompute.weights.serving.managed_target import ManagedTargetProvider
+from chalkcompute.weights.serving.managed_target import (
+    ManagedTargetProvider,
+    TargetProvider,
+)
 from chalkcompute.weights.serving.supervisor import AdmissionGate, Metrics, create_app
 from chalkcompute.weights.serving.syncer import WeightSyncer
 
 logger = logging.getLogger(__name__)
 
 
-def _managed_target_provider(args: argparse.Namespace) -> ManagedTargetProvider | None:
+def _managed_target_provider(args: argparse.Namespace) -> TargetProvider | None:
     target_path = getattr(args, "managed_target_file", None) or os.environ.get(
         "CHALK_WEIGHT_TARGET_FILE"
     )
-    if not target_path:
+    source = getattr(args, "managed_target_source", None) or os.environ.get(
+        "CHALK_WEIGHT_TARGET_SOURCE"
+    )
+    if source not in (None, "file", "model-deployment"):
+        raise ValueError("Unsupported managed target source")
+    if source == "model-deployment" and target_path:
+        raise ValueError("Model deployment and local target file cannot be combined")
+    if not target_path and source != "model-deployment":
+        if source == "file":
+            raise ValueError("File target source requires a managed target file")
         return None
     required = {
         "CHALK_MODEL_DEPLOYMENT_ID": "expected_deployment_id",
@@ -32,12 +44,34 @@ def _managed_target_provider(args: argparse.Namespace) -> ManagedTargetProvider 
         "CHALK_WEIGHT_STREAM_ID": "expected_stream_id",
         "CHALK_WEIGHT_VOLUME_ID": "expected_volume_id",
     }
+    if source == "model-deployment":
+        required.update(
+            {
+                "CHALK_WEB_IDENTITY_TOKEN_FILE": "token_file",
+                "CHALK_ENVIRONMENT_ID": "expected_environment_id",
+            }
+        )
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
         raise ValueError(
-            "Managed target file requires expected identity environment variables: "
+            "Managed target source requires expected identity environment variables: "
             + ", ".join(missing)
         )
+    if source == "model-deployment":
+        from chalkcompute.weights.serving.model_target import (
+            ModelDeploymentTargetProvider,
+        )
+
+        return ModelDeploymentTargetProvider(
+            api_server=os.environ.get("CHALK_API_SERVER", "https://api.chalk.ai"),
+            token_file=Path(os.environ["CHALK_WEB_IDENTITY_TOKEN_FILE"]),
+            expected_environment_id=os.environ["CHALK_ENVIRONMENT_ID"],
+            expected_deployment_id=os.environ["CHALK_MODEL_DEPLOYMENT_ID"],
+            expected_revision_id=os.environ["CHALK_MODEL_DEPLOYMENT_REVISION_ID"],
+            expected_stream_id=os.environ["CHALK_WEIGHT_STREAM_ID"],
+            expected_volume_id=os.environ["CHALK_WEIGHT_VOLUME_ID"],
+        )
+    assert target_path is not None
     return ManagedTargetProvider(
         Path(target_path),
         expected_deployment_id=os.environ["CHALK_MODEL_DEPLOYMENT_ID"],
@@ -236,6 +270,12 @@ def main() -> None:
     )
     parser.add_argument("--engine-port", type=int, default=8001)
     parser.add_argument("--startup-timeout", type=float, default=1800)
+    parser.add_argument(
+        "--managed-target-source",
+        choices=["file", "model-deployment"],
+        default=os.environ.get("CHALK_WEIGHT_TARGET_SOURCE"),
+        help="Use local test JSON or authenticated model-deployment polling",
+    )
     parser.add_argument(
         "--managed-target-file",
         default=os.environ.get("CHALK_WEIGHT_TARGET_FILE"),
