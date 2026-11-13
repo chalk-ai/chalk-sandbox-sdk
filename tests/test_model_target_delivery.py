@@ -352,3 +352,93 @@ def test_short_server_lease_refreshes_before_poll_interval(setup):
     second = setup.provider.current()
     assert setup.rpc.call_count == 2
     assert second.lease_expires_at > first.lease_expires_at
+
+
+def _manifest_response(versions=(0,)):
+    result = response()
+    result.manifest_identities.extend(
+        runtime_pb.ModelWeightRuntimeManifestIdentity(
+            version=version, manifest_sha256="a" * 64 if version == 0 else "b" * 64
+        )
+        for version in versions
+    )
+    return result
+
+
+def test_manifest_identity_refresh_keeps_cached_lease_consistent(setup):
+    target = setup.provider.current()
+    setup.clock.advance(1)
+    setup.rpc.return_value = _manifest_response()
+    assert setup.provider.manifest_digests(target, (0,)) == {0: "a" * 64}
+    request = setup.rpc.call_args.args[0]
+    assert request.manifest_versions == [0]
+    renewed = setup.provider.current()
+    assert renewed.lease_expires_at > target.lease_expires_at
+    assert setup.provider.assert_current(target) == renewed
+    assert setup.rpc.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "malformation", ["missing", "duplicate", "unrequested", "digest", "leaf", "target"]
+)
+def test_manifest_identity_response_fails_closed(setup, malformation):
+    target = setup.provider.current()
+    result = _manifest_response()
+    if malformation == "missing":
+        result.manifest_identities.clear()
+    elif malformation == "duplicate":
+        result.manifest_identities.append(result.manifest_identities[0])
+    elif malformation == "unrequested":
+        result.manifest_identities.append(
+            runtime_pb.ModelWeightRuntimeManifestIdentity(
+                version=1, manifest_sha256="a" * 64
+            )
+        )
+    elif malformation == "digest":
+        result.manifest_identities[0].manifest_sha256 = "z" * 64
+    elif malformation == "leaf":
+        result.manifest_identities[0].manifest_sha256 = "b" * 64
+    else:
+        result.target.generation += 1
+    setup.rpc.return_value = result
+    with pytest.raises(ManagedTargetError):
+        setup.provider.manifest_digests(target, (0,))
+    assert setup.provider._target is None
+
+
+@pytest.mark.parametrize(
+    "versions", [(), (0, 0), (-1, 0), (True,), (1,), tuple(range(129))]
+)
+def test_manifest_identity_request_is_bounded(setup, versions):
+    target = setup.provider.current()
+    before = setup.rpc.call_count
+    with pytest.raises(ManagedTargetError, match="bounded"):
+        setup.provider.manifest_digests(target, versions)
+    assert setup.rpc.call_count == before
+
+
+def test_manifest_identity_refresh_serializes_with_lease_watcher(setup):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    target = setup.provider.current()
+    setup.clock.advance(1)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fetch(request, **kwargs):
+        assert request.manifest_versions == [0]
+        entered.set()
+        assert release.wait(2)
+        return _manifest_response()
+
+    setup.rpc.side_effect = fetch
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        digest = executor.submit(setup.provider.manifest_digests, target, (0,))
+        assert entered.wait(2)
+        watcher = executor.submit(setup.provider.current)
+        release.set()
+        assert digest.result(timeout=2) == {0: "a" * 64}
+        renewed = watcher.result(timeout=2)
+        assert renewed.lease_expires_at > target.lease_expires_at
+        assert setup.provider.assert_current(target) == renewed
