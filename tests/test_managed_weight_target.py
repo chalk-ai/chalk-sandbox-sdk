@@ -101,12 +101,19 @@ def _write_target(path: Path, value: dict[str, object]) -> None:
 
 
 def _provider(path: Path) -> ManagedTargetProvider:
+    immutable = {
+        WeightManifest.from_json(manifest.read_bytes()).version: hashlib.sha256(
+            manifest.read_bytes()
+        ).hexdigest()
+        for manifest in (path.parent / "weights").glob("*/manifest.json")
+    }
     return ManagedTargetProvider(
         path,
         expected_deployment_id="deployment-1",
         expected_revision_id="revision-1",
         expected_stream_id="stream-1",
         expected_volume_id="vol/canonical-1",
+        manifest_digests=lambda target, versions: {v: immutable[v] for v in versions},
     )
 
 
@@ -301,7 +308,7 @@ def test_managed_sync_uses_exact_descriptor_and_pauses_on_generation_change(tmp_
             self.applied: list[int] = []
             self.resets = 0
 
-        async def apply(self, root, manifest):
+        async def apply(self, root, manifest, *, expected_manifest_sha256=None):
             self.applied.append(manifest.version)
 
         async def reset_cache(self):
@@ -435,7 +442,7 @@ def test_managed_target_lease_expiry_fails_closed_without_renewal(tmp_path):
 
 
 class _NoopAdapter:
-    async def apply(self, root, manifest):
+    async def apply(self, root, manifest, *, expected_manifest_sha256=None):
         pass
 
     async def reset_cache(self):
@@ -464,3 +471,197 @@ def test_cross_language_target_fingerprint_vectors():
             target_fingerprint(dict(zip(names, vector["fields"])))
             == vector["fingerprint"]
         )
+
+
+def test_managed_rejects_self_consistent_rewritten_ancestor(tmp_path):
+    async def run():
+        root = tmp_path / "weights"
+        root.mkdir()
+        first = _put_manifest(root, 0, None)
+        second = _put_manifest(root, 1, 0)
+        third = replace(_put_manifest(root, 2, 1), tensors=())
+        (root / version_dir(2) / "manifest.json").write_bytes(third.to_json())
+        target_path = tmp_path / "target.json"
+        _write_target(target_path, _descriptor(root, first, generation=1))
+        provider = _provider(target_path)
+
+        class Adapter(_NoopAdapter):
+            applied = []
+
+            async def apply(
+                self, directory, manifest, *, expected_manifest_sha256=None
+            ):
+                self.applied.append(manifest.version)
+
+        adapter = Adapter()
+        gate = AdmissionGate()
+        syncer = WeightSyncer(
+            root, adapter, gate, managed_target=provider, reload=lambda _: None
+        )
+
+        async def launch(_):
+            pass
+
+        await syncer.bootstrap(launch)
+        _write_target(target_path, _descriptor(root, third, generation=2))
+        replacement = b"EVILxxxx"
+        (root / version_dir(1) / "tensor").write_bytes(replacement)
+        modified = replace(
+            second,
+            tensors=(replace(second.tensors[0], checksum=checksum(replacement)),),
+        )
+        (root / version_dir(1) / "manifest.json").write_bytes(modified.to_json())
+        with pytest.raises(ManagedTargetError, match="immutable indexed"):
+            await syncer.sync_once()
+        assert not gate.ready
+        assert gate.version == 0
+        assert adapter.applied == []
+
+    asyncio.run(run())
+
+
+def test_managed_requires_immutable_identity_provider(tmp_path):
+    async def run():
+        root = tmp_path / "weights"
+        root.mkdir()
+        first = _put_manifest(root, 0, None)
+        target_path = tmp_path / "target.json"
+        _write_target(target_path, _descriptor(root, first, generation=1))
+        provider = ManagedTargetProvider(target_path)
+        gate = AdmissionGate()
+        syncer = WeightSyncer(
+            root, _NoopAdapter(), gate, managed_target=provider, reload=lambda _: None
+        )
+        with pytest.raises(ManagedTargetError, match="requires immutable"):
+            await syncer.bootstrap(lambda _: None)
+        assert not gate.ready
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_authoritative_digest_refuses_manifest_race_before_native_call(
+    tmp_path, engine
+):
+    from unittest.mock import AsyncMock
+    from chalkcompute._weights_format import WeightStreamError
+    from chalkcompute.weights.serving.adapters.vllm_resident import VLLMResidentAdapter
+    from chalkcompute.weights.serving.adapters.sglang_resident import (
+        SGLangResidentAdapter,
+    )
+    from chalkcompute.weights.serving.syncer import ApplyError
+
+    async def run():
+        root = tmp_path / "weights"
+        root.mkdir()
+        first = _put_manifest(root, 0, None)
+        next_version = _put_manifest(root, 1, 0)
+        target_path = tmp_path / "target.json"
+        _write_target(target_path, _descriptor(root, first, generation=1))
+        provider = _provider(target_path)
+        gate = AdmissionGate()
+        gate.version = 0
+        gate.mark_applied_target(provider.current())
+        cls = VLLMResidentAdapter if engine == "vllm" else SGLangResidentAdapter
+        adapter = object.__new__(cls)
+        adapter._identity = "a" * 64
+        adapter._failed = False
+        adapter._post = AsyncMock()
+        syncer = WeightSyncer(
+            root, adapter, gate, managed_target=provider, reload=lambda _: None
+        )
+        _write_target(target_path, _descriptor(root, next_version, generation=2))
+        verify = syncer.verify
+
+        def mutate_after_verification(plan):
+            verify(plan)
+            path = root / version_dir(1) / "manifest.json"
+            # Semantically identical JSON defeats an equality-only manifest check.
+            path.write_bytes(path.read_bytes() + b"\n")
+
+        syncer.verify = mutate_after_verification
+        with pytest.raises(ApplyError) as error:
+            await syncer.sync_once()
+        assert isinstance(error.value.__cause__, WeightStreamError)
+        assert not gate.ready
+        assert gate.version == 0
+        adapter._post.assert_not_called()
+
+    asyncio.run(run())
+
+
+def test_managed_valid_skip_replays_authenticated_ancestors(tmp_path):
+    async def run():
+        root = tmp_path / "weights"
+        root.mkdir()
+        first = _put_manifest(root, 0, None)
+        _put_manifest(root, 1, 0)
+        third = _put_manifest(root, 2, 1)
+        target_path = tmp_path / "target.json"
+        _write_target(target_path, _descriptor(root, first, generation=1))
+        provider = _provider(target_path)
+
+        class Adapter(_NoopAdapter):
+            def __init__(self):
+                self.applied = []
+
+            async def apply(
+                self, directory, manifest, *, expected_manifest_sha256=None
+            ):
+                assert (
+                    hashlib.sha256(
+                        (directory / "manifest.json").read_bytes()
+                    ).hexdigest()
+                    == expected_manifest_sha256
+                )
+                self.applied.append(manifest.version)
+
+        adapter = Adapter()
+        gate = AdmissionGate()
+        syncer = WeightSyncer(
+            root, adapter, gate, managed_target=provider, reload=lambda _: None
+        )
+
+        async def launch(_):
+            pass
+
+        await syncer.bootstrap(launch)
+        _write_target(target_path, _descriptor(root, third, generation=2))
+        assert await syncer.sync_once()
+        assert adapter.applied == [1, 2]
+        assert gate.ready and gate.version == 2
+        assert not await syncer.sync_once()
+        assert adapter.applied == [1, 2]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "malformation", ["missing-ancestor", "leaf-identity", "oversized", "too-long"]
+)
+def test_managed_manifest_proof_bounds_and_completeness(tmp_path, malformation):
+    from chalkcompute.weights.serving.managed_target import verify_target_manifest
+
+    root = tmp_path / "weights"
+    root.mkdir()
+    _put_manifest(root, 0, None)
+    leaf = _put_manifest(root, 1, 0)
+    if malformation == "too-long":
+        for version in range(2, 129):
+            leaf = _put_manifest(root, version, version - 1)
+    target_path = tmp_path / "target.json"
+    _write_target(target_path, _descriptor(root, leaf, generation=1))
+    provider = _provider(target_path)
+    if malformation == "missing-ancestor":
+        provider._manifest_digests = lambda target, versions: {
+            1: target.manifest_sha256
+        }
+    elif malformation == "leaf-identity":
+        provider._manifest_digests = lambda target, versions: {
+            v: "b" * 64 for v in versions
+        }
+    elif malformation == "oversized":
+        with (root / version_dir(1) / "manifest.json").open("ab") as stream:
+            stream.write(b" " * 1024**2)
+    with pytest.raises((ManagedTargetError, ValueError)):
+        verify_target_manifest(root, provider.current(), provider)
