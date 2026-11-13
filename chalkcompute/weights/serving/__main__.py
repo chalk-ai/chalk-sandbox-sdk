@@ -13,10 +13,38 @@ from aiohttp import web
 from chalkcompute.weights.serving.adapters.sglang import SGLangAdapter
 from chalkcompute.weights.serving.adapters.vllm import VLLMAdapter
 from chalkcompute.weights.serving.full_checkpoint import FullCheckpointSyncer
+from chalkcompute.weights.serving.managed_target import ManagedTargetProvider
 from chalkcompute.weights.serving.supervisor import AdmissionGate, Metrics, create_app
 from chalkcompute.weights.serving.syncer import WeightSyncer
 
 logger = logging.getLogger(__name__)
+
+
+def _managed_target_provider(args: argparse.Namespace) -> ManagedTargetProvider | None:
+    target_path = getattr(args, "managed_target_file", None) or os.environ.get(
+        "CHALK_WEIGHT_TARGET_FILE"
+    )
+    if not target_path:
+        return None
+    required = {
+        "CHALK_MODEL_DEPLOYMENT_ID": "expected_deployment_id",
+        "CHALK_MODEL_DEPLOYMENT_REVISION_ID": "expected_revision_id",
+        "CHALK_WEIGHT_STREAM_ID": "expected_stream_id",
+        "CHALK_WEIGHT_VOLUME_ID": "expected_volume_id",
+    }
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        raise ValueError(
+            "Managed target file requires expected identity environment variables: "
+            + ", ".join(missing)
+        )
+    return ManagedTargetProvider(
+        Path(target_path),
+        expected_deployment_id=os.environ["CHALK_MODEL_DEPLOYMENT_ID"],
+        expected_revision_id=os.environ["CHALK_MODEL_DEPLOYMENT_REVISION_ID"],
+        expected_stream_id=os.environ["CHALK_WEIGHT_STREAM_ID"],
+        expected_volume_id=os.environ["CHALK_WEIGHT_VOLUME_ID"],
+    )
 
 
 def _listen(value: str) -> tuple[str, int]:
@@ -80,6 +108,11 @@ async def serve(args: argparse.Namespace) -> None:
         raise ValueError(f"Unsupported serving engine: {engine}")
     gate = AdmissionGate()
     metrics = Metrics()
+    managed_target = _managed_target_provider(args)
+    if managed_target is not None and issubclass(syncer_class, FullCheckpointSyncer):
+        raise ValueError(
+            "Managed targets are not supported by the experimental full-checkpoint engine"
+        )
     syncer = syncer_class(
         Path(args.weights),
         adapter,
@@ -88,6 +121,7 @@ async def serve(args: argparse.Namespace) -> None:
         poll_seconds=float(os.environ.get("CHALK_WEIGHT_SYNC_POLL_S", "2")),
         drain_timeout=float(os.environ.get("CHALK_WEIGHT_SYNC_DRAIN_TIMEOUT_S", "30")),
         keyframe_lag=int(os.environ.get("CHALK_WEIGHT_SYNC_KEYFRAME_LAG", "50")),
+        managed_target=managed_target,
     )
     process: asyncio.subprocess.Process | None = None
     runner: web.AppRunner | None = None
@@ -202,6 +236,15 @@ def main() -> None:
     )
     parser.add_argument("--engine-port", type=int, default=8001)
     parser.add_argument("--startup-timeout", type=float, default=1800)
+    parser.add_argument(
+        "--managed-target-file",
+        default=os.environ.get("CHALK_WEIGHT_TARGET_FILE"),
+        help=(
+            "Local/test target JSON file. Requires CHALK_MODEL_DEPLOYMENT_ID, "
+            "CHALK_MODEL_DEPLOYMENT_REVISION_ID, CHALK_WEIGHT_STREAM_ID, and "
+            "CHALK_WEIGHT_VOLUME_ID. No trusted controller delivery is included."
+        ),
+    )
     parser.add_argument("engine_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.engine in ("vllm-sparse", "sglang-sparse") and (

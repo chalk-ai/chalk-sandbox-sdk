@@ -16,6 +16,10 @@ from chalkcompute._weights_format import (
     version_dir,
 )
 from chalkcompute.weights.serving.adapters.base import EngineAdapter
+from chalkcompute.weights.serving.managed_target import (
+    ManagedTargetProvider,
+    verify_target_manifest,
+)
 from chalkcompute.weights.serving.supervisor import AdmissionGate, DrainTimeout, Metrics
 
 logger = logging.getLogger(__name__)
@@ -60,6 +64,7 @@ class WeightSyncer:
         keyframe_lag: int = 50,
         metrics: Metrics | None = None,
         reload: Callable[[Path], None] = reload_mount,
+        managed_target: ManagedTargetProvider | None = None,
     ) -> None:
         if poll_seconds <= 0 or drain_timeout <= 0 or keyframe_lag < 1:
             raise ValueError(
@@ -73,11 +78,15 @@ class WeightSyncer:
         self.keyframe_lag = keyframe_lag
         self.metrics = metrics or Metrics()
         self.reload = reload
+        self.managed_target = managed_target
+        self.gate.managed_target = managed_target is not None
         self.architecture_hash: str | None = None
         self._model_elements: int | None = None
         self._lock = asyncio.Lock()
 
     def desired(self) -> int:
+        if self.managed_target is not None:
+            return self.managed_target.current().logical_version
         pin = self.root / "PIN"
         target = read_pointer(pin.read_bytes()) if pin.exists() else None
         if target is None:
@@ -145,8 +154,22 @@ class WeightSyncer:
     async def bootstrap(self, launch: Callable[[Path], Awaitable[None]]) -> None:
         async with self._lock:
             await asyncio.to_thread(self.reload, self.root)
-            plan = await asyncio.to_thread(self.plan, self.desired(), bootstrap=True)
+            managed_target_provider = self.managed_target
+            target = (
+                await asyncio.to_thread(managed_target_provider.current)
+                if managed_target_provider is not None
+                else None
+            )
+            desired = target.logical_version if target is not None else self.desired()
+            plan = await asyncio.to_thread(self.plan, desired, bootstrap=True)
+            if target is not None:
+                await asyncio.to_thread(verify_target_manifest, self.root, target)
             await asyncio.to_thread(self.verify, plan)
+            if target is not None:
+                assert managed_target_provider is not None
+                target = await asyncio.to_thread(
+                    managed_target_provider.assert_current, target
+                )
             first, *patches = plan.manifests
             if first.kind != "keyframe":
                 raise StreamError("Boot requires a keyframe")
@@ -163,7 +186,14 @@ class WeightSyncer:
                     )
                 if patches:
                     await self.adapter.reset_cache()
+                if target is not None:
+                    assert managed_target_provider is not None
+                    target = await asyncio.to_thread(
+                        managed_target_provider.assert_current, target
+                    )
                 self.gate.version = plan.target
+                if target is not None:
+                    self.gate.mark_applied_target(target)
             except BaseException:
                 await self.gate.fail()
                 raise
@@ -171,24 +201,86 @@ class WeightSyncer:
     async def sync_once(self) -> bool:
         async with self._lock:
             await asyncio.to_thread(self.reload, self.root)
-            target = self.desired()
+            managed_target_provider = self.managed_target
+            managed_target = (
+                await asyncio.to_thread(managed_target_provider.current)
+                if managed_target_provider is not None
+                else None
+            )
+            target = (
+                managed_target.logical_version
+                if managed_target is not None
+                else self.desired()
+            )
             current = self.gate.version
             self.metrics.lag_versions = (
                 max(0, target - current) if current is not None else target
             )
             plan = await asyncio.to_thread(self.plan, target)
+            if managed_target is not None:
+                await asyncio.to_thread(
+                    verify_target_manifest, self.root, managed_target
+                )
+                previous_applied = self.gate.applied_target
+                if current == target and previous_applied is not None:
+                    expected_content = managed_target.observation()
+                    previous_content = previous_applied.copy()
+                    expected_content.pop("target_generation")
+                    previous_content.pop("target_generation")
+                    if expected_content != previous_content:
+                        raise ValueError(
+                            "A logical weight version changed content or volume provenance"
+                        )
             if not plan.manifests:
+                if managed_target is not None:
+                    assert managed_target_provider is not None
+                    managed_target = await asyncio.to_thread(
+                        managed_target_provider.assert_current, managed_target
+                    )
+                    if self.gate.applied_target is None:
+                        raise ValueError("Managed target has not been applied")
+                    next_observation = managed_target.observation()
+                    if (
+                        next_observation != self.gate.applied_target
+                        or self.gate.paused
+                    ):
+                        async with self.gate.update(
+                            self.drain_timeout, target=managed_target
+                        ):
+                            latest_target = await asyncio.to_thread(
+                                managed_target_provider.assert_current, managed_target
+                            )
+                            self.gate.mark_applied_target(latest_target)
+                    else:
+                        self.gate.renew_native_lease(managed_target)
                 return False
             await asyncio.to_thread(self.verify, plan)
+            if managed_target is not None:
+                assert managed_target_provider is not None
+                managed_target = await asyncio.to_thread(
+                    managed_target_provider.assert_current, managed_target
+                )
             pause_start = time.perf_counter()
-            async with self.gate.update(self.drain_timeout):
+            async with self.gate.update(
+                self.drain_timeout, target=managed_target
+            ):
                 apply_start = time.perf_counter()
                 try:
+                    if managed_target is not None:
+                        assert managed_target_provider is not None
+                        managed_target = await asyncio.to_thread(
+                            managed_target_provider.assert_current, managed_target
+                        )
                     for manifest in plan.manifests:
                         await self.adapter.apply(
                             self.root / version_dir(manifest.version), manifest
                         )
                     await self.adapter.reset_cache()
+                    if managed_target is not None:
+                        assert managed_target_provider is not None
+                        managed_target = await asyncio.to_thread(
+                            managed_target_provider.assert_current, managed_target
+                        )
                 except BaseException as exc:
                     await self.gate.fail()
                     self.metrics.failures += 1
@@ -198,6 +290,8 @@ class WeightSyncer:
                         "Weight apply failed; replica must restart"
                     ) from exc
                 self.gate.version = target
+                if managed_target is not None:
+                    self.gate.mark_applied_target(managed_target)
                 self.architecture_hash = plan.manifests[-1].architecture_hash
                 self.metrics.apply_ms = (time.perf_counter() - apply_start) * 1000
                 self.metrics.pause_ms = (time.perf_counter() - pause_start) * 1000
@@ -224,13 +318,49 @@ class WeightSyncer:
             return True
 
     async def run(self) -> None:
-        while self.gate.healthy:
-            try:
-                await self.sync_once()
-            except (StreamError, WeightStreamError, ValueError, OSError, DrainTimeout):
-                # A bad publication/reload or long generation leaves the current
-                # engine untouched. Keep serving it and retry next poll.
-                logger.exception("Weight update deferred")
-                self.metrics.failures += 1
-            await asyncio.sleep(self.poll_seconds)
+        watcher = (
+            asyncio.create_task(self._watch_managed_target())
+            if self.managed_target is not None
+            else None
+        )
+        try:
+            while self.gate.healthy:
+                try:
+                    await self.sync_once()
+                except (
+                    StreamError,
+                    WeightStreamError,
+                    ValueError,
+                    OSError,
+                    DrainTimeout,
+                ) as exc:
+                    self.metrics.failures += 1
+                    if self.managed_target is not None:
+                        await self.gate.fail(f"Managed target delivery failed: {exc}")
+                        break
+                    # Legacy mode keeps serving the current engine and retries.
+                    logger.exception("Weight update deferred")
+                await asyncio.sleep(self.poll_seconds)
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
         raise ApplyError("Serving became unhealthy; replica must restart")
+
+    async def _watch_managed_target(self) -> None:
+        assert self.managed_target is not None
+        while self.gate.healthy:
+            await asyncio.sleep(min(0.25, self.poll_seconds))
+            try:
+                target = await asyncio.to_thread(self.managed_target.current)
+                applied = self.gate.applied_target
+                if applied is not None:
+                    if target.target_generation != applied.get("target_generation"):
+                        if not self.gate.paused:
+                            await self.gate.pause()
+                    else:
+                        self.gate.renew_native_lease(target)
+            except Exception as exc:
+                self.metrics.failures += 1
+                await self.gate.fail(f"Managed target lease or delivery failed: {exc}")
+                return
