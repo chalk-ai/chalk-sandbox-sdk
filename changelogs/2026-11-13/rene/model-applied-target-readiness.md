@@ -1,0 +1,1 @@
+- Report bounded managed-target readiness leases and require the full applied identity for lease renewal.
