@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import chalkcompute._backoff as backoff_mod
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ReadinessProbe, ScalingGroup, StartupProbe
 from tests._fakes import ScalingGroupClient
@@ -64,6 +65,9 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     clock = Clock()
     monkeypatch.setattr(scaling_group_mod.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(scaling_group_mod.time, "sleep", clock.sleep)
+    monkeypatch.setattr(
+        backoff_mod.random, "uniform", lambda low, high: (low + high) / 2
+    )
     return clock
 
 
@@ -134,6 +138,38 @@ def test_deploy_retries_gateway_errors_then_allows_first_call(
     )
     http_client.execute.assert_called_once()
     assert http_client.execute.call_args.args == ("GET", "https://example.com/work")
+
+
+@pytest.mark.parametrize("jitter_fraction", [0.0, 1.0])
+def test_route_wait_jitters_and_caps_nominal_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: Clock,
+    route_client: MagicMock,
+    jitter_fraction: float,
+) -> None:
+    bounds: list[tuple[float, float]] = []
+
+    def uniform(low: float, high: float) -> float:
+        bounds.append((low, high))
+        return low + jitter_fraction * (high - low)
+
+    monkeypatch.setattr(backoff_mod.random, "uniform", uniform)
+    route_client.stream.side_effect = [
+        *(StreamResponse(503, [b"no healthy upstream"]) for _ in range(5)),
+        StreamResponse(200, []),
+    ]
+    group = ScalingGroup(image="nginx:alpine")
+    group._client = cast(Any, ScalingGroupClient(web_url="https://example.com"))
+
+    group.deploy()
+
+    steps = [0.25, 0.5, 1.0, 2.0, 2.0]
+    assert clock.delays == pytest.approx(
+        [step * (0.8 + 0.4 * jitter_fraction) for step in steps]
+    )
+    assert [low for low, _ in bounds] == pytest.approx([0.8 * step for step in steps])
+    assert [high for _, high in bounds] == pytest.approx([1.2 * step for step in steps])
+    assert route_client.stream.call_count == 6
 
 
 @pytest.mark.parametrize("status", [200, 301, 302, 401, 404, 405, 500])
@@ -234,20 +270,28 @@ def test_503_body_read_error_returns_without_restarting_the_retry_budget(
 
 @pytest.mark.parametrize("failure", ["gateway", "connection", "timeout"])
 @pytest.mark.parametrize("request_seconds", [0.0, 5.0])
+@pytest.mark.parametrize("jitter_fraction", [0.0, 1.0])
 @pytest.mark.parametrize(
     "readiness_probe", [None, ReadinessProbe.http("/health", timeout_seconds=5)]
 )
 def test_route_wait_warns_and_returns_at_twenty_second_deadline(
+    monkeypatch: pytest.MonkeyPatch,
     clock: Clock,
     route_client: MagicMock,
     route_transport: MagicMock,
     caplog: pytest.LogCaptureFixture,
     failure: str,
     request_seconds: float,
+    jitter_fraction: float,
     readiness_probe: ReadinessProbe | None,
 ) -> None:
     requests: list[tuple[float, float]] = []
     responses: list[StreamResponse] = []
+    monkeypatch.setattr(
+        backoff_mod.random,
+        "uniform",
+        lambda low, high: low + jitter_fraction * (high - low),
+    )
 
     def request(*args: Any, timeout: float, **kwargs: Any) -> StreamResponse:
         requests.append((clock.now, timeout))
@@ -270,7 +314,7 @@ def test_route_wait_warns_and_returns_at_twenty_second_deadline(
 
     assert all(0 < timeout <= min(5, 20 - started) for started, timeout in requests)
     assert clock.now == 20
-    assert max(clock.delays) <= 2
+    assert max(clock.delays) <= 2.4
     assert all(response.closed for response in responses)
     route_transport.return_value.__exit__.assert_called_once()
     assert "route-timeout route was not ready after 20.0s" in caplog.text

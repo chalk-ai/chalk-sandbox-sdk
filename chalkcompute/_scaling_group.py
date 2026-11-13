@@ -840,7 +840,10 @@ class ScalingGroup:
     def _wait_for_route(self) -> None:
         """Briefly retry transient HTTP gateway failures after replica readiness."""
         deadline = time.monotonic() + _ROUTE_READY_TIMEOUT_SECONDS
-        delay = _ROUTE_READY_INITIAL_BACKOFF_SECONDS
+        backoff = Backoff(
+            _ROUTE_READY_INITIAL_BACKOFF_SECONDS,
+            _ROUTE_READY_MAX_BACKOFF_SECONDS,
+        )
         last_status = "unknown"
         with SyncHTTPTransport(
             http_version=SYNC_HTTP_VERSION,
@@ -865,8 +868,7 @@ class ScalingGroup:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                time.sleep(min(delay, remaining))
-                delay = min(delay * 2, _ROUTE_READY_MAX_BACKOFF_SECONDS)
+                time.sleep(backoff.next_wait(remaining))
 
         logger.warning(
             "Scaling group %s route was not ready after %.1fs (last status=%s)",
@@ -1076,7 +1078,8 @@ class ScalingGroup:
             Request timeout in seconds, per attempt.
         cold_start_timeout
             Seconds to keep retrying while the gateway reports that the group
-            has no ready replica. ``0`` disables retrying.
+            has no ready replica. ``0`` disables retrying. No retry starts
+            after this budget expires; an in-flight request uses ``timeout``.
 
         Returns
         -------
@@ -1116,13 +1119,19 @@ class ScalingGroup:
                 next_status_check = now + _COLD_START_STATUS_CHECK_SECONDS
                 if self._has_failed():
                     return response
-            retry_delay = backoff.next_wait(deadline - now)
+            # Refreshing status can consume the remaining retry budget.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return response
+            retry_delay = backoff.next_wait(remaining)
             logger.debug(
                 "Scaling group %s has no ready replica; retrying in %.2fs",
                 self._name,
                 retry_delay,
             )
             time.sleep(retry_delay)
+            if time.monotonic() >= deadline:
+                return response
 
     def _prepare_http_request(
         self, path: str, headers: dict[str, str] | None
