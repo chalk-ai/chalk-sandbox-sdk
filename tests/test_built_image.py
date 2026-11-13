@@ -550,21 +550,7 @@ def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
                 pb.MissingFunctionDeploymentInputs(
                     tree_digests=[
                         s.tree_digest for s in client.requests[-1].spec.sources
-                    ]
-                ),
-            )
-        )
-        yield pb.EnsureExternalFunctionResponse(
-            result=Oneof(
-                "missing_inputs",
-                pb.MissingFunctionDeploymentInputs(
-                    file_digests=sorted(
-                        {
-                            f.content_digest
-                            for m in client.requests[-1].supplied_inputs.manifests
-                            for f in m.files
-                        }
-                    ),
+                    ],
                     upload_volume=target,
                 ),
             )
@@ -576,7 +562,7 @@ def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
     resource._client = client
     sources = {}
     source_mount_paths = set()
-    prepare = deployment._source_manifests
+    prepare = deployment._source_trees
 
     def prepare_sources(image):
         source_mount_paths.update(image.lazy_local_files_grouped_for_volume_mounts())
@@ -585,25 +571,8 @@ def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
         )
         return prepare(image)
 
-    def stage(volume, groups):
-        assert volume == target.name
-        return volume_pb.CommitIntent(
-            deltas=Oneof(
-                "path_deltas",
-                volume_pb.PathDeltaList(
-                    upserts=[
-                        volume_pb.PathFileDelta(path=digest)
-                        for prepared, digests in groups.items()
-                        for digest in digests
-                        if len(prepared.select_by_digest([digest])) == 1
-                    ]
-                ),
-            )
-        )
-
     driver = MagicMock()
-    driver._stage_source_inputs.side_effect = stage
-    monkeypatch.setattr(deployment, "_source_manifests", prepare_sources)
+    monkeypatch.setattr(deployment, "_source_trees", prepare_sources)
     monkeypatch.setattr(deployment.VolumeClient, "from_connect", lambda client: driver)
     resource.deploy()
     request = client.requests[0]
@@ -619,16 +588,14 @@ def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
     assert all(
         path == root or path.startswith(root + "/") for path in source_mount_paths
     )
-    manifests = client.requests[1].supplied_inputs.manifests
-    assert {m.tree_digest for m in manifests} == {
-        s.tree_digest for s in request.spec.sources
+    resolved = {
+        call.args[1].commit_id for call in driver._resolve_prepared.call_args_list
     }
-    supplied = client.requests[2].supplied_inputs
-    assert supplied.upload_volume == target
-    assert {f.path for f in supplied.files} == {
-        f.content_digest for m in manifests for f in m.files
-    }
-    driver._stage_source_inputs.assert_called_once()
+    assert resolved == {s.tree_digest for s in request.spec.sources}
+    assert all(
+        call.args[0] == target.name for call in driver._resolve_prepared.call_args_list
+    )
+    assert not client.requests[1].supplied_inputs
     driver._resolve_lazy_files.assert_not_called()
     assert container.env_vars["PYTHONPATH"] == (
         "/__chalk_source:/app:/custom" if relocated else "/custom"

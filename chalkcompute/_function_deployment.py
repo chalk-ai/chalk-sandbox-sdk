@@ -75,31 +75,20 @@ def resolve_function_volumes(
     return list(referenced)
 
 
-def _source_manifests(
+def _source_trees(
     image: Image,
-) -> tuple[
-    list[service_pb.FunctionSourceMount],
-    dict[str, service_pb.FunctionSourceManifest],
-    dict[str, PreparedFiles],
-]:
+) -> tuple[list[service_pb.FunctionSourceMount], dict[str, PreparedFiles]]:
+    """Identify each source root by the commit ID of its file tree."""
     mounts = []
-    manifests = {}
     prepared_by_digest = {}
     for mount_path, prepared in _prepare_source_files(image):
-        data = prepared.source_manifest()
-        manifest = service_pb.FunctionSourceManifest(
-            tree_digest=data["tree_digest"],
-            files=[service_pb.FunctionSourceFile(**file) for file in data["files"]],
-        )
-        manifests[manifest.tree_digest] = manifest
-        for file in manifest.files:
-            prepared_by_digest[file.content_digest] = prepared
+        prepared_by_digest[prepared.commit_id] = prepared
         mounts.append(
             service_pb.FunctionSourceMount(
-                tree_digest=manifest.tree_digest, mount_path=mount_path
+                tree_digest=prepared.commit_id, mount_path=mount_path
             )
         )
-    return mounts, manifests, prepared_by_digest
+    return mounts, prepared_by_digest
 
 
 def ensure_external_function(
@@ -116,7 +105,7 @@ def ensure_external_function(
 ) -> service_pb.EnsuredExternalFunction:
     stub = client.stub(service_connect.ExternalFunctionCatalogServiceClientSync)
     deadline = time.monotonic() + timeout
-    sources, manifests, prepared_by_digest = _source_manifests(image)
+    sources, prepared_by_digest = _source_trees(image)
     request = service_pb.EnsureExternalFunctionRequest(
         request_id=str(uuid.uuid4()),
         function_name=function_name,
@@ -148,35 +137,29 @@ def ensure_external_function(
             return response.result.value
         if response.result.field == "missing_inputs":
             missing = response.result.value
-            supplied = service_pb.FunctionDeploymentInputs(
-                manifests=[manifests[digest] for digest in missing.tree_digests],
-            )
-            if missing.file_digests:
-                if missing.upload_volume is None:
-                    raise ConnectError("Source upload response omitted its volume")
-                groups: dict[PreparedFiles, list[str]] = {}
-                for digest in missing.file_digests:
-                    groups.setdefault(prepared_by_digest[digest], []).append(digest)
-                try:
-                    volume_client = VolumeClient.from_connect(client)
-                    intent = volume_client._stage_source_inputs(
-                        missing.upload_volume.name, groups
+            if missing.file_digests or missing.upload_volume is None:
+                raise ConnectError(
+                    "The server requested a source manifest; upgrade the Chalk server"
+                )
+            # The server allocates the volume, and the tree is committed to it
+            # under its digest. The next ensure call finds that commit.
+            volume_client = VolumeClient.from_connect(client)
+            try:
+                for digest in missing.tree_digests:
+                    volume_client._resolve_prepared(
+                        missing.upload_volume.name,
+                        prepared_by_digest[digest],
+                        timeout=max(0.1, deadline - time.monotonic()),
+                        poll_interval=poll_interval,
                     )
-                except VolumeError as exc:
-                    if exc.code not in (
-                        "unavailable",
-                        "deadline_exceeded",
-                        "resource_exhausted",
-                    ):
-                        raise
-                    time.sleep(poll_interval)
-                    continue
-                if intent.deltas is None or intent.deltas.field != "path_deltas":
-                    raise ConnectError("Source upload did not produce file deltas")
-                supplied.files = intent.deltas.value.upserts
-                supplied.uploaded_objects = intent.uploaded_object_references
-                supplied.upload_volume = missing.upload_volume
-            request.supplied_inputs = supplied
+            except VolumeError as exc:
+                if exc.code not in (
+                    "unavailable",
+                    "deadline_exceeded",
+                    "resource_exhausted",
+                ):
+                    raise
+                time.sleep(poll_interval)
             continue
         if response.result.field == "pending_image_build":
             try:
