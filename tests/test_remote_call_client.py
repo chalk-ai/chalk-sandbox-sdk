@@ -1297,7 +1297,7 @@ def test_deferred_get_clips_backoff_and_stops_before_another_poll(
     monkeypatch.setattr(
         function_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
     )
-    monkeypatch.setattr("chalkcompute._backoff.random.uniform", lambda low, high: high)
+    monkeypatch.setattr(function_mod.random, "uniform", lambda low, high: high)
     monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.25)
     handle = _remote_function().defer(98)
     error = RemoteCallUnavailableError("connection dropped")
@@ -1347,7 +1347,7 @@ def test_deferred_collection_fallback_bounds_a_hung_retry(
 
     monkeypatch.setattr(FakeRemoteCallClient, "poll_next", unavailable_then_hang)
     monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.15)
-    monkeypatch.setattr("chalkcompute._backoff.random.uniform", lambda low, high: 0.0)
+    monkeypatch.setattr(function_mod.random, "uniform", lambda low, high: 0.0)
 
     started = time.monotonic()
     try:
@@ -1373,7 +1373,7 @@ def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
         jitter_bounds.append((low, high))
         return high
 
-    monkeypatch.setattr("chalkcompute._backoff.random.uniform", uniform)
+    monkeypatch.setattr(function_mod.random, "uniform", uniform)
     monkeypatch.setattr(function_mod.time, "sleep", sleeps.append)
     FakeRemoteCallClient.poll_results = [
         _poll("completed", chunks=[_result_ipc([99])], cursor="c1"),

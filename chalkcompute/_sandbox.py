@@ -1966,7 +1966,6 @@ class Sandbox:
         backoff = Backoff(
             _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS,
             _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS,
-            jitter="mean_preserving",
         )
         while True:
             try:

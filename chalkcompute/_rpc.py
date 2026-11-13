@@ -29,7 +29,7 @@ _RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
 RPC_READ_MAX_BYTES = 100 << 20
 
 # Retain the historical grpcio service_config retry counts and backoff
-# parameters, adding full jitter to spread retries across clients.
+# parameters, including +/-20% jitter to spread retries across clients.
 RPC_RETRY_MAX_ATTEMPTS = 5
 RPC_RETRY_INITIAL_BACKOFF_SECONDS = 0.1
 RPC_RETRY_MAX_BACKOFF_SECONDS = 1.0
@@ -97,8 +97,8 @@ class RetryInterceptor:
 
     Uses the historical grpcio ``service_config`` parameters: five total
     attempts and exponential backoff from 0.1s to 1s with multiplier 2.
-    Each wait uses full jitter so clients that fail together spread out
-    their retries.
+    Each wait uses +/-20% jitter so clients that fail together spread out
+    their retries while preserving the nominal delay on average.
     """
 
     def intercept_unary_sync(
@@ -133,7 +133,6 @@ class RetryInterceptor:
         backoff = Backoff(
             RPC_RETRY_INITIAL_BACKOFF_SECONDS,
             RPC_RETRY_MAX_BACKOFF_SECONDS,
-            multiplier=RPC_RETRY_BACKOFF_MULTIPLIER,
         )
         last_error: ConnectError | None = None
         for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):

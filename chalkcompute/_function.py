@@ -39,6 +39,7 @@ import json
 import linecache
 import logging
 import os
+import random
 import shutil
 import sys
 import tempfile
@@ -124,7 +125,6 @@ from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
-from chalkcompute._backoff import Backoff
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._rpc import (
@@ -1173,11 +1173,7 @@ class FunctionCallHandle:
         if deadline is not None and time.monotonic() >= deadline:
             poll_deadline = time.monotonic() + _MIN_RESULT_POLL_TIMEOUT
         last_unavailable_error: Exception | None = None
-        backoff = Backoff(
-            RPC_RETRY_INITIAL_BACKOFF_SECONDS,
-            _POLL_UNAVAILABLE_MAX_BACKOFF,
-            multiplier=RPC_RETRY_BACKOFF_MULTIPLIER,
-        )
+        delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         while True:
             self._raise_if_cancelled()
             if (
@@ -1217,7 +1213,7 @@ class FunctionCallHandle:
                         raise self._timeout_error(self._last_status) from exc
                 elif now >= poll_deadline:
                     raise
-                wait = backoff.next_wait(poll_deadline - now)
+                wait = min(random.uniform(0.0, delay), poll_deadline - now)
                 logger.debug(
                     "Polling call %s for %r failed; re-polling in %.1fs: %s",
                     self._call_id,
@@ -1226,6 +1222,9 @@ class FunctionCallHandle:
                     exc,
                 )
                 time.sleep(wait)
+                delay = min(
+                    delay * RPC_RETRY_BACKOFF_MULTIPLIER, _POLL_UNAVAILABLE_MAX_BACKOFF
+                )
 
     def _timeout_error(self, last_status: str) -> TimeoutError:
         return TimeoutError(

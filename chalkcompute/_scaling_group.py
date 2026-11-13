@@ -1025,7 +1025,6 @@ class ScalingGroup:
         backoff = Backoff(
             _COLD_START_INITIAL_BACKOFF_SECONDS,
             _COLD_START_MAX_BACKOFF_SECONDS,
-            jitter="mean_preserving",
         )
         while True:
             response = SYNC_HTTP_CLIENT.execute(

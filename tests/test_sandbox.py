@@ -530,7 +530,7 @@ def test_sandbox_restore_retries_conflict_while_suspended_resource_deletes() -> 
         sandbox.restore()
 
     assert stub.resume_sandbox.call_count == 2
-    uniform.assert_called_once_with(0.125, 0.375)
+    uniform.assert_called_once_with(0.2, 0.3)
     sleep.assert_called_once_with(0.3)
     assert sandbox.info is not None and sandbox.info.status == "running"
 

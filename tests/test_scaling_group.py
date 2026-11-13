@@ -191,7 +191,7 @@ def test_scaling_group_call_jitters_retry_waits(
     monkeypatch.setattr(backoff_mod.random, "uniform", uniform)
 
     assert sg.call("/") is ok
-    assert bounds == [(0.125, 0.375), (0.25, 0.75), (0.5, 1.5)]
+    assert bounds == [(0.2, 0.3), (0.4, 0.6), (0.8, 1.2)]
     assert sleeps == [0.25, 0.5, 1.0]
 
 
