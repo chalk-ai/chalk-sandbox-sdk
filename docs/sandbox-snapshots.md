@@ -2,6 +2,8 @@
 
 The SDK exposes Chalk's sandbox snapshot API. A snapshot captures a running
 HOST-compute sandbox and can be restored into one or more new sandboxes.
+To save state and release the sandbox's compute resources, use `sandbox.suspend()`;
+`sandbox.restore()` later resumes it with the same sandbox ID.
 
 ## Capture and restore
 
@@ -36,8 +38,9 @@ with SandboxClient.from_env() as client:
         sandbox.terminate()
 ```
 
-Pass `wait=False` to `snapshot()` to return while capture is still in progress,
-then use `snapshot.wait(timeout=...)` before restoring. `snapshot.refresh()`
+Pass `wait=False` to `snapshot()` to skip SDK completion polling, then use
+`snapshot.wait(timeout=...)` before restoring. The initial capture request can
+still take time. `snapshot.refresh()`
 fetches its current status. `SandboxSnapshot.from_id(snapshot_id, client=client)`
 loads a previously saved handle, and `client.list_snapshots(sandbox.id)` lists
 snapshots created from that sandbox. Use `snapshot.delete()` or
@@ -45,21 +48,45 @@ snapshots created from that sandbox. Use `snapshot.delete()` or
 
 ## Suspend and restore in place
 
-Suspending a sandbox captures its state and releases its running resources while
-keeping its identity. Calling `restore()` on that sandbox restores the saved state
-in place and keeps the same sandbox ID:
+Suspending a sandbox captures its state and releases its CPU, memory, and any GPUs
+while keeping its identity. Calling `restore()` on that sandbox allocates compatible
+compute resources and restores the saved state with the same sandbox ID:
+
+For example, clone a repository, leave a note in its working tree, and suspend
+the workspace until you are ready to continue:
 
 ```python
-sandbox.suspend()
+import chalkcompute
+
+sandbox = chalkcompute.Sandbox(
+    compute_class=chalkcompute.ComputeClass.HOST,
+).run()
+sandbox.exec("git", "clone", "--depth", "1", "https://github.com/psf/requests.git", "/workspace/requests")
+sandbox.exec("sh", "-c", "echo 'Investigate the failing login test' > /workspace/requests/NOTES.md")
+print(sandbox.id)  # Save the ID so you can reconnect later.
+sandbox.suspend()  # Release the sandbox's compute resources.
+
+# Later, restore the same sandbox and workspace.
 sandbox.restore()
+print(sandbox.refresh().status)
 ```
+
+`sandbox.restore()` initiates restoration. Once `sandbox.refresh().status` is
+`running`, inspect the working tree and continue without cloning it again:
+
+```python
+print(sandbox.exec("git", "-C", "/workspace/requests", "status", "--short").stdout_text)  # ?? NOTES.md
+sandbox.terminate()
+```
+
+To reconnect from another process, use
+`chalkcompute.Sandbox.from_id("sandbox-id")` with the saved ID.
 
 This differs from `snapshot.restore()`, which creates a new sandbox from a saved
 snapshot. `sandbox.restore()` brings a suspended sandbox back under its existing
 identity.
 
-Snapshot capture currently requires a HOST-compute sandbox. The CLI defaults
-sandbox creation to HOST compute; the SDK preserves its existing compute-class
-default, so pass `compute_class=ComputeClass.HOST` when creating a sandbox you
-intend to snapshot. Snapshot retention and the precise set of runtime state
-captured are determined by the service.
+Snapshot capture requires a HOST-compute sandbox. Pass
+`compute_class=ComputeClass.HOST` when creating a sandbox you intend to snapshot.
+For capture and restore boundaries, GPU support, and CLI commands, see
+[Sandbox snapshots](https://docs.chalk.ai/docs/sandboxes/snapshots).
