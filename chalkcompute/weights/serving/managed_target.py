@@ -20,6 +20,10 @@ class ManagedTargetError(ValueError):
     """The delivered managed target is incomplete, stale, or inconsistent."""
 
 
+class ModelTargetNotSelected(ManagedTargetError):
+    """An authenticated revision has not received its initial desired target."""
+
+
 _FIELDS = frozenset(
     {
         "schema_version",
@@ -80,6 +84,29 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ManagedTargetError(f"Duplicate target descriptor key: {key}")
         result[key] = value
     return result
+
+
+_FINGERPRINT_FIELDS = (
+    "deployment_id",
+    "revision_id",
+    "target_generation",
+    "stream_id",
+    "logical_version",
+    "volume_id",
+    "volume_version_id",
+    "manifest_sha256",
+    "weight_schema_sha256",
+)
+
+
+def target_fingerprint(target: Mapping[str, str | int]) -> str:
+    """Canonical cross-language admission constraint, independent of lease renewal."""
+    digest = hashlib.sha256(b"chalk.model-weight-target.v1\x00")
+    for field in _FINGERPRINT_FIELDS:
+        encoded = str(target[field]).encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -144,6 +171,10 @@ class ManagedWeightTarget:
             weight_schema_sha256=schema_sha256,
             lease_expires_at=_utc_timestamp(value["lease_expires_at"]),
         )
+
+    def fingerprint(self) -> str:
+        """Cross-language admission constraint; not an authentication credential."""
+        return target_fingerprint(self.observation())
 
     def observation(self) -> dict[str, str | int]:
         """The exact fenced target identity reported after successful apply."""
