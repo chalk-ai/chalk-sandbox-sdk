@@ -143,3 +143,35 @@ def test_runtime_owns_engine_process_and_cleanup(
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert not runtime._thread.is_alive()
+
+
+def test_empty_engine_args_are_valid_but_missing_or_duplicate_fields_are_not():
+    assert ModelServingConfig.from_json(config(engine_args=[])).engine_args == []
+    value = json.loads(config())
+    del value["engine_args"]
+    with pytest.raises(ValueError):
+        ModelServingConfig.from_json(json.dumps(value))
+    with pytest.raises(ValueError, match="Duplicate"):
+        ModelServingConfig.from_json(config()[:-1] + ', "engine_port": 9001}')
+
+
+def test_target_authentication_failure_is_terminal():
+    from chalkcompute.weights.serving.managed_target import ManagedTargetError
+
+    class Unauthorized:
+        def current(self):
+            raise ManagedTargetError("Authentication rejected")
+
+    handle = Handle()
+    runtime = ManagedModelRuntime(
+        ModelServingConfig.from_json(config()), handle, Unauthorized()
+    )
+    try:
+        runtime.start()
+    except RuntimeError:
+        assert isinstance(runtime.failure, ManagedTargetError)
+    runtime._thread.join(3)
+    assert isinstance(runtime.failure, ManagedTargetError)
+    assert not runtime._thread.is_alive()
+    assert handle.serving is False
+    runtime.close()
