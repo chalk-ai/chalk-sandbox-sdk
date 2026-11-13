@@ -223,7 +223,77 @@ def test_scaling_group_call_preserves_capped_retry_cadence(monkeypatch) -> None:
 
     assert sg.call("/", cold_start_timeout=4.0) is unavailable
     assert sleeps == [1.0] * 4
-    assert http_client.execute.call_count == 5
+    assert http_client.execute.call_count == 4
+
+
+@pytest.mark.parametrize("refresh_seconds", [0.5, 4.0, 5.0])
+def test_scaling_group_call_rechecks_budget_after_status_refresh(
+    monkeypatch, refresh_seconds
+) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    sg, http_client = _deployed_group(monkeypatch)
+    now = 100.0
+    deadline = now + 4.0
+    requests = []
+    sleeps = []
+
+    def request(*args, **kwargs):
+        requests.append(now)
+        return unavailable
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append((now, delay))
+        now += delay
+
+    def refresh():
+        nonlocal now
+        now += refresh_seconds
+        return SimpleNamespace(status="Running")
+
+    http_client.execute.side_effect = request
+    monkeypatch.setattr(sg, "refresh", refresh)
+    monkeypatch.setattr(
+        scaling_group_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_STATUS_CHECK_SECONDS", 0.0)
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_INITIAL_BACKOFF_SECONDS", 1.0)
+    monkeypatch.setattr(scaling_group_mod, "_COLD_START_MAX_BACKOFF_SECONDS", 1.0)
+    monkeypatch.setattr(
+        backoff_mod.random, "uniform", lambda low, high: (low + high) / 2
+    )
+
+    assert sg.call("/", cold_start_timeout=4.0) is unavailable
+
+    assert all(started < deadline for started in requests)
+    assert all(0 < delay <= deadline - started for started, delay in sleeps)
+    assert now == max(deadline, 100.0 + refresh_seconds)
+    if refresh_seconds == 0.5:
+        assert sleeps == [(100.5, 1.0), (102.0, 1.0), (103.5, 0.5)]
+        assert requests == [100.0, 101.5, 103.0]
+    else:
+        assert sleeps == []
+        assert requests == [100.0]
+
+
+def test_scaling_group_call_does_not_retry_after_sleep_overshoots_deadline(
+    monkeypatch,
+) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    sg, http_client = _deployed_group(monkeypatch, unavailable)
+    now = 100.0
+
+    def sleep(delay):
+        nonlocal now
+        # A scheduler delay can be longer than the requested backoff.
+        now += delay + 5.0
+
+    monkeypatch.setattr(
+        scaling_group_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+
+    assert sg.call("/", cold_start_timeout=4.0) is unavailable
+    assert http_client.execute.call_count == 1
 
 
 def test_scaling_group_call_does_not_retry_app_errors(
