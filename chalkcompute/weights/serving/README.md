@@ -112,13 +112,15 @@ Only the explicit authenticated no-target response is retryable during bootstrap
 Clock changes cannot extend the local monotonic deadline. Target changes still
 require the regular drain/apply/verify path before admission resumes.
 
-This connects desired-state delivery, not production model-deployment activation.
-The launcher must supply the expected identity, a supported engine configuration,
-and verified initial resident weights. The stream mount's snapshot provenance is
-not attested by this read. Automatic model-deployment launch, per-replica readiness
-reporting, and routing must be connected separately; backend managed admission
-remains disabled until that path is qualified. Initial model storage may remain
-independent of the stream volume.
+The managed launcher below connects this provider to native admission, engine
+ownership and resident verification. Production activation also requires the
+backend bootstrap change, the compatible native release and SDK dependency bump,
+a pinned qualified serving image, and cross-repository sync/async qualification.
+Until those dependencies pass, backend managed admission stays disabled. Generic
+replica readiness describes container lifecycle; it does not establish an applied
+weight version. Exact per-request native target admission is the execution
+barrier. This RPC does not attest the stream mount's snapshot provenance, and
+initial model storage may remain independent of the stream volume.
 
 Configuration:
 
