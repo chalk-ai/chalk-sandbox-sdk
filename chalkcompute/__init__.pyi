@@ -1,3 +1,6 @@
+from chalkcompute._weights import WeightStream as WeightStream
+from chalkcompute._weights import WeightPublisher as WeightPublisher
+from chalkcompute._weights_format import WeightStreamError as WeightStreamError
 from chalkcompute._usage_pool import UsagePool as UsagePool
 from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._router import Router as Router
@@ -47,6 +50,7 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._dataset import DatasetClient as DatasetClient
 from chalkcompute._dataset import DatasetError as DatasetError
 from chalkcompute._containerspec import ComputeClass as ComputeClass
+from chalkcompute._containerspec import Runtime as Runtime
 from chalkcompute._containerspec import ExecutionBackend as ExecutionBackend
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
@@ -205,6 +209,9 @@ from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "WeightStream",
+    "WeightPublisher",
+    "WeightStreamError",
     "Router",
     "RouterClient",
     "RouterError",
@@ -237,6 +244,7 @@ __all__ = [
     "ContainerExecResult",
     "ImageBuildError",
     "ComputeClass",
+    "Runtime",
     "ExecutionBackend",
     "KernelPolicy",
     "NetworkPolicy",

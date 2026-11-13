@@ -5,6 +5,9 @@ import importlib
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    "WeightStream": ("chalkcompute._weights", "WeightStream"),
+    "WeightPublisher": ("chalkcompute._weights", "WeightPublisher"),
+    "WeightStreamError": ("chalkcompute._weights_format", "WeightStreamError"),
     # _router.py
     "Router": ("chalkcompute._router", "Router"),
     "RouterClient": ("chalkcompute._router", "RouterClient"),
@@ -32,6 +35,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
+    "Runtime": ("chalkcompute._containerspec", "Runtime"),
     "ExecutionBackend": ("chalkcompute._containerspec", "ExecutionBackend"),
     "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "SshDest": ("chalkcompute._containerspec", "SshDest"),

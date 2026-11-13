@@ -101,7 +101,7 @@ def _deserialize_config(config_struct: object | None, func: object) -> object:
     if config_struct is None:
         return None
 
-    config_dict: dict = config_struct.to_python()  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+    config_dict: dict = config_struct.to_python()  # type: ignore[union-attr]  # ty: ignore[missing-attribute]
 
     underlying = getattr(func, "_func", func)
     try:
@@ -155,7 +155,7 @@ def _load_dataset(
 
     ctl_path = Path(data_dir) / ".chalk-volume" / "ctl"
     if ctl_path.exists():
-        with open(ctl_path, "r+b") as ctl:
+        with open(ctl_path, "r+b", buffering=0) as ctl:
             ctl.write(b"reload\n")
             ctl.flush()
             response = ctl.read().decode(errors="replace").strip()
@@ -180,7 +180,7 @@ def _load_dataframe(data_dir: str) -> object:
         pass
 
     try:
-        import pandas as pd  # type: ignore[import-not-found]  # ty: ignore[unresolved-import]
+        pd = importlib.import_module("pandas")
 
         frames = [pd.read_parquet(f) for f in parquet_files]
         return pd.concat(frames, ignore_index=True) if frames else None

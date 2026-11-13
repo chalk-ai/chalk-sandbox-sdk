@@ -473,7 +473,9 @@ def test_read_returns_the_revision_as_one_arrow_table() -> None:
         handler=lambda name, request: _download_links("https://signed/part-0")
     )
 
-    read = DatasetClient(connect_client=connect, http_client=http).read("rev-1")  # type: ignore[arg-type]
+    read = DatasetClient(connect_client=connect, http_client=http).read(
+        "b58eedfd-56d9-4e98-bae2-dffb7f5a2bfd"
+    )  # type: ignore[arg-type]
 
     assert read.equals(table)
     assert [request[0] for request in http.requests] == ["GET"]
@@ -507,4 +509,149 @@ def test_read_rejects_an_empty_revision_and_a_revision_with_no_output() -> None:
 
     connect = FakeConnectClient(handler=lambda name, request: _download_links())
     with pytest.raises(DatasetError, match="no output to read"):
-        DatasetClient(connect_client=connect).read("rev-1")  # type: ignore[arg-type]
+        DatasetClient(connect_client=connect).read(
+            "b58eedfd-56d9-4e98-bae2-dffb7f5a2bfd"
+        )  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("as_ref", [False, True])
+@pytest.mark.parametrize(
+    ("name", "search"),
+    [
+        ("goldens", "goldens"),
+        (r"foo\bar", r"foo\\bar"),
+        ("foo\\", "foo\\\\"),
+        (r"foo\\bar", r"foo\\\\bar"),
+    ],
+)
+def test_read_by_name_resolves_exact_match_across_pages(
+    as_ref: bool, name: str, search: str
+) -> None:
+    table = pa.table({"id": [1, 2]})
+    buffer = pa.BufferOutputStream()
+    pq.write_table(table, buffer)
+    http = _FakeHTTPClient()
+    http.responses = [_response(content=buffer.getvalue().to_pybytes())]
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_datasets":
+            assert request.filters.search == search
+            if not request.cursor:
+                return datasets_pb.ListDatasetsResponse(
+                    datasets=[datasets_pb.DatasetMeta(dataset_name=f"{name}-old")],
+                    cursor="page-2",
+                )
+            assert request.cursor == "page-2"
+            return datasets_pb.ListDatasetsResponse(
+                datasets=[
+                    datasets_pb.DatasetMeta(
+                        dataset_name=name,
+                        most_recent_revision=datasets_pb.DatasetRevisionMeta(
+                            offline_query_id="latest"
+                        ),
+                    )
+                ],
+            )
+        assert method == "get_dataset_revision_download_links"
+        assert request.revision_id == "latest"
+        return _download_links("https://signed/part-0")
+
+    connect = FakeConnectClient(handler=handler)
+    reference = DatasetRevisionRef(dataset_name=name) if as_ref else f" {name} "
+    read = DatasetClient(connect_client=connect, http_client=http).read(
+        reference, timeout=12
+    )  # type: ignore[arg-type]
+    assert read.equals(table)
+    assert [call.method for call in connect.calls] == [
+        "list_datasets",
+        "list_datasets",
+        "get_dataset_revision_download_links",
+    ]
+    assert all(call.timeout == 12 for call in connect.calls)
+
+
+@pytest.mark.parametrize("has_revision", [False, True])
+def test_read_by_name_reports_missing_revision(has_revision: bool) -> None:
+    connect = FakeConnectClient(
+        handler=lambda method, request: datasets_pb.ListDatasetsResponse(
+            datasets=[
+                datasets_pb.DatasetMeta(
+                    dataset_name="empty",
+                    most_recent_revision=datasets_pb.DatasetRevisionMeta()
+                    if has_revision
+                    else None,
+                )
+            ],
+        )
+    )
+    with pytest.raises(DatasetError, match="has no revision to read"):
+        DatasetClient(connect_client=connect).read("empty")  # type: ignore[arg-type]
+
+
+def test_read_by_name_does_not_read_a_substring_match() -> None:
+    connect = FakeConnectClient(
+        handler=lambda method, request: datasets_pb.ListDatasetsResponse(
+            datasets=[datasets_pb.DatasetMeta(dataset_name="goldens-old")],
+        )
+    )
+    with pytest.raises(DatasetError, match="not found") as exc:
+        DatasetClient(connect_client=connect).read("goldens")  # type: ignore[arg-type]
+    assert exc.value.status_code == 404
+    assert [call.method for call in connect.calls] == ["list_datasets"]
+
+
+def test_read_uuid_shaped_name_uses_explicit_name_ref() -> None:
+    name = "b58eedfd-56d9-4e98-bae2-dffb7f5a2bfd"
+    connect = FakeConnectClient(
+        handler=lambda method, request: datasets_pb.ListDatasetsResponse()
+    )
+    with pytest.raises(DatasetError, match="not found"):
+        DatasetClient(connect_client=connect).read(
+            DatasetRevisionRef(dataset_name=name)
+        )  # type: ignore[arg-type]
+    assert connect.calls[0].method == "list_datasets"
+    assert connect.calls[0].request.filters.search == name
+
+
+def test_delete_dataset_uses_dataset_id_and_timeout() -> None:
+    transport = FakeConnectClient(
+        handler=lambda method, request: datasets_pb.DeleteDatasetResponse(
+            dataset_id=request.dataset_id
+        )
+    )
+    client = DatasetClient(connect_client=transport)
+    assert client.delete(" dataset-1 ", timeout=12.0) is None
+    call = transport.calls[0]
+    assert call.method == "delete_dataset"
+    assert isinstance(call.request, datasets_pb.DeleteDatasetRequest)
+    assert call.request.dataset_id == "dataset-1"
+    assert call.timeout == 12.0
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, float("nan"), float("inf")])
+def test_delete_dataset_rejects_invalid_timeout(timeout: float) -> None:
+    transport = FakeConnectClient()
+    with pytest.raises(ValueError, match="timeout"):
+        DatasetClient(connect_client=transport).delete("dataset-1", timeout=timeout)
+    assert transport.calls == []
+
+
+def test_delete_dataset_rejects_empty_id() -> None:
+    transport = FakeConnectClient()
+    with pytest.raises(ValueError, match="dataset_id"):
+        DatasetClient(connect_client=transport).delete(" ")
+    assert transport.calls == []
+
+
+def test_delete_dataset_translates_rpc_error() -> None:
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+
+    def fail(method: str, request: Any) -> Any:
+        raise ConnectError(Code.PERMISSION_DENIED, "denied")
+
+    with pytest.raises(DatasetError) as exc:
+        DatasetClient(connect_client=FakeConnectClient(handler=fail)).delete(
+            "dataset-1"
+        )
+    assert exc.value.status_code == 403

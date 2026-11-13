@@ -112,7 +112,6 @@ class _ScalingGroupReadinessClient(StubbedConnectClient):
                     id="sg-1",
                     name=request.spec.container_spec.name,
                     status=self.create_status,
-                    web_url="http://127.0.0.1",
                 )
             )
         if method.name == "get_scaling_group":
@@ -120,7 +119,6 @@ class _ScalingGroupReadinessClient(StubbedConnectClient):
             sg = self.polls.pop(0)
             sg.id = request.id
             sg.name = self.poll_name
-            sg.web_url = "http://127.0.0.1"
             return sg_pb.GetScalingGroupResponse(scaling_group=sg)
         raise AssertionError(f"unexpected method: {method.name}")
 
@@ -389,7 +387,7 @@ def test_remote_class_resolves_one_shared_source_volume(monkeypatch, tmp_path) -
     rc.deploy(poll_interval=0, ready_timeout=10)
 
     assert len(resolutions) == 1
-    assert resolutions[0]["volume_name"] == "arithmetic"
+    assert resolutions[0]["image"] is image
     assert client.methods.count("ensure_external_function") == 2
 
 

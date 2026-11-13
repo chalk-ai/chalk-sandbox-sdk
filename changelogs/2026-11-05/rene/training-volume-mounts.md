@@ -1,0 +1,1 @@
+- Training functions accept `volumes=` using the same volume normalization as sandboxes and scaling groups, including mutable ref mounts for live policy weights. User volumes are mounted alongside uploaded training source files.

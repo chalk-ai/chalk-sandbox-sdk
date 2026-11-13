@@ -21,7 +21,7 @@ echo "--- :python: Bootstrap toolchain"
 source .buildkite/install-uv.sh
 
 echo "--- :package: Sync locked dependencies"
-uv sync --locked --all-extras --reinstall-package chalkcompute
+uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
 echo "--- :python: Install chalkcompute-benchmark"
 CHALKCOMPUTE_BENCHMARK_DIR="$(mktemp -d)"

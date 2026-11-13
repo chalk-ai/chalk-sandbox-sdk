@@ -52,6 +52,7 @@ from chalkcompute._connect import (
 )
 from chalkcompute._containerspec import (
     ComputeClass,
+    Runtime,
     ContainerSpec,
     NetworkPolicy,
     ResourceDetector,
@@ -84,7 +85,7 @@ from chalkcompute._chalk_identity import (
     OIDCTokenFile,
     split_oidc_token_files,
 )
-from chalkcompute._naming import validate_env
+from chalkcompute._naming import stdin_bytes, validate_env, validate_exec_command
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -528,8 +529,7 @@ class ExecProcess:
         data
             Bytes or string to write to stdin. Strings are UTF-8 encoded.
         """
-        if isinstance(data, str):
-            data = data.encode("utf-8")
+        data = stdin_bytes("write_stdin", data)
         self._request_queue.put(
             process_pb.OpenSessionRequest(
                 command=Oneof("stdin_data", process_pb.StdinData(data=data))
@@ -797,6 +797,7 @@ class Sandbox:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        runtime: Runtime | None = None,
         execution_target: ExecutionBackend | None = None,
         resource_detectors: Sequence[ResourceDetector] | None = None,
         host_pool_id: str | None = None,
@@ -853,6 +854,8 @@ class Sandbox:
             :class:`NetworkPolicy` type accepted by :class:`Container`.
         compute_class
             Optional :class:`ComputeClass` (``K8S`` or ``HOST``).
+        runtime
+            Runtime for host sandboxes. Not supported for Kubernetes workloads.
         execution_target
             Optional :class:`ExecutionBackend`; defaults to the environment cluster.
         resource_detectors
@@ -1001,6 +1004,7 @@ class Sandbox:
         self._security_policy: ContainerSecurityPolicy | None = None
         self._network_policy: NetworkPolicy | None = None
         self._compute_class: ComputeClass | None = None
+        self._runtime: Runtime | None = None
         self._execution_target: ExecutionBackend | None = None
         self._resource_detectors: tuple[ResourceDetector, ...] = ()
         self._host_pool_id: str | None = None
@@ -1029,6 +1033,7 @@ class Sandbox:
                 or security_policy is not None
                 or network_policy is not None
                 or compute_class is not None
+                or runtime is not None
                 or execution_target is not None
                 or resource_detectors is not None
                 or host_pool_id is not None
@@ -1074,6 +1079,7 @@ class Sandbox:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            runtime=runtime,
             execution_target=execution_target,
             resource_detectors=resource_detectors,
             tags=tags,
@@ -1099,6 +1105,7 @@ class Sandbox:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._runtime = runtime
         self._execution_target = execution_target
         self._resource_detectors = tuple(resource_detectors or ())
         self._host_pool_id = host_pool_id
@@ -1651,6 +1658,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
+        validate_exec_command("Sandbox.exec", command, args)
         _set_sandbox_span_id(self._id)
         sandbox_id = self._require_started()
         validate_env(env)
@@ -1718,16 +1726,21 @@ class Sandbox:
             Events for process start, stdout/stderr output, process exit,
             and errors.
         """
-        self._require_started()
-        process = self.exec_start(
-            command,
-            *args,
-            timeout_secs=timeout_secs,
-            workdir=workdir,
-            env=env,
-        )
-        process.close_stdin()
-        yield from process.output()
+        validate_exec_command("Sandbox.exec_stream", command, args)
+        self._require_session()
+
+        def events() -> Iterator[ExecEvent]:
+            process = self.exec_start(
+                command,
+                *args,
+                timeout_secs=timeout_secs,
+                workdir=workdir,
+                env=env,
+            )
+            process.close_stdin()
+            yield from process.output()
+
+        return events()
 
     def exec_start(
         self,
@@ -1759,6 +1772,7 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
+        validate_exec_command("Sandbox.exec_start", command, args)
         sandbox_id = self._require_session()
         client = self._require_client()
         init = process_pb.NewProcess(
@@ -2220,6 +2234,7 @@ class SandboxClient:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        runtime: Runtime | None = None,
         execution_target: ExecutionBackend | None = None,
         resource_detectors: Sequence[ResourceDetector] | None = None,
         host_pool_id: str | None = None,
@@ -2321,6 +2336,7 @@ class SandboxClient:
                 security_policy=security_policy,
                 network_policy=network_policy,
                 compute_class=compute_class,
+                runtime=runtime,
                 execution_target=execution_target,
                 resource_detectors=resource_detectors,
                 host_pool_id=host_pool_id,
@@ -2400,6 +2416,7 @@ class SandboxClient:
             security_policy=sandbox._security_policy,
             network_policy=network_policy,
             compute_class=sandbox._compute_class,
+            runtime=sandbox._runtime,
             execution_target=sandbox._execution_target,
             resource_detectors=sandbox._resource_detectors,
             host_pool_id=sandbox._host_pool_id,

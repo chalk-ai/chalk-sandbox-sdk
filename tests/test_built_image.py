@@ -110,14 +110,15 @@ class Worker:
 
 
 @pytest.mark.parametrize("size_limit", [None, "64Mi"])
-def test_round_trip_without_services(size_limit):
+@pytest.mark.parametrize(
+    "volume_type", [VolumeMountType.EMPTY_DIR, VolumeMountType.SHARED_MEMORY]
+)
+def test_round_trip_without_services(size_limit, volume_type):
     legacy = built_image("engine:1", (VolumeMount("assets", "/assets", 7),))
     assert json.loads(legacy.to_json())["volumes"] == [
         {"name": "assets", "mount_path": "/assets", "version_id": 7}
     ]
-    scratch = VolumeMount(
-        "scratch", "/tmp", type=VolumeMountType.EMPTY_DIR, size_limit=size_limit
-    )
+    scratch = VolumeMount("scratch", "/tmp", type=volume_type, size_limit=size_limit)
     spec = Image._from_built("engine:1", [*legacy.volumes, scratch])
     assert Image.from_json(spec.to_json()).to_json() == spec.to_json()
     assert Sandbox(image=Image.from_json(spec.to_json()))._referenced_volumes == list(
@@ -146,6 +147,16 @@ def test_round_trip_without_services(size_limit):
         {"volumes": [{"name": "assets", "mount_path": "/assets", "version_id": None}]},
         {"volumes": [{"name": "assets", "mount_path": "/assets", "version_id": -1}]},
         {"volumes": [{"name": "assets", "mount_path": "assets", "version_id": 7}]},
+        {
+            "volumes": [
+                {
+                    "name": "shm",
+                    "mount_path": "/dev/shm",
+                    "type": "shared_memory",
+                    "version_id": 7,
+                }
+            ]
+        },
     ],
 )
 def test_invalid_serialized_spec(change):
@@ -521,41 +532,107 @@ def test_build_extended_image_preserves_existing_and_nested_content(
 @pytest.mark.parametrize("mount_path", ["/app", "/assets", "/app/data", "/app/tests"])
 def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
     from pathlib import Path
+    from protobuf import Oneof
     from chalkcompute import _function_deployment as deployment
+    from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as pb
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume_pb
     from tests.test_function_deployment import Client, complete
 
     monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", "0")
     image = built_image("engine:1", (VolumeMount("content", mount_path, 7),))
     resource = factory(image=image, env={"PYTHONPATH": "/custom"})
-    client = Client([complete()])
+    target = volume_pb.VolumeRef(name="server-owned", volume_id="env/immutable")
+
+    def responses():
+        yield pb.EnsureExternalFunctionResponse(
+            result=Oneof(
+                "missing_inputs",
+                pb.MissingFunctionDeploymentInputs(
+                    tree_digests=[
+                        s.tree_digest for s in client.requests[-1].spec.sources
+                    ]
+                ),
+            )
+        )
+        yield pb.EnsureExternalFunctionResponse(
+            result=Oneof(
+                "missing_inputs",
+                pb.MissingFunctionDeploymentInputs(
+                    file_digests=sorted(
+                        {
+                            f.content_digest
+                            for m in client.requests[-1].supplied_inputs.manifests
+                            for f in m.files
+                        }
+                    ),
+                    upload_volume=target,
+                ),
+            )
+        )
+        yield complete()
+
+    client = Client(responses())
     client._env_id = None
     resource._client = client
-    uploaded = {}
+    sources = {}
+    source_mount_paths = set()
+    prepare = deployment._source_manifests
 
-    def upload(image, **kwargs):
-        uploaded.update(
+    def prepare_sources(image):
+        source_mount_paths.update(image.lazy_local_files_grouped_for_volume_mounts())
+        sources.update(
             {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
         )
-        return [
-            VolumeMount("generated", path, 9)
-            for path in image.lazy_local_files_grouped_for_volume_mounts()
-        ]
+        return prepare(image)
+
+    def stage(volume, groups):
+        assert volume == target.name
+        return volume_pb.CommitIntent(
+            deltas=Oneof(
+                "path_deltas",
+                volume_pb.PathDeltaList(
+                    upserts=[
+                        volume_pb.PathFileDelta(path=digest)
+                        for prepared, digests in groups.items()
+                        for digest in digests
+                        if len(prepared.select_by_digest([digest])) == 1
+                    ]
+                ),
+            )
+        )
 
     driver = MagicMock()
-    driver._resolve_lazy_files.side_effect = upload
+    driver._stage_source_inputs.side_effect = stage
+    monkeypatch.setattr(deployment, "_source_manifests", prepare_sources)
     monkeypatch.setattr(deployment.VolumeClient, "from_connect", lambda client: driver)
     resource.deploy()
-    container = client.requests[0].spec.version_spec.spec.container_spec
+    request = client.requests[0]
+    container = request.spec.version_spec.spec.container_spec
     mounts = {m.mount_path: (m.name, m.version_id) for m in container.volumes}
     relocated = mount_path == "/app" or (
         mount_path == "/app/tests" and isinstance(resource, RemoteFunction)
     )
     root = "/__chalk_source" if relocated else "/app"
-    assert mounts[mount_path] == ("content", 7)
-    assert mounts[root] == ("generated", 9)
+    assert mounts == {mount_path: ("content", 7)}
+    assert {s.mount_path for s in request.spec.sources} == source_mount_paths
+    assert root in source_mount_paths
+    assert all(
+        path == root or path.startswith(root + "/") for path in source_mount_paths
+    )
+    manifests = client.requests[1].supplied_inputs.manifests
+    assert {m.tree_digest for m in manifests} == {
+        s.tree_digest for s in request.spec.sources
+    }
+    supplied = client.requests[2].supplied_inputs
+    assert supplied.upload_volume == target
+    assert {f.path for f in supplied.files} == {
+        f.content_digest for m in manifests for f in m.files
+    }
+    driver._stage_source_inputs.assert_called_once()
+    driver._resolve_lazy_files.assert_not_called()
     assert container.env_vars["PYTHONPATH"] == (
         "/__chalk_source:/app:/custom" if relocated else "/custom"
     )
-    assert uploaded and all(path.startswith(root + "/") for path in uploaded)
-    for path, source in uploaded.items():
+    assert sources and all(path.startswith(root + "/") for path in sources)
+    for path, source in sources.items():
         compile(source, path, "exec")

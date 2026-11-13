@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import ArchiveEvaluationRequest, ArchiveEvaluationResponse, ArchiveEvaluationRunRequest, ArchiveEvaluationRunResponse, CreateEvaluationRequest, CreateEvaluationResponse, CreateEvaluationRunRequest, CreateEvaluationRunResponse, CreateEvaluationSuiteRequest, CreateEvaluationSuiteResponse, CreateOnlineEvaluatorRequest, CreateOnlineEvaluatorResponse, DeleteOnlineEvaluatorRequest, DeleteOnlineEvaluatorResponse, GetEvaluationRequest, GetEvaluationResponse, GetEvaluationRunRequest, GetEvaluationRunResponse, GetOnlineEvaluatorRequest, GetOnlineEvaluatorResponse, ListEvaluationRunsRequest, ListEvaluationRunsResponse, ListEvaluationSuitesRequest, ListEvaluationSuitesResponse, ListEvaluationsRequest, ListEvaluationsResponse, ListOnlineEvaluatorsRequest, ListOnlineEvaluatorsResponse, MoveEvaluationRunRequest, MoveEvaluationRunResponse, RescoreEvaluationRunRequest, RescoreEvaluationRunResponse, SetEvaluationRunBaselineRequest, SetEvaluationRunBaselineResponse, UnarchiveEvaluationRequest, UnarchiveEvaluationResponse, UpdateOnlineEvaluatorRequest, UpdateOnlineEvaluatorResponse
+from .service_pb import ArchiveEvaluationRequest, ArchiveEvaluationResponse, ArchiveEvaluationRunRequest, ArchiveEvaluationRunResponse, ArchiveEvaluationSuiteRequest, ArchiveEvaluationSuiteResponse, CreateEvaluationRequest, CreateEvaluationResponse, CreateEvaluationRunRequest, CreateEvaluationRunResponse, CreateEvaluationSuiteRequest, CreateEvaluationSuiteResponse, CreateOnlineEvaluatorRequest, CreateOnlineEvaluatorResponse, DeleteOnlineEvaluatorRequest, DeleteOnlineEvaluatorResponse, GetEvaluationRequest, GetEvaluationResponse, GetEvaluationRunRequest, GetEvaluationRunResponse, GetOnlineEvaluatorRequest, GetOnlineEvaluatorResponse, ListEvaluationRunsRequest, ListEvaluationRunsResponse, ListEvaluationSuitesRequest, ListEvaluationSuitesResponse, ListEvaluationsRequest, ListEvaluationsResponse, ListOnlineEvaluatorsRequest, ListOnlineEvaluatorsResponse, MoveEvaluationRunRequest, MoveEvaluationRunResponse, RescoreEvaluationRunRequest, RescoreEvaluationRunResponse, SetEvaluationRunBaselineRequest, SetEvaluationRunBaselineResponse, UnarchiveEvaluationRequest, UnarchiveEvaluationResponse, UpdateEvaluationSuiteRequest, UpdateEvaluationSuiteResponse, UpdateOnlineEvaluatorRequest, UpdateOnlineEvaluatorResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -37,6 +37,44 @@ class EvaluationServiceClientSync(ConnectClientSync):
                 input=CreateEvaluationSuiteRequest,
                 output=CreateEvaluationSuiteResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def update_evaluation_suite(
+        self,
+        request: UpdateEvaluationSuiteRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UpdateEvaluationSuiteResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UpdateEvaluationSuite",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=UpdateEvaluationSuiteRequest,
+                output=UpdateEvaluationSuiteResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def archive_evaluation_suite(
+        self,
+        request: ArchiveEvaluationSuiteRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ArchiveEvaluationSuiteResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ArchiveEvaluationSuite",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=ArchiveEvaluationSuiteRequest,
+                output=ArchiveEvaluationSuiteResponse,
+                idempotency_level=IdempotencyLevel.IDEMPOTENT,
             ),
             headers=headers,
             timeout_ms=timeout_ms,

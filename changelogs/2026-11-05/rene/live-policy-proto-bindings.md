@@ -1,0 +1,1 @@
+- Regenerate SDK bindings from merged weight stream and serving runtime contracts, including typed model/volume references, publication digests, model deployment stream associations and replica applied versions, and immutable model volume snapshots.

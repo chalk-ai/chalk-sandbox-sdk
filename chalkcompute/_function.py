@@ -3037,12 +3037,8 @@ class RemoteFunction:
             self._volumes = deploy_volumes
             self._volume_driver = None
             deploy_volumes = resolve_function_volumes(
-                self._client,
                 image=deploy_image,
-                volume_name=registered_name,
                 referenced=deploy_volumes,
-                poll_interval=poll_interval,
-                timeout=build_timeout,
             )
 
             # 3. Register function version

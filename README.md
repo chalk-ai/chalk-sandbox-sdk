@@ -41,7 +41,7 @@ cancellation-induced generator restart or output replay.
 
 Cancellation requires a Stream-backed queue whose consumer uses the DP API
 `AcquireWork` path; legacy Redis List queues do not support it. The SDK's pinned
-`chalk-remote-call-python==1.10.13` already supports that path. Generated
+`chalk-remote-call-python==1.10.14` already supports that path. Generated
 function/class images advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`; set it to
 `false` in the deployment environment to opt out. Custom images must advertise
 support only when their consumers use the DP API acquisition path.
