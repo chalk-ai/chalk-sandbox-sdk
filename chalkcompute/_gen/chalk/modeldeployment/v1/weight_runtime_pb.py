@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from .service_pb import ModelScalingGroupWeightTarget
 
 
-_GetModelWeightRuntimeTargetRequestFields: TypeAlias = Literal["expected_revision_id"]
+_GetModelWeightRuntimeTargetRequestFields: TypeAlias = Literal["expected_revision_id", "manifest_versions"]
 
 class GetModelWeightRuntimeTargetRequest(Message[_GetModelWeightRuntimeTargetRequestFields]):
     """
@@ -37,9 +37,17 @@ class GetModelWeightRuntimeTargetRequest(Message[_GetModelWeightRuntimeTargetReq
             ```proto
             string expected_revision_id = 1;
             ```
+        manifest_versions:
+            At most 128 distinct logical versions in the selected stream, including the
+            selected target. Empty requests resolve only the selected target manifest.
+            These identities authenticate replay files without granting volume access.
+
+            ```proto
+            repeated uint64 manifest_versions = 2 [packed = true];
+            ```
     """
 
-    __slots__ = ("expected_revision_id",)
+    __slots__ = ("expected_revision_id", "manifest_versions")
 
     if TYPE_CHECKING:
 
@@ -47,12 +55,14 @@ class GetModelWeightRuntimeTargetRequest(Message[_GetModelWeightRuntimeTargetReq
             self,
             *,
             expected_revision_id: str = "",
+            manifest_versions: list[int] | None = None,
         ) -> None:
             pass
 
         expected_revision_id: str
+        manifest_versions: list[int]
 
-_GetModelWeightRuntimeTargetResponseFields: TypeAlias = Literal["target", "lease_expires_at"]
+_GetModelWeightRuntimeTargetResponseFields: TypeAlias = Literal["target", "lease_expires_at", "manifest_identities"]
 
 class GetModelWeightRuntimeTargetResponse(Message[_GetModelWeightRuntimeTargetResponseFields]):
     """
@@ -74,9 +84,16 @@ class GetModelWeightRuntimeTargetResponse(Message[_GetModelWeightRuntimeTargetRe
             ```proto
             optional google.protobuf.Timestamp lease_expires_at = 2;
             ```
+        manifest_identities:
+            Exact immutable identities for the requested versions. A caller must verify
+            this response still names its planned target before trusting replay files.
+
+            ```proto
+            repeated chalk.modeldeployment.v1.ModelWeightRuntimeManifestIdentity manifest_identities = 3;
+            ```
     """
 
-    __slots__ = ("target", "lease_expires_at")
+    __slots__ = ("target", "lease_expires_at", "manifest_identities")
 
     if TYPE_CHECKING:
 
@@ -85,15 +102,51 @@ class GetModelWeightRuntimeTargetResponse(Message[_GetModelWeightRuntimeTargetRe
             *,
             target: ModelScalingGroupWeightTarget | None = None,
             lease_expires_at: Timestamp | None = None,
+            manifest_identities: list[ModelWeightRuntimeManifestIdentity] | None = None,
         ) -> None:
             pass
 
         target: ModelScalingGroupWeightTarget | None
         lease_expires_at: Timestamp | None
+        manifest_identities: list[ModelWeightRuntimeManifestIdentity]
+
+_ModelWeightRuntimeManifestIdentityFields: TypeAlias = Literal["version", "manifest_sha256"]
+
+class ModelWeightRuntimeManifestIdentity(Message[_ModelWeightRuntimeManifestIdentityFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ModelWeightRuntimeManifestIdentity
+    ```
+
+    Attributes:
+        version:
+            ```proto
+            uint64 version = 1;
+            ```
+        manifest_sha256:
+            ```proto
+            string manifest_sha256 = 2;
+            ```
+    """
+
+    __slots__ = ("version", "manifest_sha256")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            version: int = 0,
+            manifest_sha256: str = "",
+        ) -> None:
+            pass
+
+        version: int
+        manifest_sha256: str
 
 
 _DESC = file_desc(
-    b'\n-chalk/modeldeployment/v1/weight_runtime.proto\x12\x18chalk.modeldeployment.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a&chalk/modeldeployment/v1/service.proto\x1a\x1fgoogle/protobuf/timestamp.proto"V\n"GetModelWeightRuntimeTargetRequest\x120\n\x14expected_revision_id\x18\x01 \x01(\tR\x12expectedRevisionId"\xbc\x01\n#GetModelWeightRuntimeTargetResponse\x12O\n\x06target\x18\x01 \x01(\x0b27.chalk.modeldeployment.v1.ModelScalingGroupWeightTargetR\x06target\x12D\n\x10lease_expires_at\x18\x02 \x01(\x0b2\x1a.google.protobuf.TimestampR\x0eleaseExpiresAt2\xbd\x01\n\x19ModelWeightRuntimeService\x12\x9f\x01\n\x1bGetModelWeightRuntimeTarget\x12<.chalk.modeldeployment.v1.GetModelWeightRuntimeTargetRequest\x1a=.chalk.modeldeployment.v1.GetModelWeightRuntimeTargetResponse"\x03\x80}\x02B\xda\x01\n\x1ccom.chalk.modeldeployment.v1B\x12WeightRuntimeProtoP\x01Z$modeldeployment/v1;modeldeploymentv1\xa2\x02\x03CMX\xaa\x02\x18Chalk.Modeldeployment.V1\xca\x02\x18Chalk\\Modeldeployment\\V1\xe2\x02$Chalk\\Modeldeployment\\V1\\GPBMetadata\xea\x02\x1aChalk::Modeldeployment::V1b\x06proto3',
+    b'\n-chalk/modeldeployment/v1/weight_runtime.proto\x12\x18chalk.modeldeployment.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a&chalk/modeldeployment/v1/service.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x83\x01\n"GetModelWeightRuntimeTargetRequest\x120\n\x14expected_revision_id\x18\x01 \x01(\tR\x12expectedRevisionId\x12+\n\x11manifest_versions\x18\x02 \x03(\x04R\x10manifestVersions"\xab\x02\n#GetModelWeightRuntimeTargetResponse\x12O\n\x06target\x18\x01 \x01(\x0b27.chalk.modeldeployment.v1.ModelScalingGroupWeightTargetR\x06target\x12D\n\x10lease_expires_at\x18\x02 \x01(\x0b2\x1a.google.protobuf.TimestampR\x0eleaseExpiresAt\x12m\n\x13manifest_identities\x18\x03 \x03(\x0b2<.chalk.modeldeployment.v1.ModelWeightRuntimeManifestIdentityR\x12manifestIdentities"g\n"ModelWeightRuntimeManifestIdentity\x12\x18\n\x07version\x18\x01 \x01(\x04R\x07version\x12\'\n\x0fmanifest_sha256\x18\x02 \x01(\tR\x0emanifestSha2562\xbd\x01\n\x19ModelWeightRuntimeService\x12\x9f\x01\n\x1bGetModelWeightRuntimeTarget\x12<.chalk.modeldeployment.v1.GetModelWeightRuntimeTargetRequest\x1a=.chalk.modeldeployment.v1.GetModelWeightRuntimeTargetResponse"\x03\x80}\x02B\xda\x01\n\x1ccom.chalk.modeldeployment.v1B\x12WeightRuntimeProtoP\x01Z$modeldeployment/v1;modeldeploymentv1\xa2\x02\x03CMX\xaa\x02\x18Chalk.Modeldeployment.V1\xca\x02\x18Chalk\\Modeldeployment\\V1\xe2\x02$Chalk\\Modeldeployment\\V1\\GPBMetadata\xea\x02\x1aChalk::Modeldeployment::V1b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),
@@ -102,6 +155,7 @@ _DESC = file_desc(
     {
         "GetModelWeightRuntimeTargetRequest": GetModelWeightRuntimeTargetRequest,
         "GetModelWeightRuntimeTargetResponse": GetModelWeightRuntimeTargetResponse,
+        "ModelWeightRuntimeManifestIdentity": ModelWeightRuntimeManifestIdentity,
     },
 )
 
