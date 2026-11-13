@@ -1763,6 +1763,34 @@ class VolumeClient:
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
 
+    def _resolve_prepared(
+        self,
+        name: str,
+        prepared: PreparedFiles,
+        *,
+        timeout: float,
+        poll_interval: float,
+    ) -> int:
+        """Upload missing objects and commit the tree under its commit ID."""
+        self._raise_if_closed()
+        try:
+            version = self._inner.resolve_prepared_files(
+                name,
+                "source_code",
+                prepared,
+                {
+                    "upload": _default_upload_config(),
+                    "timeout_ms": max(1, int(timeout * 1_000)),
+                    "poll_interval_ms": max(1, int(poll_interval * 1_000)),
+                },
+            )
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, name)
+        version_id = version.get("version_id")
+        if not isinstance(version_id, int):
+            raise VolumeError("Source file resolution returned no version")
+        return version_id
+
     @traced("chalkcompute.volume.resolve_lazy_files")
     def _resolve_lazy_files(
         self,
@@ -1792,23 +1820,9 @@ class VolumeClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise VolumeError("Source file resolution timed out")
-            self._raise_if_closed()
-            try:
-                version = self._inner.resolve_prepared_files(
-                    name,
-                    "source_code",
-                    prepared,
-                    {
-                        "upload": _default_upload_config(),
-                        "timeout_ms": max(1, int(remaining * 1_000)),
-                        "poll_interval_ms": max(1, int(poll_interval * 1_000)),
-                    },
-                )
-            except _native_error_types() as exc:
-                _raise_volume_error(exc, name)
-            version_id = version.get("version_id")
-            if not isinstance(version_id, int):
-                raise VolumeError("Source file resolution returned no version")
+            version_id = self._resolve_prepared(
+                name, prepared, timeout=remaining, poll_interval=poll_interval
+            )
             mounts.append(
                 VolumeMount(
                     name=name,

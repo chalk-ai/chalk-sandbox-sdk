@@ -75,17 +75,36 @@ def resolve_function_volumes(
     return list(referenced)
 
 
-def _source_manifests(
+def _source_trees(
     image: Image,
+) -> tuple[list[service_pb.FunctionSourceMount], dict[str, PreparedFiles]]:
+    """Identify each source root by the commit ID of its file tree."""
+    mounts = []
+    prepared_by_digest = {}
+    for mount_path, prepared in _prepare_source_files(image):
+        prepared_by_digest[prepared.commit_id] = prepared
+        mounts.append(
+            service_pb.FunctionSourceMount(
+                tree_digest=prepared.commit_id, mount_path=mount_path
+            )
+        )
+    return mounts, prepared_by_digest
+
+
+def _source_manifests(
+    mounts: list[service_pb.FunctionSourceMount],
+    prepared_by_digest: dict[str, PreparedFiles],
 ) -> tuple[
     list[service_pb.FunctionSourceMount],
     dict[str, service_pb.FunctionSourceManifest],
     dict[str, PreparedFiles],
 ]:
-    mounts = []
+    """Describe the same sources for servers that only accept manifests."""
+    manifest_mounts = []
     manifests = {}
-    prepared_by_digest = {}
-    for mount_path, prepared in _prepare_source_files(image):
+    prepared_by_content = {}
+    for mount in mounts:
+        prepared = prepared_by_digest[mount.tree_digest]
         data = prepared.source_manifest()
         manifest = service_pb.FunctionSourceManifest(
             tree_digest=data["tree_digest"],
@@ -93,13 +112,38 @@ def _source_manifests(
         )
         manifests[manifest.tree_digest] = manifest
         for file in manifest.files:
-            prepared_by_digest[file.content_digest] = prepared
-        mounts.append(
+            prepared_by_content[file.content_digest] = prepared
+        manifest_mounts.append(
             service_pb.FunctionSourceMount(
-                tree_digest=manifest.tree_digest, mount_path=mount_path
+                tree_digest=manifest.tree_digest, mount_path=mount.mount_path
             )
         )
-    return mounts, manifests, prepared_by_digest
+    return manifest_mounts, manifests, prepared_by_content
+
+
+def _manifest_inputs(
+    volume_client: VolumeClient,
+    missing: service_pb.MissingFunctionDeploymentInputs,
+    manifests: dict[str, service_pb.FunctionSourceManifest],
+    prepared_by_content: dict[str, PreparedFiles],
+) -> service_pb.FunctionDeploymentInputs:
+    """Supply the manifests and digest-staged files an old server asked for."""
+    supplied = service_pb.FunctionDeploymentInputs(
+        manifests=[manifests[digest] for digest in missing.tree_digests],
+    )
+    if missing.file_digests:
+        if missing.upload_volume is None:
+            raise ConnectError("Source upload response omitted its volume")
+        groups: dict[PreparedFiles, list[str]] = {}
+        for digest in missing.file_digests:
+            groups.setdefault(prepared_by_content[digest], []).append(digest)
+        intent = volume_client._stage_source_inputs(missing.upload_volume.name, groups)
+        if intent.deltas is None or intent.deltas.field != "path_deltas":
+            raise ConnectError("Source upload did not produce file deltas")
+        supplied.files = intent.deltas.value.upserts
+        supplied.uploaded_objects = intent.uploaded_object_references
+        supplied.upload_volume = missing.upload_volume
+    return supplied
 
 
 def ensure_external_function(
@@ -116,16 +160,19 @@ def ensure_external_function(
 ) -> service_pb.EnsuredExternalFunction:
     stub = client.stub(service_connect.ExternalFunctionCatalogServiceClientSync)
     deadline = time.monotonic() + timeout
-    sources, manifests, prepared_by_digest = _source_manifests(image)
+    sources, prepared_by_digest = _source_trees(image)
+    manifests: dict[str, service_pb.FunctionSourceManifest] | None = None
+    prepared_by_content: dict[str, PreparedFiles] = {}
+    spec = service_pb.DesiredFunctionSpec(
+        version_spec=version_spec,
+        image=image.to_proto(),
+        local_secrets=local_secrets,
+        sources=sources,
+    )
     request = service_pb.EnsureExternalFunctionRequest(
         request_id=str(uuid.uuid4()),
         function_name=function_name,
-        spec=service_pb.DesiredFunctionSpec(
-            version_spec=version_spec,
-            image=image.to_proto(),
-            local_secrets=local_secrets,
-            sources=sources,
-        ),
+        spec=spec,
         force_new_version=force_new_version,
     )
     while time.monotonic() < deadline:
@@ -148,35 +195,43 @@ def ensure_external_function(
             return response.result.value
         if response.result.field == "missing_inputs":
             missing = response.result.value
-            supplied = service_pb.FunctionDeploymentInputs(
-                manifests=[manifests[digest] for digest in missing.tree_digests],
-            )
-            if missing.file_digests:
-                if missing.upload_volume is None:
-                    raise ConnectError("Source upload response omitted its volume")
-                groups: dict[PreparedFiles, list[str]] = {}
-                for digest in missing.file_digests:
-                    groups.setdefault(prepared_by_digest[digest], []).append(digest)
-                try:
-                    volume_client = VolumeClient.from_connect(client)
-                    intent = volume_client._stage_source_inputs(
-                        missing.upload_volume.name, groups
+            if manifests is None and missing.upload_volume is None:
+                # Old servers need source_manifest and select_by_digest, so keep the chalk_volume_client pin before chalk-private#52666 until this fallback is removed.
+                manifest_sources, manifests, prepared_by_content = _source_manifests(
+                    sources, prepared_by_digest
+                )
+                spec.sources = manifest_sources
+                # The server rejects a changed spec under the same request ID.
+                request.request_id = str(uuid.uuid4())
+                request.supplied_inputs = None
+                continue
+            volume_client = VolumeClient.from_connect(client)
+            try:
+                if manifests is not None:
+                    request.supplied_inputs = _manifest_inputs(
+                        volume_client, missing, manifests, prepared_by_content
                     )
-                except VolumeError as exc:
-                    if exc.code not in (
-                        "unavailable",
-                        "deadline_exceeded",
-                        "resource_exhausted",
-                    ):
-                        raise
-                    time.sleep(poll_interval)
                     continue
-                if intent.deltas is None or intent.deltas.field != "path_deltas":
-                    raise ConnectError("Source upload did not produce file deltas")
-                supplied.files = intent.deltas.value.upserts
-                supplied.uploaded_objects = intent.uploaded_object_references
-                supplied.upload_volume = missing.upload_volume
-            request.supplied_inputs = supplied
+                upload_volume = missing.upload_volume
+                if upload_volume is None:
+                    raise ConnectError("Source upload response omitted its volume")
+                # The server allocates the volume, and the tree is committed to it
+                # under its digest. The next ensure call finds that commit.
+                for digest in missing.tree_digests:
+                    volume_client._resolve_prepared(
+                        upload_volume.name,
+                        prepared_by_digest[digest],
+                        timeout=max(0.1, deadline - time.monotonic()),
+                        poll_interval=poll_interval,
+                    )
+            except VolumeError as exc:
+                if exc.code not in (
+                    "unavailable",
+                    "deadline_exceeded",
+                    "resource_exhausted",
+                ):
+                    raise
+                time.sleep(poll_interval)
             continue
         if response.result.field == "pending_image_build":
             try:

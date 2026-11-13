@@ -1,0 +1,2 @@
+- Commit function source trees directly to the server-allocated volume with the native client instead of sending manifests and digest-staged files
+- Fall back to the manifest upload flow when the server does not return an upload volume for a missing source tree
