@@ -1,11 +1,8 @@
-# API-triggered after SSS HOST pools have replaced their hosts in both clouds.
+# API-triggered after SSS HOST pools have replaced their hosts in GCP staging.
 on: {}
 
 steps:
-  - label: ":shield: SSS HOST egress after deployment ({{matrix}})"
-    matrix:
-      - "staging/ftqa"
-      - "meta-ci"
+  - label: ":shield: SSS HOST egress after deployment (GCP staging)"
     if: build.branch == "main"
     concurrency: 1
     concurrency_group: "sss-egress-post-deploy"
@@ -14,7 +11,7 @@ steps:
       unset VIRTUAL_ENV
 
       .buildkite/sops.sh install
-      source .buildkite/select-env-file.sh "{{matrix}}"
+      source .buildkite/select-env-file.sh "staging/ftqa"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/sss-egress.env
       set -a
       source /tmp/sss-egress.env

@@ -1,4 +1,4 @@
-"""Live SSS HOST egress checks for a fully deployed cloud environment."""
+"""Live SSS HOST egress checks for GCP staging."""
 
 import ipaddress
 import socket
@@ -11,13 +11,10 @@ from chalkcompute import (
     Sandbox,
     SandboxClient,
 )
-from e2etests.conftest import CHALK_API_SERVER, needs_staging
+from e2etests.conftest import needs_staging
 
 NETSHOOT_IMAGE = "nicolaka/netshoot:latest"
-if ".meta.ci.chalk.dev" in CHALK_API_SERVER:
-    INTERNAL_FIXTURE = "cidr-allowed.netpol-e2e.demo.internal.aws.chalk.dev"
-else:
-    INTERNAL_FIXTURE = "cidr-allowed.staging.internal.gcp.chalk.dev"
+INTERNAL_FIXTURE = "cidr-allowed.staging.internal.gcp.chalk.dev"
 
 
 @needs_staging

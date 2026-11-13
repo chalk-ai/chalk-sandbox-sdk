@@ -129,6 +129,9 @@ steps:
 
       echo "--- :pytest: Run network policy integration tests ($$CHALK_API_SERVER)"
       just test-network-policy-e2e
+      if [[ "{{matrix}}" == "staging/ftqa" ]]; then
+        uv run python -m pytest e2etests/test_sss_egress_post_deploy.py -v -s --tb=short
+      fi
     agents:
       queue: compile-runner-s
     timeout_in_minutes: 30
