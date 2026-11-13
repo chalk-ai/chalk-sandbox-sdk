@@ -172,3 +172,8 @@ when the request's exact target fingerprint matches the installed resident
 identity and its lease is live. Generic replica health/counts describe container
 lifecycle and do not by themselves establish an observed applied version or
 registry convergence.
+
+Handlers must finish the engine operation, including consuming or closing its
+response stream, before returning. Detached background inference outliving a
+handler is outside the drain contract; the native permit follows handler and
+generator execution, rather than arbitrary user-created tasks.
