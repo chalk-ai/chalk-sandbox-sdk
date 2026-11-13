@@ -39,7 +39,6 @@ import json
 import linecache
 import logging
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -133,6 +132,7 @@ from chalkcompute._rpc import (
     RPC_RETRY_INITIAL_BACKOFF_SECONDS,
     rpc_interceptors,
 )
+from chalkcompute._backoff import Backoff
 from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
@@ -170,8 +170,8 @@ _DEFAULT_CALL_TIMEOUT: float | None = 60.0
 # An initial collection poll with an expired deadline still gets this long,
 # so collecting a result always observes the call at least once.
 _MIN_RESULT_POLL_TIMEOUT = 1.0
-# Without a result deadline, stop re-polling once the polling connection has
-# been unavailable for this long.
+# Without a result deadline, stop starting retries once the polling connection
+# has been unavailable for this long; an admitted poll keeps its call timeout.
 _POLL_UNAVAILABLE_TIMEOUT = 60.0
 # Cap on the jittered re-poll backoff while the polling connection is down.
 # It matches the native client's poll backoff cap, so an outage never polls
@@ -1164,22 +1164,29 @@ class FunctionCallHandle:
         """Poll once, re-polling the same cursor while the connection is down.
 
         Polling only reads results after the cursor, so a retry cannot
-        execute the call again. Retries stop at ``deadline``, or after
-        ``_POLL_UNAVAILABLE_TIMEOUT`` of unavailability without one. Each
-        retry is a single attempt after a fully jittered backoff, so handles
-        collected together do not retry in lockstep.
+        execute the call again. No retry starts after ``deadline``, or after
+        ``_POLL_UNAVAILABLE_TIMEOUT`` of unavailability without one. An
+        admitted poll uses its configured call timeout, bounded by an
+        explicit result deadline. Each retry is a single attempt after a
+        fully jittered backoff, so handles do not retry in lockstep.
         """
         poll_deadline = deadline
         if deadline is not None and time.monotonic() >= deadline:
             poll_deadline = time.monotonic() + _MIN_RESULT_POLL_TIMEOUT
+        retry_deadline = deadline
         last_unavailable_error: Exception | None = None
-        delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
+        backoff = Backoff(
+            RPC_RETRY_INITIAL_BACKOFF_SECONDS,
+            _POLL_UNAVAILABLE_MAX_BACKOFF,
+            jitter="full",
+            multiplier=RPC_RETRY_BACKOFF_MULTIPLIER,
+        )
         while True:
             self._raise_if_cancelled()
             if (
                 last_unavailable_error is not None
-                and poll_deadline is not None
-                and time.monotonic() >= poll_deadline
+                and retry_deadline is not None
+                and time.monotonic() >= retry_deadline
             ):
                 if deadline is not None:
                     raise self._timeout_error(
@@ -1193,27 +1200,19 @@ class FunctionCallHandle:
             except TimeoutError as exc:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise self._timeout_error(self._last_status) from exc
-                if (
-                    last_unavailable_error is not None
-                    and poll_deadline is not None
-                    and time.monotonic() >= poll_deadline
-                ):
-                    raise last_unavailable_error from exc
                 raise
             except Exception as exc:
                 if not _is_stale_remote_call_error(exc):
                     raise
                 last_unavailable_error = exc
                 now = time.monotonic()
-                if poll_deadline is None:
-                    poll_deadline = now + _POLL_UNAVAILABLE_TIMEOUT
-                if deadline is not None:
-                    poll_deadline = deadline
-                    if now >= deadline:
+                if retry_deadline is None:
+                    retry_deadline = now + _POLL_UNAVAILABLE_TIMEOUT
+                if now >= retry_deadline:
+                    if deadline is not None:
                         raise self._timeout_error(self._last_status) from exc
-                elif now >= poll_deadline:
                     raise
-                wait = min(random.uniform(0.0, delay), poll_deadline - now)
+                wait = backoff.next_wait(retry_deadline - now)
                 logger.debug(
                     "Polling call %s for %r failed; re-polling in %.1fs: %s",
                     self._call_id,
@@ -1222,9 +1221,6 @@ class FunctionCallHandle:
                     exc,
                 )
                 time.sleep(wait)
-                delay = min(
-                    delay * RPC_RETRY_BACKOFF_MULTIPLIER, _POLL_UNAVAILABLE_MAX_BACKOFF
-                )
 
     def _timeout_error(self, last_status: str) -> TimeoutError:
         return TimeoutError(
@@ -3986,7 +3982,7 @@ class RemoteFunction:
             timeout=timeout,
             # A control-plane status lookup after the deadline would extend
             # the result wait by another RPC's timeout.
-            enrich_timeout=False,
+            enrich_timeout=deadline is None,
             call=lambda: self._using_remote_call_client(
                 queue=True,
                 call=lambda client: client.poll_next(call_id, cursor, poll_count),

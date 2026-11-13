@@ -153,6 +153,21 @@ def test_retry_interceptor_gives_up_after_max_attempts(monkeypatch) -> None:
     assert bounds == [(0.8 * wait, 1.2 * wait) for wait in sleeps]
 
 
+def test_retry_interceptor_honors_the_multiplier_constant(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_rpc, "RPC_RETRY_BACKOFF_MULTIPLIER", 3.0)
+    _midpoint_jitter(monkeypatch)
+
+    def unavailable(request, ctx):
+        raise ConnectError(Code.UNAVAILABLE, "offline")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(unavailable, "req", _context())
+
+    assert sleeps == pytest.approx([0.1, 0.3, 0.9, 1.0])
+
+
 def test_retry_interceptor_does_not_retry_other_codes(monkeypatch) -> None:
     monkeypatch.setattr(_rpc.time, "sleep", lambda _: None)
     attempts = {"n": 0}

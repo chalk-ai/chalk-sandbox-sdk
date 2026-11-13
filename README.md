@@ -1365,13 +1365,16 @@ remain controlled by the queue's fixed reclaim interval.
 Terminal call failures are raised by `get()`, `stream()`, and `gather()` without
 submitting another invocation, even if the handler never started. When the
 polling connection drops, they refresh the client and re-poll the same call ID
-and cursor until the `timeout` passes, or for up to 60 seconds of continuous
-unavailability without one. Re-polls use jittered exponential backoff capped at
-5 seconds, so handles collected together do not retry in lockstep. The
-`timeout` also bounds each poll, so a hung poll cannot outlast it. The
-60-second fallback bounds both retry waits and polls. Poll timeouts return
-without a further status lookup. With `timeout=0`, collection still polls
-once with up to one second to observe an already finished call.
+and cursor until the `timeout` passes. Without a result timeout, no further retry
+starts after 60 seconds of continuous unavailability; a successful poll resets
+that budget. Re-polls use full-jitter exponential backoff capped at 5 seconds,
+so handles collected together do not retry in lockstep. Each poll uses the
+configured `call_timeout`, shortened to the remaining result timeout when set.
+An admitted poll can finish after the outage retry budget expires, and
+`call_timeout=None` allows it to wait indefinitely without a result timeout.
+Polls with a result deadline skip the diagnostic status lookup on timeout;
+standalone polls retain scaling-group diagnostics. With `timeout=0`, collection
+still polls once with up to one second to observe an already finished call.
 
 Retry-enabled generators buffer output to avoid repeating already emitted
 values. Retry filters (`retry_on`) and shared retry buckets (`key`) are not

@@ -134,6 +134,7 @@ class RetryInterceptor:
         backoff = Backoff(
             RPC_RETRY_INITIAL_BACKOFF_SECONDS,
             RPC_RETRY_MAX_BACKOFF_SECONDS,
+            multiplier=RPC_RETRY_BACKOFF_MULTIPLIER,
         )
         last_error: ConnectError | None = None
         for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):
