@@ -1,0 +1,2 @@
+- Run opt-in managed sparse model engines from `CHALK_MODEL_SERVING_CONFIG` behind exact native target admission and execution drain, exposing the owned loopback engine to handlers through reserved `CHALK_MODEL_ENGINE_URL`.
+- Verify snapshot-restored seed configuration and resident weights against the stream keyframe before accepting calls, and terminate owned engine workers on runtime failure or shutdown.
