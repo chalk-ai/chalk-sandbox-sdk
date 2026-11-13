@@ -20,7 +20,7 @@ from chalkcompute._weights_format import (
 )
 from chalkcompute.weights.serving.adapters.base import EngineAdapter
 from chalkcompute.weights.serving.adapters.sglang import validate_config
-from chalkcompute.weights.serving.managed_target import ManagedTargetProvider
+from chalkcompute.weights.serving.managed_target import TargetProvider
 from chalkcompute.weights.serving.syncer import (
     ApplyError,
     ApplyPlan,
@@ -142,7 +142,7 @@ class FullCheckpointSyncer(WeightSyncer):
         keyframe_lag: int = 50,
         metrics: Metrics | None = None,
         reload: Callable[[Path], None] = reload_mount,
-        managed_target: ManagedTargetProvider | None = None,
+        managed_target: TargetProvider | None = None,
     ) -> None:
         if managed_target is not None:
             raise ValueError("Full checkpoint syncer does not support managed targets")

@@ -89,6 +89,37 @@ Managed targets are unsupported by the experimental full-checkpoint engine;
 both the CLI and direct `FullCheckpointSyncer` construction reject that
 combination.
 
+## Authenticated model-deployment target reads
+
+`--managed-target-source model-deployment` (or
+`CHALK_WEIGHT_TARGET_SOURCE=model-deployment`) polls the scoped
+`GetModelWeightRuntimeTarget` RPC. The deployment launcher supplies
+`CHALK_MODEL_SCALING_GROUP_ID`, `CHALK_MODEL_SCALING_GROUP_REVISION_ID`,
+`CHALK_WEIGHT_STREAM_ID`, `CHALK_WEIGHT_VOLUME_ID`, and `CHALK_ENVIRONMENT_ID`.
+It uses only the dedicated `CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume
+identity and CLI login credentials are independent. The API derives the
+allowed deployment from the verified platform queue credential. This read adds
+no environment-wide model permission. `CHALK_API_SERVER` selects the HTTPS API
+origin (default `https://api.chalk.ai`).
+
+Each request names the fixed expected revision. The server checks its current
+selection and immutable stream binding; the provider checks every returned target
+identity. Reads use a three-second RPC deadline without automatic retries. A
+successful read establishes at most a fifteen-second local lease measured from
+request start and capped by both the server lease and token expiry. Calls share
+a two-second refresh cache; a failed refresh immediately invalidates that cache.
+Only the explicit authenticated no-target response is retryable during bootstrap.
+Clock changes cannot extend the local monotonic deadline. Target changes still
+require the regular drain/apply/verify path before admission resumes.
+
+This connects desired-state delivery, not production model-deployment activation.
+The launcher must supply the expected identity, a supported engine configuration,
+and verified initial resident weights. The stream mount's snapshot provenance is
+not attested by this read. Automatic model-deployment launch, per-replica readiness
+reporting, and routing must be connected separately; backend managed admission
+remains disabled until that path is qualified. Initial model storage may remain
+independent of the stream volume.
+
 Configuration:
 
 | Variable | Default | Meaning |
