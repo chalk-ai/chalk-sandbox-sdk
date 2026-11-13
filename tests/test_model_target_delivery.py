@@ -337,3 +337,18 @@ def test_response_later_than_token_expiry_is_refused(setup):
     setup.rpc.side_effect = slow
     with pytest.raises(ManagedTargetError, match="exhausted"):
         setup.provider.current()
+
+
+def test_short_server_lease_refreshes_before_poll_interval(setup):
+    value = response()
+    expiry = setup.clock.wall + 0.5
+    value.lease_expires_at = Timestamp(
+        seconds=int(expiry), nanos=int((expiry % 1) * 1e9)
+    )
+    setup.rpc.return_value = value
+    first = setup.provider.current()
+    setup.clock.advance(0.6)
+    setup.rpc.return_value = response()
+    second = setup.provider.current()
+    assert setup.rpc.call_count == 2
+    assert second.lease_expires_at > first.lease_expires_at
