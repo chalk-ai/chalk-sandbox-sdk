@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pytest
@@ -12,6 +13,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 import chalkcompute._function as function_mod
+import chalkcompute._backoff as backoff_mod
 from chalkcompute._async_utils import _run_in_worker_thread
 from chalkcompute._function import (
     FunctionError,
@@ -1281,7 +1283,89 @@ def test_deferred_get_gives_up_after_sustained_unavailability(monkeypatch) -> No
     assert len(_all_polls()) > 2
 
 
-def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
+@pytest.mark.parametrize("timeout", [None, 0.25])
+def test_deferred_get_clips_backoff_and_stops_before_another_poll(
+    monkeypatch, timeout
+) -> None:
+    now = 100.0
+    sleeps = []
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(
+        function_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr(backoff_mod.random, "uniform", lambda low, high: high)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.25)
+    handle = _remote_function().defer(98)
+    error = RemoteCallUnavailableError("connection dropped")
+
+    def unavailable(self, call_id, cursor="", poll_count=0):
+        self.polls.append((call_id, cursor, poll_count))
+        raise error
+
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", unavailable)
+
+    expected_error = RemoteCallUnavailableError if timeout is None else TimeoutError
+    with pytest.raises(expected_error) as exc_info:
+        handle.get(timeout=timeout)
+
+    assert sleeps == pytest.approx([0.1, 0.15])
+    assert len(_all_polls()) == 2
+    if timeout is None:
+        assert exc_info.value is error
+    else:
+        assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize("call_timeout", [None, 1.0])
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_collection_accepts_slow_recovery_after_outage_budget(
+    monkeypatch, call_timeout, async_context, mode
+) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+    fn = _async_remote_function() if async_context else _remote_function()
+    fn._call_timeout = call_timeout
+    handle = fn.defer(98)
+    error = RemoteCallUnavailableError("connection dropped")
+    attempts = []
+
+    def unavailable_then_recover(self, call_id, cursor="", poll_count=0):
+        self.polls.append((call_id, cursor, poll_count))
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise error
+        try:
+            # A healthy poll can outlast the budget for starting retries.
+            release.wait(0.05)
+            return _poll("completed", chunks=[_result_ipc([99])])
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", unavailable_then_recover)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.01)
+    monkeypatch.setattr(backoff_mod.random, "uniform", lambda low, high: 0.0)
+
+    try:
+        expected = {"get": 99, "stream": [[99]], "gather": [99]}
+        assert _collect(handle, mode, async_context=async_context) == expected[mode]
+    finally:
+        release.set()
+        assert finished.wait(3)
+
+    assert _all_polls() == [("call-1", "", 0)] * 2
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+@pytest.mark.parametrize("multiplier", [2.0, 3.0])
+def test_deferred_get_repolls_once_per_jittered_backoff(
+    monkeypatch, multiplier
+) -> None:
     sleeps: list[float] = []
     jitter_bounds: list[tuple[float, float]] = []
 
@@ -1289,7 +1373,8 @@ def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
         jitter_bounds.append((low, high))
         return high
 
-    monkeypatch.setattr(function_mod.random, "uniform", uniform)
+    monkeypatch.setattr(backoff_mod.random, "uniform", uniform)
+    monkeypatch.setattr(function_mod, "RPC_RETRY_BACKOFF_MULTIPLIER", multiplier)
     monkeypatch.setattr(function_mod.time, "sleep", sleeps.append)
     FakeRemoteCallClient.poll_results = [
         _poll("completed", chunks=[_result_ipc([99])], cursor="c1"),
@@ -1301,12 +1386,132 @@ def test_deferred_get_repolls_once_per_jittered_backoff(monkeypatch) -> None:
 
     assert handle.get() == 99
     # Full jitter up to a backoff that grows to the 5s cap.
-    expected = [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0]
+    expected = (
+        [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0]
+        if multiplier == 2.0
+        else [0.1, 0.3, 0.9, 2.7, 5.0, 5.0, 5.0, 5.0]
+    )
     assert sleeps == pytest.approx(expected)
     assert [low for low, _ in jitter_bounds] == [0.0] * len(expected)
     assert [high for _, high in jitter_bounds] == pytest.approx(expected)
     # One attempt per retry: no extra immediate re-poll on a fresh client.
     assert len(_all_polls()) == len(sleeps) + 1
+
+
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_collection_keeps_current_poll_timeout_after_outage(
+    monkeypatch, async_context, mode
+) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+    fn = _async_remote_function() if async_context else _remote_function()
+    handle = fn.defer(98)
+    fn._call_timeout = 0.05
+    error = RemoteCallUnavailableError("old connection failure")
+    attempts = []
+
+    def unavailable_then_hang(self, call_id, cursor="", poll_count=0):
+        self.polls.append((call_id, cursor, poll_count))
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise error
+        try:
+            release.wait(2)
+            return _poll("completed", chunks=[_result_ipc([99])])
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", unavailable_then_hang)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.01)
+    monkeypatch.setattr(backoff_mod.random, "uniform", lambda low, high: 0.0)
+    monkeypatch.setattr(function_mod, "_get_scaling_group", lambda *args: None)
+
+    try:
+        with pytest.raises(TimeoutError, match=r"timed out after 0\.05s") as exc_info:
+            _collect(handle, mode, async_context=async_context)
+    finally:
+        release.set()
+        assert finished.wait(3)
+
+    assert exc_info.value.__cause__ is None
+    assert _all_polls() == [("call-1", "", 0)] * 2
+
+
+def test_deferred_get_resets_outage_budget_after_successful_poll(monkeypatch) -> None:
+    now = 100.0
+
+    def sleep(delay):
+        nonlocal now
+        now += delay
+
+    error = RemoteCallUnavailableError("connection dropped")
+    outcomes = iter(
+        [
+            error,
+            _poll("running", cursor="c1"),
+            error,
+            _poll("completed", chunks=[_result_ipc([99])]),
+        ]
+    )
+
+    def poll(self, call_id, cursor="", poll_count=0):
+        nonlocal now
+        self.polls.append((call_id, cursor, poll_count))
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        now += 1.0
+        return outcome
+
+    monkeypatch.setattr(
+        function_mod, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    )
+    monkeypatch.setattr(backoff_mod.random, "uniform", lambda low, high: high)
+    monkeypatch.setattr(function_mod, "_POLL_UNAVAILABLE_TIMEOUT", 0.25)
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", poll)
+    handle = _remote_function().defer(98)
+
+    assert handle.get() == 99
+    assert _all_polls() == [("call-1", "", 0)] * 2 + [("call-1", "c1", 0)] * 2
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+@pytest.mark.parametrize("through_handle", [False, True])
+def test_standalone_poll_timeout_includes_scaling_group_status(
+    monkeypatch, through_handle
+) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+
+    def hang(self, call_id, cursor="", poll_count=0):
+        try:
+            release.wait(2)
+            return _poll("running")
+        finally:
+            finished.set()
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+    fn._call_timeout = 0.02
+    monkeypatch.setattr(FakeRemoteCallClient, "poll_next", hang)
+    monkeypatch.setattr(
+        function_mod,
+        "_get_scaling_group",
+        lambda client, name: sg_pb.ScalingGroupResponse(
+            name=name, status="Unhealthy", status_message="replica crash-looping"
+        ),
+    )
+
+    try:
+        with pytest.raises(TimeoutError, match="Unhealthy.*replica crash-looping"):
+            if through_handle:
+                handle.poll()
+            else:
+                fn.poll(handle.call_id)
+    finally:
+        release.set()
+        assert finished.wait(3)
 
 
 def test_handle_poll_refreshes_a_stale_client_once() -> None:
@@ -1330,27 +1535,47 @@ def test_deferred_get_does_not_repoll_after_non_transport_error() -> None:
     assert _all_polls() == [("call-1", "", 0)]
 
 
-def test_deferred_get_deadline_bounds_a_hung_poll(monkeypatch) -> None:
+@pytest.mark.parametrize("call_timeout", [0.2, 60.0])
+@pytest.mark.parametrize("async_context", [False, True])
+@pytest.mark.parametrize("mode", ["get", "stream", "gather"])
+def test_deferred_collection_deadline_skips_timeout_status_lookup(
+    monkeypatch, call_timeout, async_context, mode
+) -> None:
     release = threading.Event()
+    finished = threading.Event()
+    diagnostics = []
 
     def hang(self, call_id, cursor="", poll_count=0):
         self.polls.append((call_id, cursor, poll_count))
-        release.wait(5)
-        return _poll("running")
+        try:
+            release.wait(2)
+            return _poll("running")
+        finally:
+            finished.set()
 
-    handle = _remote_function().defer(98)
+    def diagnostic_rpc(method, request, *, timeout=30.0):
+        diagnostics.append((method.name, timeout))
+        raise AssertionError("Polling timeouts must not start a diagnostic RPC")
+
+    fn = _async_remote_function() if async_context else _remote_function()
+    fn._call_timeout = call_timeout
+    handle = fn.defer(98)
     monkeypatch.setattr(FakeRemoteCallClient, "poll_next", hang)
+    monkeypatch.setattr(fn._client, "call", diagnostic_rpc, raising=False)
 
     started = time.monotonic()
     try:
-        # call_timeout is 60s; the result deadline must bound the poll.
+        # Both a result deadline and call_timeout must skip status lookups.
         with pytest.raises(
             TimeoutError, match=r"Remote call call-1 .* timed out \(last status"
         ):
-            handle.get(timeout=0.2)
+            _collect(handle, mode, async_context=async_context, timeout=0.2)
+        elapsed = time.monotonic() - started
     finally:
         release.set()
-    assert time.monotonic() - started < 2.0
+        assert finished.wait(3)
+    assert elapsed < 1.0
+    assert diagnostics == []
 
 
 def test_deferred_get_can_be_awaited_in_async_context() -> None:

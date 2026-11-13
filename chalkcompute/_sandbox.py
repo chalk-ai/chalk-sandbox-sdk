@@ -94,6 +94,7 @@ from chalkcompute._remote_function_tracing import (
 )
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._sandbox_git import SandboxGit
+from chalkcompute._backoff import Backoff
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import (
     _instrumented,
@@ -1976,7 +1977,10 @@ class Sandbox:
         client = self._require_client()
         sandbox_id = self._require_started()
         deadline = time.monotonic() + _RESUME_CONFLICT_RETRY_TIMEOUT_SECONDS
-        retry_delay = _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS
+        backoff = Backoff(
+            _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS,
+            _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS,
+        )
         while True:
             try:
                 client._stub.resume_sandbox(
@@ -1993,11 +1997,7 @@ class Sandbox:
                 if remaining <= 0:
                     _handle_rpc_error(e, sandbox_id)
                     raise
-                time.sleep(min(retry_delay, remaining))
-                retry_delay = min(
-                    retry_delay * 2,
-                    _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS,
-                )
+                time.sleep(backoff.next_wait(remaining))
         self.refresh()
 
     @_instrumented("chalkcompute.sandbox.terminate")
