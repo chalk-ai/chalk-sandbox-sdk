@@ -1,3 +1,4 @@
 - Run opt-in managed sparse model engines from `CHALK_MODEL_SERVING_CONFIG` behind exact native target admission and execution drain, exposing the owned loopback engine to handlers through reserved `CHALK_MODEL_ENGINE_URL`.
 - Verify snapshot-restored seed configuration and resident weights against the stream keyframe before accepting calls, and terminate owned engine workers on runtime failure or shutdown.
 - Authenticate every replay ancestor against immutable indexed manifest identities and preserve its expected SHA-256 through both sparse engine workers.
+- Read static model-serving configuration and deployment binding from the typed platform bootstrap argument instead of environment feature switches.

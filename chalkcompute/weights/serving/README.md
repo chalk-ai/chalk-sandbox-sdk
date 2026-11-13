@@ -157,13 +157,27 @@ or quantized checkpoint support.
 
 ## Managed model replicas
 
-The native remote-call launcher owns `ManagedModelRuntime` when invoked with
-`--require-weight-fence`. The backend supplies a validated
-`CHALK_MODEL_SERVING_CONFIG` and fixed scaling-group/revision/stream/volume
-identity. The runtime polls the scoped target RPC using the explicit
-`CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume credentials are separate.
-No selected target keeps the replica unready while it waits within the startup
-budget. Authentication, configuration, resident verification and synchronization
+The model deployment API accepts typed `ModelScalingGroupSpec.serving_config`.
+The backend validates that configuration and finalizes an immutable binding to
+the actual environment, scaling group, revision, stream and canonical volume.
+It persists a single private `--model-serving-bootstrap JSON` launcher argument.
+The envelope contains only `schema_version: 1`, `config` and `binding`; it has no
+desired version, lease or readiness status. Its complete UTF-8 representation is
+bounded to 64 KiB, and duplicate, unknown or incorrectly typed fields are refused.
+The config uses protobuf enum names `SERVING_ENGINE_VLLM` or `SERVING_ENGINE_SGLANG`
+and accepts an explicit empty `engine_args` list.
+
+That argument creates a strict native serving handle and starts
+`ManagedModelRuntime` before user-handler imports. Environment feature switches
+and environment-supplied model bindings do not activate this path. With no
+bootstrap argument, ordinary remote-call behavior and lightweight imports remain
+unchanged. The runtime polls the existing scoped target RPC using the explicit
+platform `CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume credentials are separate.
+The mutable selected target and manifest identities remain on the scoped RPC.
+The static bootstrap does not change the existing lease policy: reads have a
+three-second deadline, successful observations last at most fifteen seconds,
+and failed authenticated refreshes close admission. No selected target keeps
+the replica unready while it waits within the startup budget. Authentication, configuration, resident verification and synchronization
 failures close admission and stop the owned engine process group.
 
 User handlers retain their request/response conversion and call the engine at
