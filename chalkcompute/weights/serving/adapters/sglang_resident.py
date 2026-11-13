@@ -169,6 +169,7 @@ class SGLangResidentAdapter:
                         {
                             "layout_json": self._layout.raw.decode("utf-8"),
                             "layout_file_sha256": self._layout.file_sha256,
+                            "initial_model_directory": str(self._model_dir),
                         }
                         if operation == "bind"
                         else {}
@@ -198,7 +199,7 @@ class SGLangResidentAdapter:
 
     async def initialize(self, model_dir: Path, manifest: WeightManifest) -> None:
         if (
-            self._model_dir != model_dir.resolve()
+            self._model_dir is None
             or manifest.kind != "keyframe"
             or self._identity is not None
         ):

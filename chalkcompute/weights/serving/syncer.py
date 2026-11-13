@@ -151,7 +151,11 @@ class WeightSyncer:
         for manifest in plan.manifests:
             verify_payloads(self.root / version_dir(manifest.version), manifest)
 
-    async def bootstrap(self, launch: Callable[[Path], Awaitable[None]]) -> None:
+    async def bootstrap(
+        self,
+        launch: Callable[[Path], Awaitable[None]],
+        initial_model_dir: Path | None = None,
+    ) -> None:
         async with self._lock:
             await asyncio.to_thread(self.reload, self.root)
             managed_target_provider = self.managed_target
@@ -176,8 +180,16 @@ class WeightSyncer:
             self.architecture_hash = first.architecture_hash
             self._model_elements = sum(math.prod(e.shape) for e in first.tensors)
             try:
-                await launch(self.root / version_dir(first.version))
                 initialize = getattr(self.adapter, "initialize", None)
+                if initial_model_dir is not None and initialize is None:
+                    raise StreamError(
+                        "Snapshot bootstrap requires native resident seed verification"
+                    )
+                await launch(
+                    initial_model_dir
+                    if initial_model_dir is not None
+                    else self.root / version_dir(first.version)
+                )
                 if initialize is not None:
                     await initialize(self.root / version_dir(first.version), first)
                 for manifest in patches:

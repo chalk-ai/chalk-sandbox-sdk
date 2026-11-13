@@ -440,3 +440,27 @@ class _NoopAdapter:
 
     async def reset_cache(self):
         pass
+
+
+def test_cross_language_target_fingerprint_vectors():
+    from chalkcompute.weights.serving.managed_target import target_fingerprint
+
+    vectors = json.loads(
+        (Path(__file__).parent / "fixtures/model_target_fingerprints.json").read_text()
+    )
+    names = (
+        "deployment_id",
+        "revision_id",
+        "target_generation",
+        "stream_id",
+        "logical_version",
+        "volume_id",
+        "volume_version_id",
+        "manifest_sha256",
+        "weight_schema_sha256",
+    )
+    for vector in vectors:
+        assert (
+            target_fingerprint(dict(zip(names, vector["fields"])))
+            == vector["fingerprint"]
+        )

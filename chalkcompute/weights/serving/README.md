@@ -140,3 +140,27 @@ allocation is needed. GPU validation must additionally confirm the installed
 vLLM version, every rank acknowledgement, publish/restore output equivalence,
 and actual pause/publish latency. CPU tests do not establish GPU performance
 or quantized checkpoint support.
+
+## Managed model replicas
+
+The native remote-call launcher owns `ManagedModelRuntime` when invoked with
+`--require-weight-fence`. The backend supplies a validated
+`CHALK_MODEL_SERVING_CONFIG` and fixed scaling-group/revision/stream/volume
+identity. The runtime polls the scoped target RPC using the explicit
+`CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume credentials are separate.
+No selected target keeps the replica unready while it waits within the startup
+budget. Authentication, configuration, resident verification and synchronization
+failures close admission and stop the owned engine process group.
+
+User handlers retain their request/response conversion and call the engine at
+reserved loopback `CHALK_MODEL_ENGINE_URL`, set before importing the handler.
+The SDK owns the engine process, target leases, native execution drain and
+sparse updates. Managed sparse engines retain the existing pinned BF16/TP1
+profile and explicit caller layout requirements.
+
+An optional `initial_model_dir` can point at a snapshot-restored checkpoint
+outside the stream volume. The actual native model source must match that
+configured path, and the resident tensors must pass the same complete seed
+verification against the stream keyframe before admission opens. Naming a seed
+version alone never establishes this proof. This path can still read the
+reference keyframe and makes no faster startup guarantee.
