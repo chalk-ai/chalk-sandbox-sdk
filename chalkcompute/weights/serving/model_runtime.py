@@ -84,6 +84,7 @@ class ModelServingConfig:
                 or "\x00" in value[name]
                 or not Path(value[name]).is_absolute()
                 or value[name] == "/"
+                or value[name].startswith("//")
                 or os.path.normpath(value[name]) != value[name]
             ):
                 raise ValueError(f"{name} must be an absolute path")
@@ -304,6 +305,10 @@ class ManagedModelRuntime:
                     with contextlib.suppress(ProcessLookupError):
                         os.killpg(process.pid, signal.SIGKILL)
                     await process.wait()
+                # A launcher may exit before a worker which ignores SIGTERM.
+                # Its isolated process group remains ours until all workers exit.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def close(self) -> None:
