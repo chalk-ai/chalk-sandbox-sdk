@@ -96,7 +96,24 @@ def test_sss_host_forwarding_to_internal_fixture() -> None:
             }
         ),
     )
+    control = Sandbox(
+        image=NETSHOOT_IMAGE,
+        name=f"sss-egress-control-{uuid.uuid4().hex[:8]}",
+        compute_class=ComputeClass.HOST,
+        execution_target=ExecutionBackend.ENVIRONMENT,
+        network_policy=NetworkPolicy(
+            allowed_hosts={
+                INTERNAL_FIXTURE: [],
+                "www.example.com": [
+                    NetworkPolicy.Rule(
+                        forward_url=f"http://{INTERNAL_FIXTURE}/status/200"
+                    )
+                ],
+            }
+        ),
+    )
     try:
+        client.run(control, timeout=300)
         client.run(sandbox, timeout=300)
         for url, connect_to in (
             (
@@ -118,6 +135,14 @@ def test_sss_host_forwarding_to_internal_fixture() -> None:
             ]
             if connect_to is not None:
                 command.extend(("--connect-to", connect_to))
+            # The environment's hosted pool reaches the same upstream through
+            # the same proxy path without the serverless destination exclusions.
+            healthy = control.exec(*command, url, timeout_secs=12)
+            assert healthy.exit_code == 0 and healthy.stdout_text.endswith("\n200"), (
+                url,
+                healthy.stdout_text,
+                healthy.stderr_text,
+            )
             result = sandbox.exec(
                 *command,
                 url,
@@ -143,6 +168,7 @@ def test_sss_host_forwarding_to_internal_fixture() -> None:
         )
         assert public.exit_code == 0, public.stderr_text
     finally:
-        if sandbox.id is not None:
-            sandbox.terminate()
+        for instance in (sandbox, control):
+            if instance.id is not None:
+                instance.terminate()
         client.close()
