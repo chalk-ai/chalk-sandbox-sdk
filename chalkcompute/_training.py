@@ -105,6 +105,77 @@ def _metadata_to_proto(metadata: dict[str, Any]) -> dict[str, Value]:
     return {k: Value.from_python(v) for k, v in metadata.items()}
 
 
+_REWARD_FUNCTIONS_METADATA_KEY = "reward_functions"
+# Run metadata is display data returned with every read of the run, so source
+# is bounded per function and across the whole entry.
+_MAX_REWARD_FUNCTION_SOURCE_BYTES = 16 * 1024
+_MAX_REWARD_METADATA_SOURCE_BYTES = 64 * 1024
+
+
+def _reward_function_source(func: Callable[..., Any]) -> str | None:
+    import inspect
+    import textwrap
+
+    try:
+        source = textwrap.dedent(inspect.getsource(inspect.unwrap(func)))
+    except (OSError, TypeError):
+        # Builtins, REPL definitions and callable objects have no source file.
+        return None
+    if len(source.encode()) > _MAX_REWARD_FUNCTION_SOURCE_BYTES:
+        return None
+    return source
+
+
+def _reward_functions_metadata(
+    reward_metadata: Mapping[Callable[..., Any], float] | Iterable[Callable[..., Any]],
+) -> list[dict[str, Any]]:
+    """Describe reward functions as the ``reward_functions`` run metadata entry."""
+    import inspect
+
+    weights: list[tuple[Callable[..., Any], float | None]]
+    if isinstance(reward_metadata, Mapping):
+        weights = list(reward_metadata.items())
+    else:
+        weights = [(func, None) for func in reward_metadata]
+
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    source_bytes = 0
+    for func, weight in weights:
+        # A @chalkcompute.function wrapper keeps the user's callable on _func.
+        target = getattr(func, "_func", func)
+        if not callable(target):
+            raise TypeError(f"reward function {func!r} is not callable")
+        name = getattr(target, "__name__", None)
+        if not name or name == "<lambda>":
+            raise ValueError(
+                "reward functions need a name to match the `rubric` tag on "
+                "`rubric_reward`; pass a named function instead of a lambda"
+            )
+        if name in seen:
+            raise ValueError(f"duplicate reward function name {name!r}")
+        seen.add(name)
+
+        entry: dict[str, Any] = {"name": name}
+        if weight is not None:
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                raise TypeError(f"weight for reward function {name!r} must be a number")
+            entry["weight"] = float(weight)
+        doc = inspect.getdoc(target)
+        if doc:
+            entry["description"] = doc.split("\n\n", 1)[0].replace("\n", " ")
+        source = _reward_function_source(target)
+        if source is not None:
+            size = len(source.encode())
+            # A function that does not fit keeps its row without source; later,
+            # smaller functions may still fit.
+            if source_bytes + size <= _MAX_REWARD_METADATA_SOURCE_BYTES:
+                source_bytes += size
+                entry["source"] = source
+        entries.append(entry)
+    return entries
+
+
 def _secret_to_proto(secret: _Secret) -> container_pb.SecretRef:
     source = None
     if secret._integration_name is not None:
@@ -250,6 +321,9 @@ class TrainingFunction:
         volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount]
         | None = None,
         metadata: dict[str, Any] | None = None,
+        reward_metadata: Mapping[Callable[..., Any], float]
+        | Iterable[Callable[..., Any]]
+        | None = None,
         max_retries: int | None = None,
     ) -> None:
         _validate_data_source(data, dataset, input_sql)
@@ -299,6 +373,15 @@ class TrainingFunction:
         self._secrets: list[_Secret] = list(secrets or [])
         self._volumes = normalize_volume_refs(volumes)
         self._metadata = dict(metadata) if metadata else {}
+        if reward_metadata is not None:
+            if _REWARD_FUNCTIONS_METADATA_KEY in self._metadata:
+                raise ValueError(
+                    "describe reward functions either with `reward_metadata=` or "
+                    "as `metadata['reward_functions']`, not both"
+                )
+            self._metadata[_REWARD_FUNCTIONS_METADATA_KEY] = _reward_functions_metadata(
+                reward_metadata
+            )
         self._max_retries = max_retries
 
     @property
@@ -627,6 +710,9 @@ def training(
     secrets: list[_Secret] | None = None,
     volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     metadata: dict[str, Any] | None = None,
+    reward_metadata: Mapping[Callable[..., Any], float]
+    | Iterable[Callable[..., Any]]
+    | None = None,
     max_retries: int | None = None,
 ) -> TrainingFunction | _NoOpTrainingFunction: ...
 
@@ -649,6 +735,9 @@ def training(
     secrets: list[_Secret] | None = None,
     volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     metadata: dict[str, Any] | None = None,
+    reward_metadata: Mapping[Callable[..., Any], float]
+    | Iterable[Callable[..., Any]]
+    | None = None,
     max_retries: int | None = None,
 ) -> Callable[..., TrainingFunction | _NoOpTrainingFunction]: ...
 
@@ -672,6 +761,9 @@ def training(
     secrets: list[_Secret] | None = None,
     volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     metadata: dict[str, Any] | None = None,
+    reward_metadata: Mapping[Callable[..., Any], float]
+    | Iterable[Callable[..., Any]]
+    | None = None,
     max_retries: int | None = None,
 ) -> (
     Callable[..., TrainingFunction | _NoOpTrainingFunction]
@@ -699,6 +791,15 @@ def training(
     key sets the injected name, overriding aliases and prefixes. Local env
     secrets are not supported for training.
 
+    ``reward_metadata`` describes the reward functions of a reinforcement
+    learning run, as a ``{function: weight}`` mapping or a list of functions.
+    It only records metadata: the functions are not called and the weights are
+    not applied. Each function's name, weight, docstring summary and source go
+    into the run's ``reward_functions`` metadata, which the dashboard shows
+    beside the per-function reward chart. The name must equal the ``rubric``
+    tag the trainer logs ``rubric_reward`` under. Source is left out for a
+    function over 16 KiB, and once the recorded source totals 64 KiB.
+
     Outside a container, returns a :class:`TrainingFunction` that
     exposes ``.run_training()`` for remote execution and ``.local()``
     for in-process iteration.
@@ -724,6 +825,7 @@ def training(
             secrets=secrets,
             volumes=volumes,
             metadata=metadata,
+            reward_metadata=reward_metadata,
             max_retries=max_retries,
         )
 
