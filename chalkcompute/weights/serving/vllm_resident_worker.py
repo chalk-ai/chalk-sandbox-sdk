@@ -51,6 +51,7 @@ class ResidentSparseExtension:
             ResidentWeights,
             load_manifest,
             read_profile_file,
+            validate_config,
         )
         from chalkcompute.weights.serving.resident_runtime import check_runtime_sources
 
@@ -64,6 +65,10 @@ class ResidentSparseExtension:
             != Path(self.vllm_config.model_config.model).resolve()
         ):
             raise ValueError("Initial native model directory differs")
+        if validate_config(
+            read_profile_file(Path(self.vllm_config.model_config.model), "config.json")
+        ) != validate_config(read_profile_file(root, "config.json")):
+            raise ValueError("Initial native model config differs from stream seed")
         manifest = load_manifest(root, version, manifest_sha256)
         from chalkcompute.weights.serving.adapters.resident_control import parse_layout
 
