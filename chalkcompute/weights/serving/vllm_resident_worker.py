@@ -44,6 +44,7 @@ class ResidentSparseExtension:
         manifest_sha256: str,
         layout_json: str,
         layout_file_sha256: str,
+        initial_model_directory: str | None = None,
     ) -> dict[str, Any]:
         from chalkcompute.weights.serving.resident import (
             PROFILE,
@@ -58,7 +59,10 @@ class ResidentSparseExtension:
         check_runtime_sources("vllm")
         model = check_worker(self)
         root = Path(directory)
-        if root.resolve() != Path(self.vllm_config.model_config.model).resolve():
+        if (
+            Path(initial_model_directory or directory).resolve()
+            != Path(self.vllm_config.model_config.model).resolve()
+        ):
             raise ValueError("Initial native model directory differs")
         manifest = load_manifest(root, version, manifest_sha256)
         from chalkcompute.weights.serving.adapters.resident_control import parse_layout

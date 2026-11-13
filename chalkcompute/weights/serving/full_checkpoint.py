@@ -198,7 +198,11 @@ class FullCheckpointSyncer(WeightSyncer):
         if old is not None and old is not self._bootstrap_checkpoint:
             old.cleanup()
 
-    async def bootstrap(self, launch) -> None:
+    async def bootstrap(self, launch, initial_model_dir: Path | None = None) -> None:
+        if initial_model_dir is not None:
+            raise ValueError(
+                "Full-checkpoint runtime does not support snapshot bootstrap"
+            )
         async with self._lock:
             await asyncio.to_thread(self.reload, self.root)
             plan = await asyncio.to_thread(self.plan, self.desired(), bootstrap=True)
