@@ -96,7 +96,7 @@ steps:
         - exit_status: -1
           limit: 2
 
-  - label: ":shield: Container network policy integration tests ({{matrix}})"
+  - label: ":shield: Network policy integration tests ({{matrix}})"
     matrix:
       - "staging/ftqa"
       - "meta-ci"
@@ -127,7 +127,7 @@ steps:
       echo "--- :package: Sync locked dependencies"
       uv sync --locked --extra sql --extra workflows --extra dev --reinstall-package chalkcompute
 
-      echo "--- :pytest: Run container network policy integration tests ($$CHALK_API_SERVER)"
+      echo "--- :pytest: Run network policy integration tests ($$CHALK_API_SERVER)"
       just test-network-policy-e2e
     agents:
       queue: compile-runner-s

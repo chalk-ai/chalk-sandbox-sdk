@@ -60,9 +60,9 @@ test *args:
 test-sessions-e2e:
     uv run python -m pytest e2etests/test_container_sessions.py e2etests/test_container_session_pty.py -v -s --tb=short
 
-# Run container network policy e2e tests
+# Run network policy e2e tests
 test-network-policy-e2e:
-    uv run python -m pytest e2etests/test_container_network_policy.py -v -s --tb=short
+    uv run python -m pytest e2etests/test_container_network_policy.py e2etests/test_sss_egress_post_deploy.py -v -s --tb=short
 
 # Run sandbox snapshot and suspend/restore e2e tests (FTQA only)
 test-sandbox-snapshots-e2e:
