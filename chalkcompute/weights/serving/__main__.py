@@ -45,9 +45,17 @@ def _managed_target_provider(args: argparse.Namespace) -> TargetProvider | None:
         "CHALK_WEIGHT_VOLUME_ID": "expected_volume_id",
     }
     if source == "model-deployment":
+        required.pop("CHALK_MODEL_DEPLOYMENT_ID")
+        required.pop("CHALK_MODEL_DEPLOYMENT_REVISION_ID")
         required.update(
             {
-                "CHALK_WEB_IDENTITY_TOKEN_FILE": "token_file",
+                "CHALK_MODEL_SCALING_GROUP_ID": "expected_deployment_id",
+                "CHALK_MODEL_SCALING_GROUP_REVISION_ID": "expected_revision_id",
+            }
+        )
+        required.update(
+            {
+                "CHALK_FUNCTION_QUEUE_TOKEN_FILE": "token_file",
                 "CHALK_ENVIRONMENT_ID": "expected_environment_id",
             }
         )
@@ -64,10 +72,10 @@ def _managed_target_provider(args: argparse.Namespace) -> TargetProvider | None:
 
         return ModelDeploymentTargetProvider(
             api_server=os.environ.get("CHALK_API_SERVER", "https://api.chalk.ai"),
-            token_file=Path(os.environ["CHALK_WEB_IDENTITY_TOKEN_FILE"]),
+            token_file=Path(os.environ["CHALK_FUNCTION_QUEUE_TOKEN_FILE"]),
             expected_environment_id=os.environ["CHALK_ENVIRONMENT_ID"],
-            expected_deployment_id=os.environ["CHALK_MODEL_DEPLOYMENT_ID"],
-            expected_revision_id=os.environ["CHALK_MODEL_DEPLOYMENT_REVISION_ID"],
+            expected_deployment_id=os.environ["CHALK_MODEL_SCALING_GROUP_ID"],
+            expected_revision_id=os.environ["CHALK_MODEL_SCALING_GROUP_REVISION_ID"],
             expected_stream_id=os.environ["CHALK_WEIGHT_STREAM_ID"],
             expected_volume_id=os.environ["CHALK_WEIGHT_VOLUME_ID"],
         )

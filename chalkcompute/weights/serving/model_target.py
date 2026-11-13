@@ -10,13 +10,18 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from connectrpc.protocol import ProtocolType
-from protobuf import Oneof
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError
 
-from chalkcompute._gen.chalk.modeldeployment.v1 import service_connect, service_pb
+from chalkcompute._gen.chalk.modeldeployment.v1 import (
+    weight_runtime_connect,
+    weight_runtime_pb,
+)
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._web_identity import read_web_identity_token
 from chalkcompute.weights.serving.managed_target import (
     ManagedTargetError,
+    ModelTargetNotSelected,
     ManagedWeightTarget,
     TargetFence,
 )
@@ -30,7 +35,7 @@ class ModelDeploymentTargetProvider:
     """Poll one deployment using only its explicitly configured workload token.
 
     JWT claims decoded locally only bound cache lifetime. The API authenticates
-    the token and authorizes the environment-scoped read over TLS. This provider
+    the token and authorizes the deployment-scoped read over TLS. This provider
     verifies publication identity; it does not attest mounted snapshot provenance
     or the weights already resident in the engine.
     """
@@ -77,7 +82,7 @@ class ModelDeploymentTargetProvider:
         self._next_poll = 0.0
         self._deadline = 0.0
         # Do not install automatic retry interceptors: a refresh has one fixed RPC deadline.
-        self._client = service_connect.ModelDeploymentServiceClientSync(
+        self._client = weight_runtime_connect.ModelWeightRuntimeServiceClientSync(
             api_server.rstrip("/"),
             protocol=ProtocolType.GRPC,
             http_client=SYNC_HTTP_CLIENT,
@@ -106,11 +111,9 @@ class ModelDeploymentTargetProvider:
                         "Workload token must have a live expiration"
                     )
                 expiry = min(wall_started + _LEASE_SECONDS, token.expires_at)
-                response = self._client.get_model_scaling_group(
-                    service_pb.GetModelScalingGroupRequest(
-                        model_scaling_group_key=Oneof(
-                            "model_scaling_group_id", self._deployment_id
-                        )
+                response = self._client.get_model_weight_runtime_target(
+                    weight_runtime_pb.GetModelWeightRuntimeTargetRequest(
+                        expected_revision_id=self._revision_id
                     ),
                     timeout_ms=_RPC_TIMEOUT_MS,
                     headers={
@@ -120,10 +123,22 @@ class ModelDeploymentTargetProvider:
                     },
                 )
                 target = self._decode(response, expiry)
-                deadline = started + expiry - wall_started
+                deadline = started + target.lease_expires_at.timestamp() - wall_started
                 if time.monotonic() >= deadline:
                     raise ManagedTargetError("Target refresh exhausted its lease")
                 target = self._fence.accept(target)
+            except ConnectError as error:
+                if (
+                    error.code == Code.UNAVAILABLE
+                    and error.message
+                    == "deployment weight target has not been selected"
+                ):
+                    raise ModelTargetNotSelected(
+                        "Deployment weight target has not been selected"
+                    ) from None
+                raise ManagedTargetError(
+                    "Authenticated model target refresh failed"
+                ) from None
             except ManagedTargetError:
                 raise
             except Exception:
@@ -137,25 +152,17 @@ class ModelDeploymentTargetProvider:
             return target
 
     def _decode(
-        self, response: service_pb.GetModelScalingGroupResponse, expiry: float
+        self,
+        response: weight_runtime_pb.GetModelWeightRuntimeTargetResponse,
+        expiry: float,
     ) -> ManagedWeightTarget:
-        group = response.model_scaling_group
-        revision = response.current_revision
-        if (
-            group is None
-            or group.id != self._deployment_id
-            or group.revision_id != self._revision_id
-            or group.deleted_at is not None
-            or revision is None
-            or revision.id != self._revision_id
-            or revision.model_scaling_group_id != self._deployment_id
-            or revision.spec is None
-            or revision.spec.weight_stream_id != self._stream_id
-        ):
-            raise ManagedTargetError(
-                "Selected deployment revision differs from replica binding"
-            )
-        target = group.weight_target
+        if response.lease_expires_at is None:
+            raise ManagedTargetError("Model target response has no lease")
+        expiry = min(
+            expiry,
+            response.lease_expires_at.seconds + response.lease_expires_at.nanos / 1e9,
+        )
+        target = response.target
         if target is None or target.version is None or target.volume is None:
             raise ManagedTargetError("Deployment has no complete desired weight target")
         version = target.version
