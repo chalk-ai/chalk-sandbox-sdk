@@ -79,6 +79,35 @@ Managed targets are unsupported by the experimental full-checkpoint engine;
 both the CLI and direct `FullCheckpointSyncer` construction reject that
 combination.
 
+## Authenticated model-deployment target reads
+
+`--managed-target-source model-deployment` (or
+`CHALK_WEIGHT_TARGET_SOURCE=model-deployment`) polls the existing authenticated
+`GetModelScalingGroup` RPC. Supply the four expected identities above,
+`CHALK_ENVIRONMENT_ID`, and an explicit `CHALK_WEB_IDENTITY_TOKEN_FILE`.
+`CHALK_API_SERVER` selects the HTTPS API origin (default `https://api.chalk.ai`).
+There is no fallback to a CLI login or client-secret credentials. The workload
+token needs `model_deployment.read` permission in the expected environment;
+this provider does not grant it. The API authenticates the JWT signature and
+permissions; locally decoded claims only limit the cache lifetime.
+
+Each read checks both the selected revision's stream binding and the complete
+returned target. Reads use a three-second RPC deadline without automatic
+retries. A successful read establishes at most a fifteen-second local lease
+measured from request start and capped by token expiry. Calls share a two-second
+refresh cache; a failed refresh immediately invalidates that cache. Only a new
+successful authenticated read renews it. Clock changes cannot extend the local
+monotonic deadline. Target changes still require the regular drain/apply/verify
+path before admission resumes.
+
+This connects desired-state delivery, not production model-deployment activation.
+The launcher must supply the expected identity, a supported engine configuration,
+and verified initial resident weights. The stream mount's snapshot provenance is
+not attested by this read. Automatic model-deployment launch, per-replica readiness
+reporting, and routing must be connected separately; backend managed admission
+remains disabled until that path is qualified. Initial model storage may remain
+independent of the stream volume.
+
 Configuration:
 
 | Variable | Default | Meaning |
