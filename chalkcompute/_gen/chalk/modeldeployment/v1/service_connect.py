@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CallModelRequest, CallModelResponse, CreateModelScalingGroupRequest, CreateModelScalingGroupResponse, DeleteModelScalingGroupRequest, DeleteModelScalingGroupResponse, GetModelScalingGroupRequest, GetModelScalingGroupResponse, GetModelScalingGroupRevisionRequest, GetModelScalingGroupRevisionResponse, ListModelScalingGroupRevisionsRequest, ListModelScalingGroupRevisionsResponse, ListModelScalingGroupsRequest, ListModelScalingGroupsResponse, UpdateModelScalingGroupRequest, UpdateModelScalingGroupResponse
+from .service_pb import CallModelRequest, CallModelResponse, CreateModelScalingGroupRequest, CreateModelScalingGroupResponse, DeleteModelScalingGroupRequest, DeleteModelScalingGroupResponse, GetModelScalingGroupRequest, GetModelScalingGroupResponse, GetModelScalingGroupRevisionRequest, GetModelScalingGroupRevisionResponse, ListModelScalingGroupRevisionsRequest, ListModelScalingGroupRevisionsResponse, ListModelScalingGroupsRequest, ListModelScalingGroupsResponse, SetModelScalingGroupWeightTargetRequest, SetModelScalingGroupWeightTargetResponse, UpdateModelScalingGroupRequest, UpdateModelScalingGroupResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -61,6 +61,29 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
                 service_name="chalk.modeldeployment.v1.ModelDeploymentService",
                 input=UpdateModelScalingGroupRequest,
                 output=UpdateModelScalingGroupResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def set_model_scaling_group_weight_target(
+        self,
+        request: SetModelScalingGroupWeightTargetRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> SetModelScalingGroupWeightTargetResponse:
+        """
+        Selects an indexed publication without appending or restarting a revision.
+        Persists desired state only; it does not establish serving readiness.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="SetModelScalingGroupWeightTarget",
+                service_name="chalk.modeldeployment.v1.ModelDeploymentService",
+                input=SetModelScalingGroupWeightTargetRequest,
+                output=SetModelScalingGroupWeightTargetResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
