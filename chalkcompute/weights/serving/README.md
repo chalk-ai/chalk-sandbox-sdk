@@ -164,3 +164,11 @@ configured path, and the resident tensors must pass the same complete seed
 verification against the stream keyframe before admission opens. Naming a seed
 version alone never establishes this proof. This path can still read the
 reference keyframe and makes no faster startup guarantee.
+
+During a target transition the shared model service can still route to a replica
+which has not applied the requested target. Its native admission returns
+`Unavailable`; callers can retry while updates converge. Execution begins only
+when the request's exact target fingerprint matches the installed resident
+identity and its lease is live. Generic replica health/counts describe container
+lifecycle and do not by themselves establish an observed applied version or
+registry convergence.
