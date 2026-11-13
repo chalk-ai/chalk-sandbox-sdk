@@ -8,6 +8,7 @@ import math
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from chalkcompute._weights_codec import apply_patch, read_patch, verify_payloads
@@ -17,13 +18,17 @@ from chalkcompute._weights_format import (
     safe_path,
     version_dir,
 )
+from chalkcompute.weights.serving.adapters.base import EngineAdapter
 from chalkcompute.weights.serving.adapters.sglang import validate_config
+from chalkcompute.weights.serving.managed_target import ManagedTargetProvider
 from chalkcompute.weights.serving.syncer import (
     ApplyError,
     ApplyPlan,
     StreamError,
     WeightSyncer,
+    reload_mount,
 )
+from chalkcompute.weights.serving.supervisor import AdmissionGate, Metrics
 
 
 def materialize(root: Path, plan: ApplyPlan, output: Path) -> None:
@@ -125,6 +130,32 @@ class FullCheckpointSyncer(WeightSyncer):
     _checkpoint: tempfile.TemporaryDirectory | None = None
     _bootstrap_checkpoint: tempfile.TemporaryDirectory | None = None
     _uncertain_checkpoint: tempfile.TemporaryDirectory | None = None
+
+    def __init__(
+        self,
+        root: Path,
+        adapter: EngineAdapter,
+        gate: AdmissionGate,
+        *,
+        poll_seconds: float = 2,
+        drain_timeout: float = 30,
+        keyframe_lag: int = 50,
+        metrics: Metrics | None = None,
+        reload: Callable[[Path], None] = reload_mount,
+        managed_target: ManagedTargetProvider | None = None,
+    ) -> None:
+        if managed_target is not None:
+            raise ValueError("Full checkpoint syncer does not support managed targets")
+        super().__init__(
+            root,
+            adapter,
+            gate,
+            poll_seconds=poll_seconds,
+            drain_timeout=drain_timeout,
+            keyframe_lag=keyframe_lag,
+            metrics=metrics,
+            reload=reload,
+        )
 
     async def _prepare(self, plan: ApplyPlan) -> tempfile.TemporaryDirectory:
         directory = tempfile.TemporaryDirectory(prefix="chalk-weight-checkpoint-")
