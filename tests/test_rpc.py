@@ -241,3 +241,64 @@ def test_router_creation_is_not_automatically_replayed(service, method):
     with pytest.raises(ConnectError):
         _rpc.RetryInterceptor().intercept_unary_sync(execute, "create", ctx)
     assert attempts == ["create"]
+
+
+@pytest.mark.parametrize(
+    "service,method",
+    [
+        ("SandboxSnapshotService", "CreateSandboxSnapshot"),
+        ("SandboxSnapshotService", "GetSandboxSnapshot"),
+        ("SandboxService", "SuspendSandbox"),
+    ],
+)
+def test_snapshot_legacy_mutations_and_budgeted_reads_are_not_retried(service, method):
+    ctx = RequestContext(
+        method=MethodInfo(
+            name=method,
+            service_name=f"chalk.sandbox.v2.{service}",
+            input=object,
+            output=object,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        ),
+        http_method="POST",
+        request_headers=Headers(),
+    )
+    attempts = []
+
+    def execute(request, context):
+        attempts.append(request)
+        raise ConnectError(Code.UNAVAILABLE, "response lost")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(execute, "request", ctx)
+    assert attempts == ["request"]
+
+
+def test_retry_interceptor_does_not_sleep_beyond_rpc_deadline(monkeypatch):
+    now = [0.0]
+    sleeps = []
+    monkeypatch.setattr(_rpc.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    ctx = RequestContext(
+        method=MethodInfo(
+            name="StartSandboxSnapshot",
+            service_name="chalk.sandbox.v2.SandboxSnapshotService",
+            input=object,
+            output=object,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        ),
+        http_method="POST",
+        request_headers=Headers(),
+        timeout_ms=10_000,
+    )
+    attempts = []
+
+    def execute(request, context):
+        attempts.append(request)
+        now[0] += 9.95
+        raise ConnectError(Code.UNAVAILABLE, "response lost near deadline")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(execute, "request", ctx)
+    assert attempts == ["request"]
+    assert sleeps == []

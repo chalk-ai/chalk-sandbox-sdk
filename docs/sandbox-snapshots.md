@@ -36,12 +36,47 @@ with SandboxClient.from_env() as client:
         sandbox.terminate()
 ```
 
-Pass `wait=False` to `snapshot()` to return while capture is still in progress,
-then use `snapshot.wait(timeout=...)` before restoring. `snapshot.refresh()`
-fetches its current status. `SandboxSnapshot.from_id(snapshot_id, client=client)`
-loads a previously saved handle, and `client.list_snapshots(sandbox.id)` lists
-snapshots created from that sandbox. Use `snapshot.delete()` or
-`client.delete_snapshot(snapshot.id)` to delete one.
+Pass `wait=False` to submit capture and return a pending handle immediately after
+acceptance. Checkpointing, upload, and registry publication continue independently
+of your connection. `snapshot.refresh()` reports `status`, `phase`,
+`bytes_completed`, and `bytes_total` (byte counts are zero when unavailable).
+Upload progress counts bytes processed by the upload pipeline, which may still be
+buffered or in flight. Only `status == "completed"` proves durable upload and
+registry publication. Use `snapshot.wait(timeout=...)` before restoring.
+
+A wait timeout stops only the local wait. It raises
+`SandboxSnapshotTimeoutError`, whose `snapshot` attribute retains the handle:
+
+```python
+from chalkcompute import SandboxSnapshotTimeoutError
+
+snapshot = sandbox.snapshot(wait=False)
+print(snapshot.id)  # Save this to reconnect from another process.
+try:
+    snapshot.wait(timeout=60)
+except SandboxSnapshotTimeoutError as exc:
+    snapshot = exc.snapshot
+    # Capture continues. Wait again later, or reload the saved ID.
+```
+
+`SandboxSnapshot.from_id(snapshot_id, client=client)` reloads a saved handle, and
+`client.list_snapshots(sandbox.id)` lists snapshots created from that sandbox.
+Use `snapshot.delete()` or `client.delete_snapshot(snapshot.id)` to delete one.
+
+For recovery when a submission response is lost, supply an `idempotency_key`:
+
+```python
+snapshot = sandbox.snapshot(wait=False, idempotency_key="model-ready-2026-11-13")
+```
+
+Keys must be non-empty and at most 128 UTF-8 bytes. Repeating that submission
+with the same key returns the same operation. Reusing
+the key with different inputs is rejected. If no key is supplied, the SDK creates
+one; submission failures expose it as `SandboxSnapshotError.idempotency_key` so
+you can retry with that key. Status reads and reconnecting never start a capture.
+The updated SDK requires backend support for asynchronous submission; an older
+server reports an unsupported-operation error rather than falling back to a
+long-running synchronous request.
 
 ## Suspend and restore in place
 
