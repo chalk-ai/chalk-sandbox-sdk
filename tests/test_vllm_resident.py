@@ -458,6 +458,7 @@ def test_adapter_binds_ack_then_rejects_identity_drift_and_cancellation(
         digest,
         _LAYOUT_RAW.decode(),
         hashlib.sha256(_LAYOUT_RAW).hexdigest(),
+        str(tmp_path.resolve()),
     ]
     patch_dir = tmp_path / "patch"
     patch, patch_digest = manifest_at(patch_dir, 1, 0, "patch")

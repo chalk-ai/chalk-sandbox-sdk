@@ -11,7 +11,12 @@ from types import SimpleNamespace
 import pytest
 
 from chalkcompute._weights_codec import TensorPatch, checksum, encode_patch
-from chalkcompute._weights_format import TensorEntry, WeightManifest, architecture_hash
+from chalkcompute._weights_format import (
+    TensorEntry,
+    WeightManifest,
+    WeightStreamError,
+    architecture_hash,
+)
 from chalkcompute.weights.layout import (
     Concatenate,
     TensorMapping,
@@ -124,14 +129,28 @@ def fixture(tmp_path):
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize(
+    "seed", ["stream", "snapshot", "wrong_snapshot", "wrong_source", "wrong_config"]
+)
 def test_bridge_exact_layout_handoff_and_real_generic_sparse_update(
-    tmp_path, monkeypatch, engine
+    tmp_path, monkeypatch, engine, seed
 ):
     initial_dir, initial, patch_dir, patch, path, raw, model = fixture(tmp_path)
     monkeypatch.setattr(resident.ResidentWeights, "_snapshot", snapshot)
     monkeypatch.setattr(resident.ResidentWeights, "_synchronize", lambda self: None)
     monkeypatch.setattr(resident_runtime, "check_runtime_sources", lambda kind: None)
     monkeypatch.setattr(resident_runtime, "check_cuda", lambda device: None)
+    launch_dir = initial_dir if seed == "stream" else tmp_path / "snapshot"
+    launch_dir.mkdir(exist_ok=True)
+    if launch_dir != initial_dir:
+        config_value = json.loads((initial_dir / "config.json").read_bytes())
+        if seed == "wrong_config":
+            config_value["hidden_act"] = "different"
+        (launch_dir / "config.json").write_text(json.dumps(config_value, indent=2))
+    expected_source = initial_dir if seed == "wrong_source" else launch_dir
+    if seed == "wrong_snapshot":
+        with torch.no_grad():
+            model.packed[0] += 1
     if engine == "vllm":
         from chalkcompute.weights.serving.adapters.vllm_resident import (
             VLLMResidentAdapter,
@@ -143,7 +162,7 @@ def test_bridge_exact_layout_handoff_and_real_generic_sparse_update(
         )
         native = worker.ResidentSparseExtension()
         native.vllm_config = SimpleNamespace(
-            model_config=SimpleNamespace(model=str(initial_dir))
+            model_config=SimpleNamespace(model=str(expected_source))
         )
         monkeypatch.setattr(worker, "check_worker", lambda _: model)
 
@@ -159,7 +178,7 @@ def test_bridge_exact_layout_handoff_and_real_generic_sparse_update(
             weight_layout=path, weight_layout_sha256=hashlib.sha256(raw).hexdigest()
         )
         native = SimpleNamespace(
-            server_args=SimpleNamespace(model_path=str(initial_dir)),
+            server_args=SimpleNamespace(model_path=str(expected_source)),
             tp_worker=SimpleNamespace(model_runner=SimpleNamespace(model=model)),
             flush_cache=lambda: True,
         )
@@ -168,13 +187,19 @@ def test_bridge_exact_layout_handoff_and_real_generic_sparse_update(
         async def post(route, body):
             return worker.control(native, body)
 
-    adapter._model_dir = initial_dir.resolve()
+    adapter._model_dir = launch_dir.resolve()
     adapter._post = post
     path.write_text("corrupted after snapshot")
     before = model.packed.detach().clone()
     identity = (id(model.packed), model.packed.data_ptr())
 
     async def run():
+        if seed.startswith("wrong"):
+            with pytest.raises((ValueError, RuntimeError, WeightStreamError)):
+                await adapter.initialize(initial_dir, initial)
+            assert adapter._failed
+            assert getattr(native, "_chalk_resident", None) is None
+            return
         await adapter.initialize(initial_dir, initial)
         await adapter.apply(patch_dir, patch)
         assert (id(model.packed), model.packed.data_ptr()) == identity

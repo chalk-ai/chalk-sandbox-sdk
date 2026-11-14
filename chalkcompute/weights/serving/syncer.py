@@ -4,9 +4,10 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from chalkcompute._weights_codec import verify_payloads
 from chalkcompute._weights_format import (
@@ -15,8 +16,12 @@ from chalkcompute._weights_format import (
     read_pointer,
     version_dir,
 )
-from chalkcompute.weights.serving.adapters.base import EngineAdapter
+from chalkcompute.weights.serving.adapters.base import (
+    EngineAdapter,
+    FencedEngineAdapter,
+)
 from chalkcompute.weights.serving.managed_target import (
+    ManagedWeightTarget,
     TargetProvider,
     verify_target_manifest,
 )
@@ -37,6 +42,7 @@ class ApplyError(RuntimeError):
 class ApplyPlan:
     target: int
     manifests: tuple[WeightManifest, ...]
+    manifest_sha256: Mapping[int, str] = field(default_factory=dict)
 
 
 def reload_mount(root: Path) -> None:
@@ -110,7 +116,13 @@ class WeightSyncer:
             )
         return manifest
 
-    def plan(self, target: int, *, bootstrap: bool = False) -> ApplyPlan:
+    def plan(
+        self,
+        target: int,
+        *,
+        bootstrap: bool = False,
+        manifests: Mapping[int, WeightManifest] | None = None,
+    ) -> ApplyPlan:
         """Walk backwards from desired state, never selecting a keyframe after PIN."""
         current = None if bootstrap else self.gate.version
         if current == target:
@@ -126,7 +138,11 @@ class WeightSyncer:
                 raise StreamError("Weight stream parent cycle")
             seen.add(cursor)
             try:
-                manifest = self.manifest(cursor)
+                manifest = (
+                    manifests[cursor]
+                    if manifests is not None
+                    else self.manifest(cursor)
+                )
             except FileNotFoundError as exc:
                 raise StreamError(f"Missing manifest for version {cursor}") from exc
             chain.append(manifest)
@@ -145,13 +161,40 @@ class WeightSyncer:
             raise StreamError("No keyframe can materialize the desired version")
         return ApplyPlan(target, tuple(chain))
 
+    def managed_plan(
+        self, target: ManagedWeightTarget, *, bootstrap: bool = False
+    ) -> ApplyPlan:
+        assert self.managed_target is not None
+        chain, digests = verify_target_manifest(self.root, target, self.managed_target)
+        plan = self.plan(
+            target.logical_version,
+            bootstrap=bootstrap,
+            manifests={m.version: m for m in chain},
+        )
+        return ApplyPlan(plan.target, plan.manifests, digests)
+
+    async def _apply(self, plan: ApplyPlan, manifest: WeightManifest) -> None:
+        directory = self.root / version_dir(manifest.version)
+        if plan.manifest_sha256:
+            await cast(FencedEngineAdapter, self.adapter).apply(
+                directory,
+                manifest,
+                expected_manifest_sha256=plan.manifest_sha256[manifest.version],
+            )
+        else:
+            await self.adapter.apply(directory, manifest)
+
     def verify(self, plan: ApplyPlan) -> None:
         # Verify the *entire* replay before the first GPU write. Corruption in a
         # later version cannot leave the engine partially advanced.
         for manifest in plan.manifests:
             verify_payloads(self.root / version_dir(manifest.version), manifest)
 
-    async def bootstrap(self, launch: Callable[[Path], Awaitable[None]]) -> None:
+    async def bootstrap(
+        self,
+        launch: Callable[[Path], Awaitable[None]],
+        initial_model_dir: Path | None = None,
+    ) -> None:
         async with self._lock:
             await asyncio.to_thread(self.reload, self.root)
             managed_target_provider = self.managed_target
@@ -161,9 +204,11 @@ class WeightSyncer:
                 else None
             )
             desired = target.logical_version if target is not None else self.desired()
-            plan = await asyncio.to_thread(self.plan, desired, bootstrap=True)
-            if target is not None:
-                await asyncio.to_thread(verify_target_manifest, self.root, target)
+            plan = (
+                await asyncio.to_thread(self.managed_plan, target, bootstrap=True)
+                if target is not None
+                else await asyncio.to_thread(self.plan, desired, bootstrap=True)
+            )
             await asyncio.to_thread(self.verify, plan)
             if target is not None:
                 assert managed_target_provider is not None
@@ -176,14 +221,29 @@ class WeightSyncer:
             self.architecture_hash = first.architecture_hash
             self._model_elements = sum(math.prod(e.shape) for e in first.tensors)
             try:
-                await launch(self.root / version_dir(first.version))
                 initialize = getattr(self.adapter, "initialize", None)
-                if initialize is not None:
-                    await initialize(self.root / version_dir(first.version), first)
-                for manifest in patches:
-                    await self.adapter.apply(
-                        self.root / version_dir(manifest.version), manifest
+                if initial_model_dir is not None and initialize is None:
+                    raise StreamError(
+                        "Snapshot bootstrap requires native resident seed verification"
                     )
+                await launch(
+                    initial_model_dir
+                    if initial_model_dir is not None
+                    else self.root / version_dir(first.version)
+                )
+                if initialize is not None:
+                    if plan.manifest_sha256:
+                        await initialize(
+                            self.root / version_dir(first.version),
+                            first,
+                            expected_manifest_sha256=plan.manifest_sha256[
+                                first.version
+                            ],
+                        )
+                    else:
+                        await initialize(self.root / version_dir(first.version), first)
+                for manifest in patches:
+                    await self._apply(plan, manifest)
                 if patches:
                     await self.adapter.reset_cache()
                 if target is not None:
@@ -216,11 +276,19 @@ class WeightSyncer:
             self.metrics.lag_versions = (
                 max(0, target - current) if current is not None else target
             )
-            plan = await asyncio.to_thread(self.plan, target)
-            if managed_target is not None:
-                await asyncio.to_thread(
-                    verify_target_manifest, self.root, managed_target
+            try:
+                plan = (
+                    await asyncio.to_thread(self.managed_plan, managed_target)
+                    if managed_target is not None
+                    else await asyncio.to_thread(self.plan, target)
                 )
+            except Exception:
+                if managed_target is not None:
+                    await self.gate.fail(
+                        "Managed immutable manifest verification failed"
+                    )
+                raise
+            if managed_target is not None:
                 previous_applied = self.gate.applied_target
                 if current == target and previous_applied is not None:
                     expected_content = managed_target.observation()
@@ -272,9 +340,7 @@ class WeightSyncer:
                             managed_target_provider.assert_current, managed_target
                         )
                     for manifest in plan.manifests:
-                        await self.adapter.apply(
-                            self.root / version_dir(manifest.version), manifest
-                        )
+                        await self._apply(plan, manifest)
                     await self.adapter.reset_cache()
                     if managed_target is not None:
                         assert managed_target_provider is not None
