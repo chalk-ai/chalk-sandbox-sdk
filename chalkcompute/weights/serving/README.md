@@ -158,8 +158,8 @@ or quantized checkpoint support.
 ## Managed model replicas
 
 The model deployment API accepts typed `ModelScalingGroupSpec.serving_config`.
-The backend validates that configuration and finalizes an immutable binding to
-the actual environment, scaling group, revision, stream and canonical volume.
+The backend validates that configuration and records the environment, stream and
+canonical volume binding. Group and revision IDs are not part of the command.
 It persists a single private `--model-serving-bootstrap JSON` launcher argument.
 The envelope contains only `schema_version: 1`, `config` and `binding`; it has no
 desired version, lease or readiness status. Its complete UTF-8 representation is
@@ -173,6 +173,12 @@ and environment-supplied model bindings do not activate this path. With no
 bootstrap argument, ordinary remote-call behavior and lightweight imports remain
 unchanged. The runtime polls the existing scoped target RPC using the explicit
 platform `CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume credentials are separate.
+The controller delivers `scaling-group-id` and `scaling-group-revision-id` beside
+that token in its read-only mount. The runtime captures these files once before
+starting its engine. It never discovers its own revision from the deployment's
+mutable current selection. Missing metadata refuses managed startup. Both the
+controller and HOST hypervisor must support this metadata before enabling the
+managed runtime image; ordinary remote-call workers do not read the new files.
 The mutable selected target and manifest identities remain on the scoped RPC.
 The static bootstrap does not change the existing lease policy: reads have a
 three-second deadline, successful observations last at most fifteen seconds,
