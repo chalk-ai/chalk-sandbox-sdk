@@ -17,7 +17,7 @@ from chalkcompute._weights_format import (
 )
 from chalkcompute.weights.serving.adapters.base import EngineAdapter
 from chalkcompute.weights.serving.managed_target import (
-    ManagedTargetProvider,
+    TargetProvider,
     verify_target_manifest,
 )
 from chalkcompute.weights.serving.supervisor import AdmissionGate, DrainTimeout, Metrics
@@ -64,7 +64,7 @@ class WeightSyncer:
         keyframe_lag: int = 50,
         metrics: Metrics | None = None,
         reload: Callable[[Path], None] = reload_mount,
-        managed_target: ManagedTargetProvider | None = None,
+        managed_target: TargetProvider | None = None,
     ) -> None:
         if poll_seconds <= 0 or drain_timeout <= 0 or keyframe_lag < 1:
             raise ValueError(

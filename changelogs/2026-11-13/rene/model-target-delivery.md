@@ -1,0 +1,2 @@
+- Add authenticated model-deployment target polling with explicit workload identity, bounded leases and fail-closed revision/publication fences; select it with `CHALK_WEIGHT_TARGET_SOURCE=model-deployment`.
+- Resolve bounded replay manifest identities through the deployment-scoped credential and keep lease cache state consistent after verification.
