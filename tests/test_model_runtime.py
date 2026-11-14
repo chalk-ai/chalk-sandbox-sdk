@@ -271,9 +271,20 @@ def test_typed_bootstrap_factory_ignores_legacy_mode_and_identity_env(
     monkeypatch.setattr(model_target, "ModelDeploymentTargetProvider", provider)
     monkeypatch.setenv("CHALK_API_SERVER", "https://api.example.test")
     token_file = tmp_path / "identity-token"
-    (tmp_path / "scaling-group-id").write_text("deployment")
-    (tmp_path / "scaling-group-revision-id").write_text("revision")
+    metadata = tmp_path / "scaling-group-metadata"
+    (tmp_path / "scaling-group-metadata").write_text(
+        'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="revision"'
+    )
     monkeypatch.setenv("CHALK_FUNCTION_QUEUE_TOKEN_FILE", str(token_file))
+    opened = []
+    original_open = Path.open
+
+    def track_open(path, *args, **kwargs):
+        if path == metadata:
+            opened.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", track_open)
     for name in [
         "CHALK_MODEL_SERVING_CONFIG",
         "CHALK_MODEL_SCALING_GROUP_ID",
@@ -288,7 +299,10 @@ def test_typed_bootstrap_factory_ignores_legacy_mode_and_identity_env(
             monkeypatch.delenv(name, raising=False)
     runtime = ManagedModelRuntime.from_bootstrap(bootstrap(), Handle())
     assert runtime.config.engine == "vllm-sparse"
-    (tmp_path / "scaling-group-revision-id").write_text("new-revision")
+    assert opened == [metadata]
+    (tmp_path / "scaling-group-metadata").write_text(
+        'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="new-revision"'
+    )
     assert captured == {
         "api_server": "https://api.example.test",
         "token_file": token_file,
@@ -331,30 +345,109 @@ def test_portable_bootstrap_fixture():
     assert not hasattr(parsed.binding, "model_scaling_group_revision_id")
 
 
-@pytest.mark.parametrize("filename", ["scaling-group-id", "scaling-group-revision-id"])
-@pytest.mark.parametrize("value", [None, "", " spaced ", "bad\x00id", "x" * 257])
-def test_replica_metadata_is_required_and_bounded(tmp_path, filename, value):
+@pytest.mark.parametrize("platform", ["host", "kubernetes"])
+def test_replica_metadata_platform_files(tmp_path, platform):
     from chalkcompute.weights.serving.model_runtime import ModelServingReplica
 
-    (tmp_path / "scaling-group-id").write_text("deployment")
-    (tmp_path / "scaling-group-revision-id").write_text("A")
-    target = tmp_path / filename
-    if value is None:
-        target.unlink()
-    else:
-        target.write_text(value)
+    fixture = Path(__file__).parent / f"fixtures/model_serving_metadata_{platform}.txt"
+    (tmp_path / "scaling-group-metadata").write_bytes(fixture.read_bytes())
+    captured = ModelServingReplica.read(tmp_path / "identity-token")
+    assert captured.deployment_id == "group-A_1.2"
+    assert captured.revision_id == "12345678-1234-1234-1234-123456789abc"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "",
+        '=""',
+        '=" spaced "',
+        '="bad\x00id"',
+        '="bad\\nid"',
+        '="bad\\u0061id"',
+        '="bad/id"',
+        '="bad:id"',
+        '="-bad"',
+        '="bad."',
+        '="' + "x" * 64 + '"',
+        "=unquoted",
+        '="unterminated',
+        '="valid" trailing',
+        ' ="valid"',
+        ' "valid"',
+        ':"valid"',
+        '="valid"\r',
+    ],
+)
+@pytest.mark.parametrize(
+    "key", ["chalk.ai/scaling-group", "chalk.ai/scaling-group-revision"]
+)
+def test_replica_metadata_rejects_invalid_required_entry(tmp_path, key, entry):
+    from chalkcompute.weights.serving.model_runtime import ModelServingReplica
+
+    other = (
+        "chalk.ai/scaling-group-revision"
+        if key == "chalk.ai/scaling-group"
+        else "chalk.ai/scaling-group"
+    )
+    (tmp_path / "scaling-group-metadata").write_text(f'{other}="valid"\n{key}{entry}')
     with pytest.raises(ValueError, match="replica metadata"):
         ModelServingReplica.read(tmp_path / "identity-token")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        b"",
+        b'other="label"',
+        b'chalk.ai/scaling-group="deployment"',
+        b'chalk.ai/scaling-group-revision="revision"',
+        b'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="revision"',
+        b'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="revision"\nchalk.ai/scaling-group-revision="different"',
+        b'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="revision"\nother="\xff"',
+        b'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="revision"\n'
+        + b"x" * (64 * 1024),
+    ],
+)
+def test_replica_metadata_is_required_and_bounded(tmp_path, raw):
+    from chalkcompute.weights.serving.model_runtime import ModelServingReplica
+
+    # Old two-file metadata never supplies a fallback identity.
+    (tmp_path / "scaling-group-id").write_text("deployment")
+    (tmp_path / "scaling-group-revision-id").write_text("revision")
+    if raw is not None:
+        (tmp_path / "scaling-group-metadata").write_bytes(raw)
+    with pytest.raises(ValueError, match="replica metadata"):
+        ModelServingReplica.read(tmp_path / "identity-token")
+
+
+def test_replica_metadata_accepts_label_bounds_and_exact_file_bound(tmp_path):
+    from chalkcompute.weights.serving.model_runtime import ModelServingReplica
+
+    text = (
+        'chalk.ai/scaling-group="'
+        + "x" * 63
+        + '"\nchalk.ai/scaling-group-revision="A"\n'
+    )
+    text += "unrelated=" + "x" * (64 * 1024 - len(text) - len("unrelated="))
+    (tmp_path / "scaling-group-metadata").write_text(text)
+    assert (
+        ModelServingReplica.read(tmp_path / "identity-token").deployment_id == "x" * 63
+    )
 
 
 def test_running_replica_never_adopts_a_new_selected_revision(tmp_path):
     from chalkcompute.weights.serving.model_runtime import ModelServingReplica
 
-    (tmp_path / "scaling-group-id").write_text("deployment")
-    revision = tmp_path / "scaling-group-revision-id"
-    revision.write_text("A")
+    metadata = tmp_path / "scaling-group-metadata"
+    metadata.write_text(
+        'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="A"'
+    )
     captured = ModelServingReplica.read(tmp_path / "identity-token")
-    revision.write_text("B")
+    metadata.write_text(
+        'chalk.ai/scaling-group="deployment"\nchalk.ai/scaling-group-revision="B"'
+    )
     assert captured.revision_id == "A"
     assert ModelServingReplica.read(tmp_path / "identity-token").revision_id == "B"
 
