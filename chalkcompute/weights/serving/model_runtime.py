@@ -134,31 +134,43 @@ class ModelServingBinding:
 
 @dataclass(frozen=True)
 class ModelServingReplica:
-    """This execution's identity, captured once from controller-managed files."""
+    """This execution's identity, captured once from controller-managed labels."""
 
     deployment_id: str
     revision_id: str
 
     @classmethod
     def read(cls, token_file: Path) -> ModelServingReplica:
-        def field(name: str) -> str:
-            try:
-                with (token_file.parent / name).open(encoding="utf-8") as source:
-                    value = source.read(257)
-            except (OSError, UnicodeError) as error:
-                raise ValueError(
-                    "Controller-provided replica metadata is required"
-                ) from error
-            if (
-                not value
-                or len(value) > 256
-                or value != value.strip()
-                or "\x00" in value
-            ):
+        try:
+            with (token_file.parent / "scaling-group-metadata").open("rb") as source:
+                raw = source.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                raise ValueError("Oversized controller-provided replica metadata")
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeError) as error:
+            raise ValueError(
+                "Controller-provided replica metadata is required"
+            ) from error
+        keys = ("chalk.ai/scaling-group", "chalk.ai/scaling-group-revision")
+        values: dict[str, str] = {}
+        for line in text.split("\n"):
+            key = re.match(r"[A-Za-z0-9_./-]+", line.lstrip())
+            if key is None or key[0] not in keys:
+                continue
+            name = key[0]
+            # Required IDs use the Kubernetes label alphabet, so their Go-quoted
+            # representation contains no escapes. Other label values are opaque.
+            value = re.fullmatch(
+                re.escape(name)
+                + r'="([A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)"',
+                line,
+            )
+            if value is None or name in values:
                 raise ValueError("Invalid controller-provided replica metadata")
-            return value
-
-        return cls(field("scaling-group-id"), field("scaling-group-revision-id"))
+            values[name] = value[1]
+        if values.keys() != set(keys):
+            raise ValueError("Missing controller-provided replica metadata")
+        return cls(values[keys[0]], values[keys[1]])
 
 
 @dataclass(frozen=True)

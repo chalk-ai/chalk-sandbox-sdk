@@ -1,0 +1,5 @@
+app="model"
+chalk.ai/scaling-group="group-A_1.2"
+chalk.ai/other="escaped\\path\nvalue\""
+chalk.ai/scaling-group-revision="12345678-1234-1234-1234-123456789abc"
+z-last="value"

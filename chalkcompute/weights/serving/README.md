@@ -173,12 +173,19 @@ and environment-supplied model bindings do not activate this path. With no
 bootstrap argument, ordinary remote-call behavior and lightweight imports remain
 unchanged. The runtime polls the existing scoped target RPC using the explicit
 platform `CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume credentials are separate.
-The controller delivers `scaling-group-id` and `scaling-group-revision-id` beside
-that token in its read-only mount. The runtime captures these files once before
-starting its engine. It never discovers its own revision from the deployment's
+The controller delivers one `scaling-group-metadata` file beside that token in
+its read-only mount. Kubernetes projects `metadata.labels` as newline-separated
+`key="value"` entries; HOST uses the same representation. The runtime captures
+`chalk.ai/scaling-group` and `chalk.ai/scaling-group-revision` once before
+starting its engine. The file is bounded to 64 KiB of valid UTF-8. Required
+values contain 1–63 Kubernetes label characters (ASCII alphanumeric, dot,
+underscore or hyphen, beginning and ending alphanumeric), so their quoted
+representation needs no escape decoding. Unrelated labels are ignored. Missing,
+duplicate or malformed required entries refuse startup. It never discovers its
+own revision from the deployment's
 mutable current selection. Missing metadata refuses managed startup. Both the
 controller and HOST hypervisor must support this metadata before enabling the
-managed runtime image; ordinary remote-call workers do not read the new files.
+managed runtime image; ordinary remote-call workers do not read this file.
 The mutable selected target and manifest identities remain on the scoped RPC.
 The static bootstrap does not change the existing lease policy: reads have a
 three-second deadline, successful observations last at most fifteen seconds,
