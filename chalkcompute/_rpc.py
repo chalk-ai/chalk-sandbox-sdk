@@ -127,6 +127,16 @@ class RetryInterceptor:
             "chalk.router.v1."
         ) and ctx.method.name.startswith("Create"):
             return call_next(request, ctx)
+        # Legacy capture/suspend has no idempotency key. Status waiters own
+        # their retry budget so transport retries cannot overrun local waits.
+        if (
+            ctx.method.service_name == "chalk.sandbox.v2.SandboxSnapshotService"
+            and ctx.method.name in {"CreateSandboxSnapshot", "GetSandboxSnapshot"}
+        ) or (
+            ctx.method.service_name == "chalk.sandbox.v2.SandboxService"
+            and ctx.method.name == "SuspendSandbox"
+        ):
+            return call_next(request, ctx)
         delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         last_error: ConnectError | None = None
         for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):
@@ -135,6 +145,11 @@ class RetryInterceptor:
             except ConnectError as exc:
                 last_error = exc
                 if exc.code != Code.UNAVAILABLE or attempt >= RPC_RETRY_MAX_ATTEMPTS:
+                    raise
+                # ConnectRPC keeps a single deadline on this context across
+                # attempts. Do not back off beyond that remaining RPC budget.
+                remaining_ms = ctx.timeout_ms
+                if remaining_ms is not None and remaining_ms <= delay * 1000:
                     raise
                 logger.warning(
                     "%s/%s UNAVAILABLE (attempt %d/%d); retrying in %.1fs",

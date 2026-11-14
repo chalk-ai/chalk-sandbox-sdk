@@ -398,8 +398,8 @@ def test_sandbox_snapshot_wait_restore_and_fork() -> None:
         created_at=Timestamp(seconds=1),
         completed_at=Timestamp(seconds=2),
     )
-    snapshot_stub.create_sandbox_snapshot.return_value = (
-        snapshot_pb.CreateSandboxSnapshotResponse(snapshot=in_progress)
+    snapshot_stub.start_sandbox_snapshot.return_value = (
+        snapshot_pb.StartSandboxSnapshotResponse(snapshot=in_progress)
     )
     snapshot_stub.get_sandbox_snapshot.side_effect = [
         snapshot_pb.GetSandboxSnapshotResponse(snapshot=completed)
@@ -415,7 +415,7 @@ def test_sandbox_snapshot_wait_restore_and_fork() -> None:
     assert fork.id == "forked-sandbox"
     assert restored.id != fork.id
     assert (
-        snapshot_stub.create_sandbox_snapshot.call_args.args[0].sandbox_id
+        snapshot_stub.start_sandbox_snapshot.call_args.args[0].sandbox_id
         == "sandbox-123"
     )
     assert snapshot_stub.get_sandbox_snapshot.call_count == 1
