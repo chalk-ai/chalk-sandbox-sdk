@@ -111,8 +111,6 @@ class ModelServingConfig:
 @dataclass(frozen=True)
 class ModelServingBinding:
     environment_id: str
-    model_scaling_group_id: str
-    model_scaling_group_revision_id: str
     weight_stream_id: str
     volume_id: str
 
@@ -132,6 +130,35 @@ class ModelServingBinding:
         ):
             raise ValueError("Exact authoritative model serving binding required")
         return cls(**value)
+
+
+@dataclass(frozen=True)
+class ModelServingReplica:
+    """This execution's identity, captured once from controller-managed files."""
+
+    deployment_id: str
+    revision_id: str
+
+    @classmethod
+    def read(cls, token_file: Path) -> ModelServingReplica:
+        def field(name: str) -> str:
+            try:
+                with (token_file.parent / name).open(encoding="utf-8") as source:
+                    value = source.read(257)
+            except (OSError, UnicodeError) as error:
+                raise ValueError(
+                    "Controller-provided replica metadata is required"
+                ) from error
+            if (
+                not value
+                or len(value) > 256
+                or value != value.strip()
+                or "\x00" in value
+            ):
+                raise ValueError("Invalid controller-provided replica metadata")
+            return value
+
+        return cls(field("scaling-group-id"), field("scaling-group-revision-id"))
 
 
 @dataclass(frozen=True)
@@ -201,12 +228,13 @@ class ManagedModelRuntime:
         if not token_file:
             raise ValueError("Managed runtime requires the platform FNQ token file")
         binding = bootstrap.binding
+        replica = ModelServingReplica.read(Path(token_file))
         provider = ModelDeploymentTargetProvider(
             api_server=os.environ.get("CHALK_API_SERVER", "https://api.chalk.ai"),
             token_file=Path(token_file),
             expected_environment_id=binding.environment_id,
-            expected_deployment_id=binding.model_scaling_group_id,
-            expected_revision_id=binding.model_scaling_group_revision_id,
+            expected_deployment_id=replica.deployment_id,
+            expected_revision_id=replica.revision_id,
             expected_stream_id=binding.weight_stream_id,
             expected_volume_id=binding.volume_id,
         )

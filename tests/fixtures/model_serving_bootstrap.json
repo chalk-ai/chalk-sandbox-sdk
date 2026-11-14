@@ -1,8 +1,6 @@
 {
   "binding": {
     "environment_id": "environment",
-    "model_scaling_group_id": "deployment",
-    "model_scaling_group_revision_id": "revision",
     "volume_id": "volume",
     "weight_stream_id": "stream"
   },

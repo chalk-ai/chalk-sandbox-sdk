@@ -183,8 +183,6 @@ def bootstrap(**overrides):
             "config": json.loads(config()),
             "binding": {
                 "environment_id": "environment",
-                "model_scaling_group_id": "deployment",
-                "model_scaling_group_revision_id": "revision",
                 "weight_stream_id": "stream",
                 "volume_id": "volume",
             },
@@ -215,8 +213,6 @@ def test_bootstrap_is_strict_and_contains_only_static_configuration(changes):
     "field",
     [
         "environment_id",
-        "model_scaling_group_id",
-        "model_scaling_group_revision_id",
         "weight_stream_id",
         "volume_id",
     ],
@@ -261,7 +257,7 @@ def test_bootstrap_uses_whole_utf8_bound_and_rejects_nested_duplicates():
 
 @pytest.mark.parametrize("legacy_present", [False, True])
 def test_typed_bootstrap_factory_ignores_legacy_mode_and_identity_env(
-    monkeypatch, legacy_present
+    monkeypatch, legacy_present, tmp_path
 ):
     from chalkcompute.weights.serving import model_target
 
@@ -274,7 +270,10 @@ def test_typed_bootstrap_factory_ignores_legacy_mode_and_identity_env(
 
     monkeypatch.setattr(model_target, "ModelDeploymentTargetProvider", provider)
     monkeypatch.setenv("CHALK_API_SERVER", "https://api.example.test")
-    monkeypatch.setenv("CHALK_FUNCTION_QUEUE_TOKEN_FILE", "/platform/fnq-token")
+    token_file = tmp_path / "identity-token"
+    (tmp_path / "scaling-group-id").write_text("deployment")
+    (tmp_path / "scaling-group-revision-id").write_text("revision")
+    monkeypatch.setenv("CHALK_FUNCTION_QUEUE_TOKEN_FILE", str(token_file))
     for name in [
         "CHALK_MODEL_SERVING_CONFIG",
         "CHALK_MODEL_SCALING_GROUP_ID",
@@ -289,9 +288,10 @@ def test_typed_bootstrap_factory_ignores_legacy_mode_and_identity_env(
             monkeypatch.delenv(name, raising=False)
     runtime = ManagedModelRuntime.from_bootstrap(bootstrap(), Handle())
     assert runtime.config.engine == "vllm-sparse"
+    (tmp_path / "scaling-group-revision-id").write_text("new-revision")
     assert captured == {
         "api_server": "https://api.example.test",
-        "token_file": Path("/platform/fnq-token"),
+        "token_file": token_file,
         "expected_environment_id": "environment",
         "expected_deployment_id": "deployment",
         "expected_revision_id": "revision",
@@ -327,4 +327,42 @@ def test_portable_bootstrap_fixture():
     parsed = ModelServingBootstrap.from_json(raw)
     assert parsed.config.engine_args == []
     assert parsed.config.initial_model_dir == Path("/snapshot/model")
-    assert parsed.binding.model_scaling_group_revision_id == "revision"
+    assert parsed.binding.weight_stream_id == "stream"
+    assert not hasattr(parsed.binding, "model_scaling_group_revision_id")
+
+
+@pytest.mark.parametrize("filename", ["scaling-group-id", "scaling-group-revision-id"])
+@pytest.mark.parametrize("value", [None, "", " spaced ", "bad\x00id", "x" * 257])
+def test_replica_metadata_is_required_and_bounded(tmp_path, filename, value):
+    from chalkcompute.weights.serving.model_runtime import ModelServingReplica
+
+    (tmp_path / "scaling-group-id").write_text("deployment")
+    (tmp_path / "scaling-group-revision-id").write_text("A")
+    target = tmp_path / filename
+    if value is None:
+        target.unlink()
+    else:
+        target.write_text(value)
+    with pytest.raises(ValueError, match="replica metadata"):
+        ModelServingReplica.read(tmp_path / "identity-token")
+
+
+def test_running_replica_never_adopts_a_new_selected_revision(tmp_path):
+    from chalkcompute.weights.serving.model_runtime import ModelServingReplica
+
+    (tmp_path / "scaling-group-id").write_text("deployment")
+    revision = tmp_path / "scaling-group-revision-id"
+    revision.write_text("A")
+    captured = ModelServingReplica.read(tmp_path / "identity-token")
+    revision.write_text("B")
+    assert captured.revision_id == "A"
+    assert ModelServingReplica.read(tmp_path / "identity-token").revision_id == "B"
+
+
+def test_bootstrap_cannot_supply_replica_identity():
+    from chalkcompute.weights.serving.model_runtime import ModelServingBootstrap
+
+    value = json.loads(bootstrap())
+    value["binding"]["model_scaling_group_revision_id"] = "B"
+    with pytest.raises(ValueError, match="binding"):
+        ModelServingBootstrap.from_json(json.dumps(value))
