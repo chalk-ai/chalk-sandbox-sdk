@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .snapshot_service_pb import CreateSandboxSnapshotRequest, CreateSandboxSnapshotResponse, DeleteSandboxSnapshotRequest, DeleteSandboxSnapshotResponse, GetSandboxSnapshotRequest, GetSandboxSnapshotResponse, ListSandboxSnapshotsRequest, ListSandboxSnapshotsResponse
+from .snapshot_service_pb import CreateSandboxSnapshotRequest, CreateSandboxSnapshotResponse, DeleteSandboxSnapshotRequest, DeleteSandboxSnapshotResponse, GetSandboxSnapshotRequest, GetSandboxSnapshotResponse, GetSnapshotStoreCredentialsRequest, GetSnapshotStoreCredentialsResponse, ListSandboxSnapshotsRequest, ListSandboxSnapshotsResponse, StartSandboxSnapshotRequest, StartSandboxSnapshotResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -22,6 +22,29 @@ if TYPE_CHECKING:
     from connectrpc.request import Headers, RequestContext
 
 class SandboxSnapshotServiceClientSync(ConnectClientSync):
+    def start_sandbox_snapshot(
+        self,
+        request: StartSandboxSnapshotRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> StartSandboxSnapshotResponse:
+        """
+        Additive async entry point. Older servers reject this method as unimplemented
+        rather than silently ignoring an async option on the synchronous method.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="StartSandboxSnapshot",
+                service_name="chalk.sandbox.v2.SandboxSnapshotService",
+                input=StartSandboxSnapshotRequest,
+                output=StartSandboxSnapshotResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def create_sandbox_snapshot(
         self,
         request: CreateSandboxSnapshotRequest,
@@ -97,4 +120,28 @@ class SandboxSnapshotServiceClientSync(ConnectClientSync):
             ),
             headers=headers,
             timeout_ms=timeout_ms,
+        )
+    def get_snapshot_store_credentials(
+        self,
+        request: GetSnapshotStoreCredentialsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetSnapshotStoreCredentialsResponse:
+        """
+        Served by the dataplane API server for the authenticated environment.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetSnapshotStoreCredentials",
+                service_name="chalk.sandbox.v2.SandboxSnapshotService",
+                input=GetSnapshotStoreCredentialsRequest,
+                output=GetSnapshotStoreCredentialsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
         )
