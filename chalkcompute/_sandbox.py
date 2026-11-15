@@ -200,10 +200,8 @@ class SandboxSnapshotError(SandboxError):
         snapshot_id: str | None = None,
         status: str | None = None,
         status_message: str | None = None,
-        idempotency_key: str | None = None,
         code: Code | None = None,
     ) -> None:
-        self.idempotency_key = idempotency_key
         self.code = code
         self.snapshot_id = snapshot_id
         self.status = status
@@ -2001,23 +1999,18 @@ class Sandbox:
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 300.0,
-        idempotency_key: str | None = None,
     ) -> SandboxSnapshot:
         """Submit a durable snapshot operation and optionally wait for readiness.
 
         ``wait=False`` returns after acceptance, before checkpointing/uploading
         finishes. ``timeout`` bounds the subsequent local wait, not capture.
         A wait timeout retains the handle on ``SandboxSnapshotTimeoutError``.
-        Reuse ``idempotency_key`` to recover a submission after a lost response;
-        using that key with different inputs is rejected by the service.
         """
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("timeout must be finite and non-negative")
         if not math.isfinite(poll_interval) or poll_interval <= 0:
             raise ValueError("poll_interval must be finite and greater than zero")
-        snapshot = self._require_client()._snapshot(
-            self._require_started(), idempotency_key=idempotency_key
-        )
+        snapshot = self._require_client()._snapshot(self._require_started())
         if wait:
             snapshot.wait(timeout=timeout, poll_interval=poll_interval)
         return snapshot
@@ -2656,18 +2649,11 @@ class SandboxClient:
             seen_cursors.add(cursor)
         return sandboxes
 
-    def _snapshot(
-        self, sandbox_id: str, *, idempotency_key: str | None
-    ) -> SandboxSnapshot:
-        key = str(uuid.uuid4()) if idempotency_key is None else idempotency_key
-        if not key.strip() or len(key.encode("utf-8")) > 128:
-            raise ValueError(
-                "idempotency_key must be non-empty and at most 128 UTF-8 bytes"
-            )
+    def _snapshot(self, sandbox_id: str) -> SandboxSnapshot:
         # Build once: transport retries reuse this exact key and request. A lost
         # acknowledgement must never turn into a distinct GPU checkpoint.
         request = snapshot_pb.StartSandboxSnapshotRequest(
-            sandbox_id=sandbox_id, idempotency_key=key
+            sandbox_id=sandbox_id, idempotency_key=str(uuid.uuid4())
         )
         try:
             response = self._snapshot_stub.start_sandbox_snapshot(
@@ -2676,28 +2662,19 @@ class SandboxClient:
                 timeout_ms=int(_SNAPSHOT_RPC_TIMEOUT_SECONDS * 1000),
             )
         except ConnectRpcError as exc:
-            message = (
-                "This server does not support asynchronous snapshot submission; "
-                "upgrade the backend before using this SDK"
-                if exc.code == Code.UNIMPLEMENTED
-                else f"Snapshot submission failed for sandbox {sandbox_id}: {exc.message}. "
-                f"Retry with idempotency_key={key!r} to recover the same operation"
-            )
             raise SandboxSnapshotError(
-                message, idempotency_key=key, code=exc.code
+                f"Snapshot submission failed for sandbox {sandbox_id}: {exc.message}",
+                code=exc.code,
             ) from exc
         except (TimeoutError, *HTTP_TRANSPORT_ERRORS) as exc:
             raise SandboxSnapshotError(
                 f"Snapshot acknowledgement was lost for sandbox {sandbox_id}; "
-                f"retry with idempotency_key={key!r} to recover the same operation",
-                idempotency_key=key,
+                "check the sandbox's saved snapshots before starting another capture",
                 code=Code.UNAVAILABLE,
             ) from exc
         if response.snapshot is None:
             raise SandboxSnapshotError(
-                f"StartSandboxSnapshot returned no snapshot for sandbox {sandbox_id}; "
-                f"retry with idempotency_key={key!r}",
-                idempotency_key=key,
+                f"Snapshot submission returned no snapshot for sandbox {sandbox_id}",
             )
         return _pb_to_sandbox_snapshot(response.snapshot, client=self)
 

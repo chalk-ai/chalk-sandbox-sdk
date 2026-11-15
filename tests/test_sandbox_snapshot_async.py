@@ -37,47 +37,38 @@ def snapshot_client():
 
 def test_submission_returns_pending_without_waiting(snapshot_client):
     client, stub = snapshot_client
-    snapshot = client.get("sandbox-1").snapshot(wait=False, idempotency_key="capture-1")
+    snapshot = client.get("sandbox-1").snapshot(wait=False)
     assert snapshot.status == "pending"
     assert snapshot.id == "snapshot-1"
     request = stub.start_sandbox_snapshot.call_args.args[0]
     assert request.sandbox_id == "sandbox-1"
-    assert request.idempotency_key == "capture-1"
+    assert request.idempotency_key
     assert stub.start_sandbox_snapshot.call_args.kwargs["timeout_ms"] == 10_000
     stub.get_sandbox_snapshot.assert_not_called()
     stub.create_sandbox_snapshot.assert_not_called()
 
 
-def test_lost_submission_can_be_recovered_with_same_key(snapshot_client):
+def test_separate_snapshot_calls_start_distinct_captures(snapshot_client):
     client, stub = snapshot_client
-    response = stub.start_sandbox_snapshot.return_value
-    stub.start_sandbox_snapshot.side_effect = [
-        ConnectError(Code.DEADLINE_EXCEEDED, "response lost"),
-        response,
-    ]
     sandbox = client.get("sandbox-1")
-    with pytest.raises(SandboxSnapshotError) as caught:
-        sandbox.snapshot(wait=False)
-    key = caught.value.idempotency_key
-    assert key
-    snapshot = sandbox.snapshot(wait=False, idempotency_key=key)
-    assert snapshot.id == "snapshot-1"
-    assert [
+    sandbox.snapshot(wait=False)
+    sandbox.snapshot(wait=False)
+    keys = [
         call.args[0].idempotency_key
         for call in stub.start_sandbox_snapshot.call_args_list
-    ] == [key, key]
+    ]
+    assert all(keys)
+    assert len(set(keys)) == 2
 
 
-def test_async_submission_does_not_fall_back_to_legacy_capture(snapshot_client):
+def test_submission_reports_server_error(snapshot_client):
     client, stub = snapshot_client
     stub.start_sandbox_snapshot.side_effect = ConnectError(
-        Code.UNIMPLEMENTED, "unknown method"
+        Code.FAILED_PRECONDITION, "sandbox is not running"
     )
-    with pytest.raises(
-        SandboxSnapshotError, match="does not support asynchronous"
-    ) as caught:
+    with pytest.raises(SandboxSnapshotError, match="sandbox is not running") as caught:
         client.get("sandbox-1").snapshot(wait=False)
-    assert caught.value.code == Code.UNIMPLEMENTED
+    assert caught.value.code == Code.FAILED_PRECONDITION
     stub.create_sandbox_snapshot.assert_not_called()
 
 
@@ -87,9 +78,6 @@ def test_async_submission_does_not_fall_back_to_legacy_capture(snapshot_client):
         {"timeout": -1},
         {"timeout": float("nan")},
         {"poll_interval": 0},
-        {"idempotency_key": ""},
-        {"idempotency_key": "   "},
-        {"idempotency_key": "é" * 65},
     ],
 )
 def test_invalid_arguments_never_submit(snapshot_client, kwargs):
@@ -215,7 +203,7 @@ def test_transport_retries_exact_same_idempotent_start_request(
         return RetryInterceptor().intercept_unary_sync(send, request, context)
 
     stub.start_sandbox_snapshot.side_effect = intercepted
-    client.get("sandbox-1").snapshot(wait=False, idempotency_key="one-capture")
+    client.get("sandbox-1").snapshot(wait=False)
     assert len(observed) == 2
     assert observed[0] is observed[1]
-    assert observed[0].idempotency_key == "one-capture"
+    assert observed[0].idempotency_key

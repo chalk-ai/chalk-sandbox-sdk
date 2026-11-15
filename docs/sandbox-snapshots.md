@@ -63,20 +63,9 @@ except SandboxSnapshotTimeoutError as exc:
 `client.list_snapshots(sandbox.id)` lists snapshots created from that sandbox.
 Use `snapshot.delete()` or `client.delete_snapshot(snapshot.id)` to delete one.
 
-For recovery when a submission response is lost, supply an `idempotency_key`:
-
-```python
-snapshot = sandbox.snapshot(wait=False, idempotency_key="model-ready-2026-11-13")
-```
-
-Keys must be non-empty and at most 128 UTF-8 bytes. Repeating that submission
-with the same key returns the same operation. Reusing
-the key with different inputs is rejected. If no key is supplied, the SDK creates
-one; submission failures expose it as `SandboxSnapshotError.idempotency_key` so
-you can retry with that key. Status reads and reconnecting never start a capture.
-The SDK requires the asynchronous snapshot API and never falls back to legacy
-synchronous capture. Deploy the API, backend, and hypervisor/controller routing
-support before rolling it out.
+The SDK handles submission retries automatically. Each `sandbox.snapshot()` call
+starts a new capture. To continue an accepted capture, reload its snapshot ID;
+status reads and reconnecting do not start another capture.
 
 ## Suspend and restore in place
 
