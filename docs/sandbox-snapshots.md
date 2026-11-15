@@ -36,12 +36,35 @@ with SandboxClient.from_env() as client:
         sandbox.terminate()
 ```
 
-Pass `wait=False` to `snapshot()` to return while capture is still in progress,
-then use `snapshot.wait(timeout=...)` before restoring. `snapshot.refresh()`
-fetches its current status. `SandboxSnapshot.from_id(snapshot_id, client=client)`
-loads a previously saved handle, and `client.list_snapshots(sandbox.id)` lists
-snapshots created from that sandbox. Use `snapshot.delete()` or
-`client.delete_snapshot(snapshot.id)` to delete one.
+`sandbox.snapshot()` returns only after capture and durable publication have
+completed, so the result is ready to restore. The SDK handles submission, retries,
+and completion internally. Pass `timeout=...` to limit the total time spent in the
+call (the default is 300 seconds).
+
+A timeout stops the call without cancelling an accepted capture.
+`SandboxSnapshotTimeoutError.snapshot_id` identifies that capture when submission
+was acknowledged. Save the ID and restore it later:
+
+```python
+from chalkcompute import SandboxSnapshot, SandboxSnapshotTimeoutError
+
+try:
+    snapshot = sandbox.snapshot(timeout=60)
+except SandboxSnapshotTimeoutError as exc:
+    if exc.snapshot_id is None:
+        # Submission was not confirmed. Inspect saved snapshots before trying again.
+        raise
+    saved_snapshot_id = exc.snapshot_id
+    # Later, possibly in another process:
+    snapshot = SandboxSnapshot.from_id(saved_snapshot_id, client=client)
+
+# If capture is still completing, restore handles readiness internally.
+restored = snapshot.restore()
+```
+
+Each `sandbox.snapshot()` call creates a new capture. To recover an accepted
+capture, use its snapshot ID. `client.list_snapshots(sandbox.id)` lists saved
+snapshots; `snapshot.delete()` removes a saved snapshot.
 
 ## Suspend and restore in place
 

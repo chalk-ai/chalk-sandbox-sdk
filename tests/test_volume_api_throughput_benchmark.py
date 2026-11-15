@@ -75,9 +75,10 @@ def test_first_attempt_failures_counts_real_sdk_retries(monkeypatch) -> None:
 
     monkeypatch.setattr(_rpc.time, "sleep", lambda _: None)
     ctx = SimpleNamespace(
+        timeout_ms=None,
         method=SimpleNamespace(
             service_name="chalk.volume.v2.VolumeService", name="CreateVolume"
-        )
+        ),
     )
     attempts = iter([True, True, False, True, False])
 

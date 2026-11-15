@@ -129,6 +129,9 @@ from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxSnapshot as SandboxSnapshot
 from chalkcompute._sandbox import SandboxSnapshotError as SandboxSnapshotError
+from chalkcompute._sandbox import (
+    SandboxSnapshotTimeoutError as SandboxSnapshotTimeoutError,
+)
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
 from chalkcompute._sandbox_fs import FileDownload as FileDownload
 from chalkcompute._sandbox_fs import FileMatch as FileMatch
@@ -336,6 +339,7 @@ __all__ = [
     "SandboxNotFoundError",
     "SandboxSnapshot",
     "SandboxSnapshotError",
+    "SandboxSnapshotTimeoutError",
     "SandboxTerminatedError",
     "FileDownload",
     "FileMatch",
