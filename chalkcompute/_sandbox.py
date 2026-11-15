@@ -117,6 +117,7 @@ _RESUME_CONFLICT_RETRY_TIMEOUT_SECONDS = 30.0
 _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS = 0.25
 _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS = 2.0
 _SNAPSHOT_RPC_TIMEOUT_SECONDS = 10.0
+_SNAPSHOT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -210,11 +211,10 @@ class SandboxSnapshotError(SandboxError):
 
 
 class SandboxSnapshotTimeoutError(TimeoutError):
-    """Local wait expired; ``snapshot`` remains available to resume waiting."""
+    """Snapshot creation timed out; an accepted capture continues independently."""
 
-    def __init__(self, message: str, *, snapshot: SandboxSnapshot) -> None:
-        self.snapshot = snapshot
-        self.snapshot_id = snapshot.id
+    def __init__(self, message: str, *, snapshot_id: str | None = None) -> None:
+        self.snapshot_id = snapshot_id
         super().__init__(message)
 
 
@@ -317,7 +317,7 @@ class SandboxSnapshot:
             client = SandboxClient.from_env()
         return client.get_snapshot(snapshot_id)
 
-    def refresh(
+    def _refresh(
         self, *, timeout: float = _SNAPSHOT_RPC_TIMEOUT_SECONDS
     ) -> SandboxSnapshot:
         """Refresh status through a bounded read; this never starts another capture."""
@@ -333,23 +333,8 @@ class SandboxSnapshot:
         self.progress_updated_at = updated.progress_updated_at
         return self
 
-    def wait(
-        self,
-        *,
-        timeout: float | None = 300.0,
-        poll_interval: float = 0.5,
-    ) -> SandboxSnapshot:
-        """Wait for readiness without cancelling capture when the wait expires.
-
-        ``SandboxSnapshotTimeoutError.snapshot`` retains this handle. It can be
-        waited on again, or reloaded in another process with ``from_id``.
-        """
-        if not math.isfinite(poll_interval) or poll_interval <= 0:
-            raise ValueError("poll_interval must be finite and greater than zero")
-        if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
-            raise ValueError("timeout must be finite and non-negative or None")
-
-        deadline = None if timeout is None else time.monotonic() + timeout
+    def _wait(self, *, deadline: float) -> SandboxSnapshot:
+        """Resolve an accepted capture within the caller's remaining budget."""
         while True:
             if self.status == "completed":
                 return self
@@ -361,19 +346,15 @@ class SandboxSnapshot:
                     status=self.status,
                     status_message=self.status_message,
                 )
-            remaining = None if deadline is None else deadline - time.monotonic()
-            if remaining is not None and remaining <= 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise SandboxSnapshotTimeoutError(
-                    f"Timed out after {timeout}s waiting for snapshot {self.id}; "
-                    "capture continues and this handle can be waited on again",
-                    snapshot=self,
+                    f"Snapshot {self.id} did not complete before the timeout; "
+                    "capture continues. Load this snapshot ID to restore it later",
+                    snapshot_id=self.id,
                 )
             try:
-                self.refresh(
-                    timeout=_SNAPSHOT_RPC_TIMEOUT_SECONDS
-                    if remaining is None
-                    else min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining)
-                )
+                self._refresh(timeout=min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining))
             except SandboxSnapshotError as exc:
                 if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
                     raise
@@ -383,18 +364,12 @@ class SandboxSnapshot:
                 or self.phase == "recovery_required"
             ):
                 continue
-            remaining = None if deadline is None else deadline - time.monotonic()
-            time.sleep(
-                poll_interval
-                if remaining is None
-                else min(poll_interval, max(0.0, remaining))
-            )
+            remaining = deadline - time.monotonic()
+            time.sleep(min(_SNAPSHOT_POLL_INTERVAL_SECONDS, max(0.0, remaining)))
 
     def restore(
         self,
         *,
-        wait: bool = True,
-        poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Create a new sandbox from this snapshot.
@@ -402,14 +377,11 @@ class SandboxSnapshot:
         Calling ``restore`` repeatedly creates independent sandboxes from the
         same point-in-time state.
         """
-        if wait and self.status != "completed":
-            self.wait(timeout=timeout, poll_interval=poll_interval)
-        return self._client._restore_snapshot(
-            self.id,
-            wait=wait,
-            poll_interval=poll_interval,
-            timeout=timeout,
-        )
+        if not math.isfinite(timeout) or timeout < 0:
+            raise ValueError("timeout must be finite and non-negative")
+        deadline = time.monotonic() + timeout
+        self._wait(deadline=deadline)
+        return self._client._restore_snapshot(self.id, deadline=deadline)
 
     def delete(self) -> None:
         """Delete this saved snapshot."""
@@ -1996,24 +1968,37 @@ class Sandbox:
     def snapshot(
         self,
         *,
-        wait: bool = True,
-        poll_interval: float = 0.5,
         timeout: float = 300.0,
     ) -> SandboxSnapshot:
-        """Submit a durable snapshot operation and optionally wait for readiness.
+        """Capture sandbox state and return a snapshot ready to restore.
 
-        ``wait=False`` returns after acceptance, before checkpointing/uploading
-        finishes. ``timeout`` bounds the subsequent local wait, not capture.
-        A wait timeout retains the handle on ``SandboxSnapshotTimeoutError``.
+        ``timeout`` bounds submission and completion together. A timeout does
+        not cancel an accepted capture; ``SandboxSnapshotTimeoutError`` carries
+        its snapshot ID when available, which can be loaded to restore later.
         """
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("timeout must be finite and non-negative")
-        if not math.isfinite(poll_interval) or poll_interval <= 0:
-            raise ValueError("poll_interval must be finite and greater than zero")
-        snapshot = self._require_client()._snapshot(self._require_started())
-        if wait:
-            snapshot.wait(timeout=timeout, poll_interval=poll_interval)
-        return snapshot
+        deadline = time.monotonic() + timeout
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SandboxSnapshotTimeoutError(
+                "Snapshot creation timed out before submission"
+            )
+        try:
+            snapshot = client._snapshot(sandbox_id, timeout=remaining)
+        except SandboxSnapshotError as exc:
+            if time.monotonic() >= deadline and exc.code in (
+                Code.UNAVAILABLE,
+                Code.DEADLINE_EXCEEDED,
+            ):
+                raise SandboxSnapshotTimeoutError(
+                    "Snapshot submission timed out; check the sandbox's saved snapshots "
+                    "before starting another capture"
+                ) from exc
+            raise
+        return snapshot._wait(deadline=deadline)
 
     @_instrumented("chalkcompute.sandbox.suspend")
     def suspend(self) -> None:
@@ -2649,7 +2634,7 @@ class SandboxClient:
             seen_cursors.add(cursor)
         return sandboxes
 
-    def _snapshot(self, sandbox_id: str) -> SandboxSnapshot:
+    def _snapshot(self, sandbox_id: str, *, timeout: float) -> SandboxSnapshot:
         # Build once: transport retries reuse this exact key and request. A lost
         # acknowledgement must never turn into a distinct GPU checkpoint.
         request = snapshot_pb.StartSandboxSnapshotRequest(
@@ -2659,7 +2644,9 @@ class SandboxClient:
             response = self._snapshot_stub.start_sandbox_snapshot(
                 request,
                 headers=self._headers,
-                timeout_ms=int(_SNAPSHOT_RPC_TIMEOUT_SECONDS * 1000),
+                timeout_ms=max(
+                    1, math.ceil(min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, timeout) * 1000)
+                ),
             )
         except ConnectRpcError as exc:
             raise SandboxSnapshotError(
@@ -2766,15 +2753,22 @@ class SandboxClient:
         self,
         snapshot_id: str,
         *,
-        wait: bool,
-        poll_interval: float,
-        timeout: float,
+        deadline: float,
     ) -> Sandbox:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SandboxSnapshotTimeoutError(
+                f"Timed out before restoring snapshot {snapshot_id}",
+                snapshot_id=snapshot_id,
+            )
         sandbox = Sandbox(sandbox_client=self)
         try:
             response = self._stub.create_sandbox(
                 pb.CreateSandboxRequest(source=Oneof("snapshot_id", snapshot_id)),
                 headers=self._headers,
+                timeout_ms=max(
+                    1, math.ceil(min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining) * 1000)
+                ),
             )
         except ConnectRpcError as e:
             _handle_rpc_error(e, snapshot_id)
@@ -2785,14 +2779,47 @@ class SandboxClient:
             )
 
         info = _pb_to_sandbox_info(response.sandbox)
-        if wait and info.status == "pending":
-            info = self._poll_until_ready(
-                info.id,
-                poll_interval=poll_interval,
-                timeout=timeout,
+        while info.status not in ("running", "succeeded"):
+            if info.status in ("failed", "error", "unknown", "terminated"):
+                raise _sandbox_creation_error(info)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SandboxCreationError(
+                    f"Sandbox {info.id} was created from snapshot {snapshot_id}, but "
+                    "its readiness check timed out. Reconnect to that sandbox ID"
+                )
+            try:
+                status = self._stub.get_sandbox(
+                    pb.GetSandboxRequest(id=info.id),
+                    headers=self._headers,
+                    timeout_ms=max(
+                        1,
+                        math.ceil(min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining) * 1000),
+                    ),
+                )
+            except ConnectRpcError as exc:
+                if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
+                    _handle_rpc_error(exc, info.id)
+                    raise
+            else:
+                if status.sandbox is None:
+                    raise SandboxCreationError("GetSandbox returned no sandbox")
+                info = _pb_to_sandbox_info(status.sandbox)
+                if info.status in (
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "error",
+                    "unknown",
+                    "terminated",
+                ):
+                    continue
+            time.sleep(
+                min(
+                    _SNAPSHOT_POLL_INTERVAL_SECONDS,
+                    max(0.0, deadline - time.monotonic()),
+                )
             )
-        elif wait and info.status in ("failed", "error", "unknown", "terminated"):
-            raise _sandbox_creation_error(info)
 
         sandbox._id = info.id
         sandbox._info = info

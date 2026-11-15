@@ -406,7 +406,7 @@ def test_sandbox_snapshot_wait_restore_and_fork() -> None:
     ]
     client._snapshot_stub = snapshot_stub  # type: ignore[assignment]
 
-    snapshot = client.get("sandbox-123").snapshot(poll_interval=0.001)
+    snapshot = client.get("sandbox-123").snapshot()
     restored = snapshot.restore()
     fork = snapshot.restore()
 
