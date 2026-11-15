@@ -211,7 +211,7 @@ class SandboxSnapshotError(SandboxError):
 
 
 class SandboxSnapshotTimeoutError(TimeoutError):
-    """Snapshot creation timed out; an accepted capture continues independently."""
+    """Snapshot restoration timed out while waiting for a saved capture."""
 
     def __init__(self, message: str, *, snapshot_id: str | None = None) -> None:
         self.snapshot_id = snapshot_id
@@ -333,8 +333,8 @@ class SandboxSnapshot:
         self.progress_updated_at = updated.progress_updated_at
         return self
 
-    def _wait(self, *, deadline: float) -> SandboxSnapshot:
-        """Resolve an accepted capture within the caller's remaining budget."""
+    def _wait(self, *, deadline: float | None = None) -> SandboxSnapshot:
+        """Wait for capture completion, optionally within a restore deadline."""
         while True:
             if self.status == "completed":
                 return self
@@ -346,15 +346,19 @@ class SandboxSnapshot:
                     status=self.status,
                     status_message=self.status_message,
                 )
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
                 raise SandboxSnapshotTimeoutError(
-                    f"Snapshot {self.id} did not complete before the timeout; "
-                    "capture continues. Load this snapshot ID to restore it later",
+                    f"Timed out waiting to restore snapshot {self.id}; "
+                    "capture continues. Restore this snapshot ID later",
                     snapshot_id=self.id,
                 )
             try:
-                self._refresh(timeout=min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining))
+                self._refresh(
+                    timeout=_SNAPSHOT_RPC_TIMEOUT_SECONDS
+                    if remaining is None
+                    else min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining)
+                )
             except SandboxSnapshotError as exc:
                 if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
                     raise
@@ -364,8 +368,10 @@ class SandboxSnapshot:
                 or self.phase == "recovery_required"
             ):
                 continue
-            remaining = deadline - time.monotonic()
-            time.sleep(min(_SNAPSHOT_POLL_INTERVAL_SECONDS, max(0.0, remaining)))
+            delay = _SNAPSHOT_POLL_INTERVAL_SECONDS
+            if deadline is not None:
+                delay = min(delay, max(0.0, deadline - time.monotonic()))
+            time.sleep(delay)
 
     def restore(
         self,
@@ -1965,40 +1971,15 @@ class Sandbox:
         )
 
     @_instrumented("chalkcompute.sandbox.snapshot")
-    def snapshot(
-        self,
-        *,
-        timeout: float = 300.0,
-    ) -> SandboxSnapshot:
+    def snapshot(self) -> SandboxSnapshot:
         """Capture sandbox state and return a snapshot ready to restore.
 
-        ``timeout`` bounds submission and completion together. A timeout does
-        not cancel an accepted capture; ``SandboxSnapshotTimeoutError`` carries
-        its snapshot ID when available, which can be loaded to restore later.
+        Wait until capture and durable publication complete. Individual requests
+        use short deadlines and retry transient failures internally.
         """
-        if not math.isfinite(timeout) or timeout < 0:
-            raise ValueError("timeout must be finite and non-negative")
-        deadline = time.monotonic() + timeout
         client = self._require_client()
         sandbox_id = self._require_started()
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise SandboxSnapshotTimeoutError(
-                "Snapshot creation timed out before submission"
-            )
-        try:
-            snapshot = client._snapshot(sandbox_id, timeout=remaining)
-        except SandboxSnapshotError as exc:
-            if time.monotonic() >= deadline and exc.code in (
-                Code.UNAVAILABLE,
-                Code.DEADLINE_EXCEEDED,
-            ):
-                raise SandboxSnapshotTimeoutError(
-                    "Snapshot submission timed out; check the sandbox's saved snapshots "
-                    "before starting another capture"
-                ) from exc
-            raise
-        return snapshot._wait(deadline=deadline)
+        return client._snapshot(sandbox_id)._wait()
 
     @_instrumented("chalkcompute.sandbox.suspend")
     def suspend(self) -> None:
@@ -2634,31 +2615,29 @@ class SandboxClient:
             seen_cursors.add(cursor)
         return sandboxes
 
-    def _snapshot(self, sandbox_id: str, *, timeout: float) -> SandboxSnapshot:
+    def _snapshot(self, sandbox_id: str) -> SandboxSnapshot:
         # Build once: transport retries reuse this exact key and request. A lost
         # acknowledgement must never turn into a distinct GPU checkpoint.
         request = snapshot_pb.StartSandboxSnapshotRequest(
             sandbox_id=sandbox_id, idempotency_key=str(uuid.uuid4())
         )
-        try:
-            response = self._snapshot_stub.start_sandbox_snapshot(
-                request,
-                headers=self._headers,
-                timeout_ms=max(
-                    1, math.ceil(min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, timeout) * 1000)
-                ),
-            )
-        except ConnectRpcError as exc:
-            raise SandboxSnapshotError(
-                f"Snapshot submission failed for sandbox {sandbox_id}: {exc.message}",
-                code=exc.code,
-            ) from exc
-        except (TimeoutError, *HTTP_TRANSPORT_ERRORS) as exc:
-            raise SandboxSnapshotError(
-                f"Snapshot acknowledgement was lost for sandbox {sandbox_id}; "
-                "check the sandbox's saved snapshots before starting another capture",
-                code=Code.UNAVAILABLE,
-            ) from exc
+        while True:
+            try:
+                response = self._snapshot_stub.start_sandbox_snapshot(
+                    request,
+                    headers=self._headers,
+                    timeout_ms=math.ceil(_SNAPSHOT_RPC_TIMEOUT_SECONDS * 1000),
+                )
+                break
+            except ConnectRpcError as exc:
+                if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
+                    raise SandboxSnapshotError(
+                        f"Snapshot submission failed for sandbox {sandbox_id}: {exc.message}",
+                        code=exc.code,
+                    ) from exc
+            except (TimeoutError, *HTTP_TRANSPORT_ERRORS):
+                pass
+            time.sleep(_SNAPSHOT_POLL_INTERVAL_SECONDS)
         if response.snapshot is None:
             raise SandboxSnapshotError(
                 f"Snapshot submission returned no snapshot for sandbox {sandbox_id}",

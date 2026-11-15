@@ -19,7 +19,7 @@ with SandboxClient.from_env() as client:
             "from pathlib import Path; Path('/workspace/state.txt').write_text('ready')",
         )
 
-        # Wait for capture to finish (the default).
+        # Capture the sandbox and wait for publication.
         snapshot = sandbox.snapshot()
 
         # Every restore gets its own sandbox, so restoring twice forks the same state.
@@ -38,33 +38,24 @@ with SandboxClient.from_env() as client:
 
 `sandbox.snapshot()` returns only after capture and durable publication have
 completed, so the result is ready to restore. The SDK handles submission, retries,
-and completion internally. Pass `timeout=...` to limit the total time spent in the
-call (the default is 300 seconds).
+and completion internally, with no overall capture timeout. Individual requests
+use short deadlines; a transient request timeout does not stop waiting for the
+capture.
 
-A timeout stops the call without cancelling an accepted capture.
-`SandboxSnapshotTimeoutError.snapshot_id` identifies that capture when submission
-was acknowledged. Save the ID and restore it later:
+Each `sandbox.snapshot()` call creates a new capture. Interrupting the caller does
+not cancel work already accepted by the backend. To reconnect, use
+`client.list_snapshots(sandbox.id)` to find the capture, then load its ID:
 
 ```python
-from chalkcompute import SandboxSnapshot, SandboxSnapshotTimeoutError
+from chalkcompute import SandboxSnapshot
 
-try:
-    snapshot = sandbox.snapshot(timeout=60)
-except SandboxSnapshotTimeoutError as exc:
-    if exc.snapshot_id is None:
-        # Submission was not confirmed. Inspect saved snapshots before trying again.
-        raise
-    saved_snapshot_id = exc.snapshot_id
-    # Later, possibly in another process:
-    snapshot = SandboxSnapshot.from_id(saved_snapshot_id, client=client)
-
-# If capture is still completing, restore handles readiness internally.
+snapshot = SandboxSnapshot.from_id(saved_snapshot_id, client=client)
 restored = snapshot.restore()
 ```
 
-Each `sandbox.snapshot()` call creates a new capture. To recover an accepted
-capture, use its snapshot ID. `client.list_snapshots(sandbox.id)` lists saved
-snapshots; `snapshot.delete()` removes a saved snapshot.
+`restore(timeout=...)` retains its separate timeout for pending capture readiness
+and sandbox startup (600 seconds by default). `snapshot.delete()` removes a saved
+snapshot.
 
 ## Suspend and restore in place
 
