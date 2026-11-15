@@ -8,7 +8,19 @@ from connectrpc.errors import ConnectError
 from connectrpc.method import IdempotencyLevel, MethodInfo
 from connectrpc.request import Headers, RequestContext
 
-from chalkcompute import _rpc
+from chalkcompute import _backoff, _rpc
+
+
+def _midpoint_jitter(monkeypatch) -> list[tuple[float, float]]:
+    """Use each wait's expected value and record the jitter bounds."""
+    bounds: list[tuple[float, float]] = []
+
+    def uniform(low: float, high: float) -> float:
+        bounds.append((low, high))
+        return (low + high) / 2
+
+    monkeypatch.setattr(_backoff.random, "uniform", uniform)
+    return bounds
 
 
 def _context() -> RequestContext[object, object]:
@@ -107,6 +119,7 @@ def test_rpc_interceptors_include_retry_and_tracing() -> None:
 def test_retry_interceptor_recovers_from_unavailable(monkeypatch) -> None:
     sleeps: list[float] = []
     monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    bounds = _midpoint_jitter(monkeypatch)
 
     attempts = {"n": 0}
 
@@ -121,11 +134,13 @@ def test_retry_interceptor_recovers_from_unavailable(monkeypatch) -> None:
     assert result == "ok:req"
     assert attempts["n"] == 3
     assert sleeps == [0.1, 0.2]
+    assert bounds == [(0.8 * wait, 1.2 * wait) for wait in sleeps]
 
 
 def test_retry_interceptor_gives_up_after_max_attempts(monkeypatch) -> None:
     sleeps: list[float] = []
     monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    bounds = _midpoint_jitter(monkeypatch)
 
     def call_next(request: object, ctx: RequestContext[object, object]) -> str:
         del request, ctx
@@ -135,6 +150,22 @@ def test_retry_interceptor_gives_up_after_max_attempts(monkeypatch) -> None:
         _rpc.RetryInterceptor().intercept_unary_sync(call_next, "req", _context())
     assert exc_info.value.code == Code.UNAVAILABLE
     assert sleeps == [0.1, 0.2, 0.4, 0.8]
+    assert bounds == [(0.8 * wait, 1.2 * wait) for wait in sleeps]
+
+
+def test_retry_interceptor_honors_the_multiplier_constant(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_rpc, "RPC_RETRY_BACKOFF_MULTIPLIER", 3.0)
+    _midpoint_jitter(monkeypatch)
+
+    def unavailable(request, ctx):
+        raise ConnectError(Code.UNAVAILABLE, "offline")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(unavailable, "req", _context())
+
+    assert sleeps == pytest.approx([0.1, 0.3, 0.9, 1.0])
 
 
 def test_retry_interceptor_does_not_retry_other_codes(monkeypatch) -> None:
@@ -152,9 +183,10 @@ def test_retry_interceptor_does_not_retry_other_codes(monkeypatch) -> None:
     assert attempts["n"] == 1
 
 
-def test_retry_backoff_caps_at_one_second(monkeypatch) -> None:
+def test_retry_nominal_backoff_caps_at_one_second(monkeypatch) -> None:
     sleeps: list[float] = []
     monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    bounds = _midpoint_jitter(monkeypatch)
     monkeypatch.setattr(_rpc, "RPC_RETRY_MAX_ATTEMPTS", 6)
 
     def call_next(request: object, ctx: RequestContext[object, object]) -> str:
@@ -164,6 +196,21 @@ def test_retry_backoff_caps_at_one_second(monkeypatch) -> None:
     with pytest.raises(ConnectError):
         _rpc.RetryInterceptor().intercept_unary_sync(call_next, "req", _context())
     assert sleeps == [0.1, 0.2, 0.4, 0.8, 1.0]
+    assert bounds == [(0.8 * wait, 1.2 * wait) for wait in sleeps]
+
+
+def test_retry_waits_are_jittered(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(_rpc.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_backoff.random, "uniform", lambda low, high: low)
+
+    def call_next(request: object, ctx: RequestContext[object, object]) -> str:
+        del request, ctx
+        raise ConnectError(Code.UNAVAILABLE, "blip")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(call_next, "req", _context())
+    assert sleeps == pytest.approx([0.08, 0.16, 0.32, 0.64])
 
 
 @pytest.mark.parametrize("method", ["ExecuteSqlQuery", "PollSqlQuery"])
