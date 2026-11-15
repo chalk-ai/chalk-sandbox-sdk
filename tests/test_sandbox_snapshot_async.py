@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from unittest.mock import MagicMock
 
 import pytest
@@ -96,51 +97,40 @@ def test_submission_reports_server_error(snapshot_client):
     stub.create_sandbox_snapshot.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"timeout": -1},
-        {"timeout": float("nan")},
-        {"timeout": float("inf")},
-    ],
-)
-def test_invalid_arguments_never_submit(snapshot_client, kwargs):
-    client, stub = snapshot_client
-    with pytest.raises(ValueError):
-        client.get("sandbox-1").snapshot(**kwargs)
-    stub.start_sandbox_snapshot.assert_not_called()
+def test_capture_has_no_public_timeout():
+    assert list(inspect.signature(_sandbox.Sandbox.snapshot).parameters) == ["self"]
 
 
-def test_timeout_recovers_by_id_and_restore_handles_readiness(
-    snapshot_client, monkeypatch
-):
+def test_capture_waits_beyond_former_timeout(snapshot_client, monkeypatch):
     client, stub = snapshot_client
     now = [0.0]
     monkeypatch.setattr(_sandbox.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(
         _sandbox.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay)
     )
+    completed = stub.get_sandbox_snapshot.return_value
 
-    def unavailable(request, *, timeout_ms, **kwargs):
+    def status(request, *, timeout_ms, **kwargs):
+        assert timeout_ms == 10_000
         now[0] += timeout_ms / 1000
-        raise ConnectError(Code.DEADLINE_EXCEEDED, "temporary read failure")
+        if now[0] <= 600:
+            raise ConnectError(Code.DEADLINE_EXCEEDED, "temporary read timeout")
+        return completed
 
-    stub.get_sandbox_snapshot.side_effect = unavailable
-    with pytest.raises(SandboxSnapshotTimeoutError) as caught:
-        client.get("sandbox-1").snapshot(timeout=0.25)
-    assert caught.value.snapshot_id == "snapshot-1"
-    assert "capture continues" in str(caught.value)
-    assert now[0] == 0.25
-    assert stub.start_sandbox_snapshot.call_args.kwargs["timeout_ms"] == 250
-    assert stub.get_sandbox_snapshot.call_args.kwargs["timeout_ms"] == 250
+    stub.get_sandbox_snapshot.side_effect = status
+    assert client.get("sandbox-1").snapshot().status == "completed"
+    assert now[0] > 600
+    assert stub.start_sandbox_snapshot.call_count == 1
 
+
+def test_pending_snapshot_loaded_by_id_waits_before_restore(
+    snapshot_client, monkeypatch
+):
+    client, stub = snapshot_client
+    monkeypatch.setattr(_sandbox.time, "sleep", lambda _: None)
     stub.get_sandbox_snapshot.side_effect = [
         pb.GetSandboxSnapshotResponse(
-            snapshot=pb.SandboxSnapshot(
-                id="snapshot-1",
-                sandbox_id="sandbox-1",
-                status=pb.SandboxSnapshotStatus.IN_PROGRESS,
-            )
+            snapshot=stub.start_sandbox_snapshot.return_value.snapshot
         ),
         stub.get_sandbox_snapshot.return_value,
     ]
@@ -156,66 +146,61 @@ def test_timeout_recovers_by_id_and_restore_handles_readiness(
         )
     )
     client._stub = sandbox_stub
-    saved = SandboxSnapshot.from_id(caught.value.snapshot_id, client=client)
+    saved = SandboxSnapshot.from_id("snapshot-1", client=client)
     assert saved.restore().id == "restored-1"
-    assert stub.start_sandbox_snapshot.call_count == 1
+    stub.start_sandbox_snapshot.assert_not_called()
     assert sandbox_stub.create_sandbox.call_count == 1
     assert sandbox_stub.get_sandbox.call_count == 1
 
 
-def test_submission_and_completion_share_one_timeout_budget(
-    snapshot_client, monkeypatch
-):
+def test_restore_timeout_still_bounds_pending_capture(snapshot_client, monkeypatch):
     client, stub = snapshot_client
-    response = stub.start_sandbox_snapshot.return_value
     now = [0.0]
     monkeypatch.setattr(_sandbox.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(
         _sandbox.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay)
     )
-
-    def submit(request, **kwargs):
-        now[0] += 0.1
-        return response
+    saved = _sandbox._pb_to_sandbox_snapshot(
+        stub.start_sandbox_snapshot.return_value.snapshot, client=client
+    )
 
     def unavailable(request, *, timeout_ms, **kwargs):
         now[0] += timeout_ms / 1000
         raise ConnectError(Code.DEADLINE_EXCEEDED, "temporary read failure")
 
-    stub.start_sandbox_snapshot.side_effect = submit
     stub.get_sandbox_snapshot.side_effect = unavailable
     with pytest.raises(SandboxSnapshotTimeoutError) as caught:
-        client.get("sandbox-1").snapshot(timeout=0.25)
+        saved.restore(timeout=0.25)
     assert caught.value.snapshot_id == "snapshot-1"
+    assert "capture continues" in str(caught.value)
     assert now[0] == 0.25
-    assert stub.get_sandbox_snapshot.call_args.kwargs["timeout_ms"] == 150
-    assert stub.start_sandbox_snapshot.call_count == 1
+    assert stub.get_sandbox_snapshot.call_args.kwargs["timeout_ms"] == 250
+    stub.start_sandbox_snapshot.assert_not_called()
 
 
-def test_timeout_during_submission_has_no_confirmed_snapshot_id(
-    snapshot_client, monkeypatch
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectError(Code.DEADLINE_EXCEEDED, "submission deadline"),
+        ConnectError(Code.UNAVAILABLE, "lost acknowledgment"),
+        TimeoutError("transport timeout"),
+    ],
+)
+def test_submission_retries_same_request_after_transient_failure(
+    snapshot_client, monkeypatch, failure
 ):
     client, stub = snapshot_client
-    now = [0.0]
-    monkeypatch.setattr(_sandbox.time, "monotonic", lambda: now[0])
-
-    def expired(request, *, timeout_ms, **kwargs):
-        now[0] += timeout_ms / 1000
-        raise ConnectError(Code.DEADLINE_EXCEEDED, "submission deadline exceeded")
-
-    stub.start_sandbox_snapshot.side_effect = expired
-    with pytest.raises(SandboxSnapshotTimeoutError) as caught:
-        client.get("sandbox-1").snapshot(timeout=0.25)
-    assert caught.value.snapshot_id is None
-    assert now[0] == 0.25
-    stub.get_sandbox_snapshot.assert_not_called()
-
-
-def test_zero_timeout_does_not_submit(snapshot_client):
-    client, stub = snapshot_client
-    with pytest.raises(SandboxSnapshotTimeoutError):
-        client.get("sandbox-1").snapshot(timeout=0)
-    stub.start_sandbox_snapshot.assert_not_called()
+    monkeypatch.setattr(_sandbox.time, "sleep", lambda _: None)
+    stub.start_sandbox_snapshot.side_effect = [
+        failure,
+        stub.start_sandbox_snapshot.return_value,
+    ]
+    assert client.get("sandbox-1").snapshot().status == "completed"
+    calls = stub.start_sandbox_snapshot.call_args_list
+    assert len(calls) == 2
+    assert calls[0].args[0] is calls[1].args[0]
+    assert calls[0].args[0].idempotency_key
+    assert all(call.kwargs["timeout_ms"] == 10_000 for call in calls)
 
 
 def test_restore_readiness_uses_budget_remaining_after_capture(
