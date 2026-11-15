@@ -127,12 +127,17 @@ class RetryInterceptor:
             "chalk.router.v1."
         ) and ctx.method.name.startswith("Create"):
             return call_next(request, ctx)
-        # Legacy capture/suspend has no idempotency key. Status waiters own
-        # their retry budget so transport retries cannot overrun local waits.
+        # Status polling owns its retry budget. Each read uses the remaining
+        # local wait time as its RPC deadline, so transport backoff must not
+        # add another retry layer.
         if (
             ctx.method.service_name == "chalk.sandbox.v2.SandboxSnapshotService"
-            and ctx.method.name in {"CreateSandboxSnapshot", "GetSandboxSnapshot"}
-        ) or (
+            and ctx.method.name == "GetSandboxSnapshot"
+        ):
+            return call_next(request, ctx)
+        # Suspend has no idempotency key. Replaying it after a lost response
+        # could start another capture or turn a successful suspend into an error.
+        if (
             ctx.method.service_name == "chalk.sandbox.v2.SandboxService"
             and ctx.method.name == "SuspendSandbox"
         ):

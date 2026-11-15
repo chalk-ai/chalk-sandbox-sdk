@@ -68,7 +68,7 @@ def test_lost_submission_can_be_recovered_with_same_key(snapshot_client):
     ] == [key, key]
 
 
-def test_unimplemented_never_falls_back_to_sync(snapshot_client):
+def test_async_submission_does_not_fall_back_to_legacy_capture(snapshot_client):
     client, stub = snapshot_client
     stub.start_sandbox_snapshot.side_effect = ConnectError(
         Code.UNIMPLEMENTED, "unknown method"

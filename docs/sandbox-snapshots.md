@@ -74,9 +74,9 @@ with the same key returns the same operation. Reusing
 the key with different inputs is rejected. If no key is supplied, the SDK creates
 one; submission failures expose it as `SandboxSnapshotError.idempotency_key` so
 you can retry with that key. Status reads and reconnecting never start a capture.
-The updated SDK requires backend support for asynchronous submission; an older
-server reports an unsupported-operation error rather than falling back to a
-long-running synchronous request.
+The SDK requires the asynchronous snapshot API and never falls back to legacy
+synchronous capture. Deploy the API, backend, and hypervisor/controller routing
+support before rolling it out.
 
 ## Suspend and restore in place
 

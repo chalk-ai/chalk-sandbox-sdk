@@ -246,12 +246,11 @@ def test_router_creation_is_not_automatically_replayed(service, method):
 @pytest.mark.parametrize(
     "service,method",
     [
-        ("SandboxSnapshotService", "CreateSandboxSnapshot"),
         ("SandboxSnapshotService", "GetSandboxSnapshot"),
         ("SandboxService", "SuspendSandbox"),
     ],
 )
-def test_snapshot_legacy_mutations_and_budgeted_reads_are_not_retried(service, method):
+def test_snapshot_status_reads_and_suspend_are_not_retried(service, method):
     ctx = RequestContext(
         method=MethodInfo(
             name=method,
