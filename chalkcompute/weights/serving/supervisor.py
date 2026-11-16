@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, hdrs, web
-from chalkcompute.weights.serving.managed_target import ManagedWeightTarget
+from chalkcompute.weights.serving.managed_target import (
+    ManagedWeightTarget,
+    target_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +27,16 @@ class DrainTimeout(TimeoutError):
 
 
 class NativeServingHandle(Protocol):
+    @property
+    def requires_target(self) -> bool: ...
+
+    def wait_drained(self, timeout_seconds: float) -> bool: ...
+
     def set_serving(
-        self, serving: bool, lease_expires_at: float | None = None
+        self,
+        serving: bool,
+        lease_expires_at: float | None = None,
+        target_fingerprint: str | None = None,
     ) -> None: ...
 
 
@@ -95,15 +106,24 @@ class AdmissionGate:
 
     def _open_native_admission(self) -> None:
         if (
-            self.serving_handle is not None
+            self.healthy
+            and not self._paused
+            and self.serving_handle is not None
             and self.applied_target is not None
             and self.applied_lease_expires_at is not None
             and self.applied_lease_deadline is not None
             and time.monotonic() < self.applied_lease_deadline
         ):
-            self.serving_handle.set_serving(
-                True, lease_expires_at=self.applied_lease_expires_at
-            )
+            if getattr(self.serving_handle, "requires_target", False):
+                self.serving_handle.set_serving(
+                    True,
+                    lease_expires_at=self.applied_lease_expires_at,
+                    target_fingerprint=target_fingerprint(self.applied_target),
+                )
+            else:
+                self.serving_handle.set_serving(
+                    True, lease_expires_at=self.applied_lease_expires_at
+                )
 
     def mark_applied_target(self, target: ManagedWeightTarget) -> None:
         if self.version != target.logical_version:
@@ -223,6 +243,7 @@ class AdmissionGate:
                     raise UnhealthyError("The live policy is unhealthy")
                 self._paused = True
                 self._close_native_admission()
+                drain_started = time.monotonic()
                 try:
                     await asyncio.wait_for(
                         self._condition.wait_for(
@@ -230,6 +251,17 @@ class AdmissionGate:
                         ),
                         timeout,
                     )
+                    if self.serving_handle is not None and getattr(
+                        self.serving_handle, "requires_target", False
+                    ):
+                        remaining = min(
+                            300.0,
+                            max(0.0, timeout - (time.monotonic() - drain_started)),
+                        )
+                        if not await asyncio.to_thread(
+                            self.serving_handle.wait_drained, remaining
+                        ):
+                            raise TimeoutError("Native executions did not drain")
                 except TimeoutError as exc:
                     target_changed = (
                         target is not None
@@ -245,9 +277,12 @@ class AdmissionGate:
                         "Requests did not drain; weights unchanged"
                     ) from exc
                 except BaseException:
-                    self._paused = False
-                    self._open_native_admission()
-                    self._condition.notify_all()
+                    if target is not None:
+                        self._fail_locked("Native managed drain failed")
+                    else:
+                        self._paused = False
+                        self._open_native_admission()
+                        self._condition.notify_all()
                     raise
             completed = False
             try:
@@ -259,6 +294,7 @@ class AdmissionGate:
                 async with self._condition:
                     if target is None or completed:
                         self._paused = False
+                        self._open_native_admission()
                     else:
                         self._paused = True
                         self._close_native_admission()

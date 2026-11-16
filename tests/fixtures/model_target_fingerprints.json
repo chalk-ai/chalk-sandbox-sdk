@@ -1,0 +1,47 @@
+[
+  {
+    "name": "zero",
+    "fields": [
+      "deployment-a",
+      "revision-a",
+      "1",
+      "stream-a",
+      "0",
+      "volume-a",
+      "42",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "fingerprint": "ae795dd3af9b52d686199fd8df596b9f860d9d0352843b1d5055ee3c45d5efd7"
+  },
+  {
+    "name": "later",
+    "fields": [
+      "deployment-a",
+      "revision-a",
+      "7",
+      "stream-a",
+      "3",
+      "volume-a",
+      "99",
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    ],
+    "fingerprint": "08b93e42a96fb1c8a47be7bd3eaf8c4c2a43f166984b00aee0b07fb99c4547a3"
+  },
+  {
+    "name": "utf8",
+    "fields": [
+      "déploiement",
+      "révision",
+      "1",
+      "流",
+      "0",
+      "volume",
+      "1",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "fingerprint": "c3f9733001c391a338a71dd3caab1000f04ce6a5408c3eb4d1414841099de32a"
+  }
+]

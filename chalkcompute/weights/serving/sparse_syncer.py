@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 
 from chalkcompute._weights_format import WeightManifest, version_dir
 from chalkcompute.weights.serving.resident import load_manifest, read_profile_file
@@ -27,12 +28,18 @@ class SparseWeightSyncer(WeightSyncer):
             )
         return manifest
 
-    def plan(self, target: int, *, bootstrap: bool = False) -> ApplyPlan:
-        plan = super().plan(target, bootstrap=bootstrap)
-        manifests = plan.manifests[1:] if bootstrap else plan.manifests
+    def plan(
+        self,
+        target: int,
+        *,
+        bootstrap: bool = False,
+        manifests: Mapping[int, WeightManifest] | None = None,
+    ) -> ApplyPlan:
+        plan = super().plan(target, bootstrap=bootstrap, manifests=manifests)
+        replay = plan.manifests[1:] if bootstrap else plan.manifests
         if any(
             m.kind != "patch" or any(e.encoding != "sparse" for e in m.tensors)
-            for m in manifests
+            for m in replay
         ):
             raise RestartRequired(
                 "Sparse serving requires forward sparse patches; restart from a keyframe"
