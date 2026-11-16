@@ -40,9 +40,12 @@ capable of materializing a PIN, restore a retained keyframe before retrying.
 
 ## Local managed-target integration
 
-An opt-in local/test target-file adapter is available with
-`--managed-target-file PATH` or `CHALK_WEIGHT_TARGET_FILE`. It requires these
-expected identities from the launcher:
+The local/test descriptor parser is available with `--managed-target-file PATH`
+or `CHALK_WEIGHT_TARGET_FILE`. Executing a managed update additionally requires a
+programmatic `ManagedTargetProvider(manifest_digests=...)` callback returning the
+immutable indexed digest for every requested ancestor. The standalone target
+file cannot establish this authority and refuses admission without that callback.
+The parser requires these expected identities from the launcher:
 
 | Variable | Target field |
 | --- | --- |
@@ -104,7 +107,10 @@ origin (default `https://api.chalk.ai`).
 
 Each request names the fixed expected revision. The server checks its current
 selection and immutable stream binding; the provider checks every returned target
-identity. Reads use a three-second RPC deadline without automatic retries. A
+identity. During replay preparation it requests the selected manifest and every
+ancestor through the same scoped RPC. The server returns their permanently indexed
+SHA-256 identities. The response must match the exact selected target, live lease
+and requested version set. Reads use a three-second RPC deadline without automatic retries. A
 successful read establishes at most a fifteen-second local lease measured from
 request start and capped by both the server lease and token expiry. Calls share
 a two-second refresh cache; a failed refresh immediately invalidates that cache.
@@ -112,13 +118,21 @@ Only the explicit authenticated no-target response is retryable during bootstrap
 Clock changes cannot extend the local monotonic deadline. Target changes still
 require the regular drain/apply/verify path before admission resumes.
 
-This connects desired-state delivery, not production model-deployment activation.
-The launcher must supply the expected identity, a supported engine configuration,
-and verified initial resident weights. The stream mount's snapshot provenance is
-not attested by this read. Automatic model-deployment launch, per-replica readiness
-reporting, and routing must be connected separately; backend managed admission
-remains disabled until that path is qualified. Initial model storage may remain
-independent of the stream volume.
+The managed launcher below connects this provider to native admission, engine
+ownership and resident verification. Production activation also requires the
+backend bootstrap change, the compatible native release and SDK dependency bump,
+a pinned qualified serving image, and cross-repository sync/async qualification.
+Until those dependencies pass, backend managed admission stays disabled. Generic
+replica readiness describes container lifecycle; it does not establish an applied
+weight version. Exact per-request native target admission is the execution
+barrier. The mount may follow mutable `main`: every replay manifest must match its
+immutable indexed digest, including the keyframe and skipped intermediate versions.
+Preparation freezes at most 128 manifests, each bounded to the resident profile's
+1 MiB limit. Both engine adapters pass these authoritative digests to workers,
+which recheck them before device writes; a mount rewrite between planning and apply
+fails closed. Payload checksums remain verified before writes. This establishes
+content identity without attesting the mount's snapshot provenance. Initial model
+storage may remain independent of the stream volume.
 
 Configuration:
 
@@ -140,3 +154,89 @@ allocation is needed. GPU validation must additionally confirm the installed
 vLLM version, every rank acknowledgement, publish/restore output equivalence,
 and actual pause/publish latency. CPU tests do not establish GPU performance
 or quantized checkpoint support.
+
+## Managed model replicas
+
+The model deployment API accepts typed `ModelScalingGroupSpec.serving_config`.
+The backend validates that configuration and records the environment, stream and
+canonical volume binding. Group and revision IDs are not part of the command.
+It persists a single private `--model-serving-bootstrap JSON` launcher argument.
+The envelope contains only `schema_version: 1`, `config` and `binding`; it has no
+desired version, lease or readiness status. Its complete UTF-8 representation is
+bounded to 64 KiB, and duplicate, unknown or incorrectly typed fields are refused.
+The config uses protobuf enum names `SERVING_ENGINE_VLLM` or `SERVING_ENGINE_SGLANG`
+and accepts an explicit empty `engine_args` list.
+
+That argument creates a strict native serving handle and starts
+`ManagedModelRuntime` before user-handler imports. Environment feature switches
+and environment-supplied model bindings do not activate this path. With no
+bootstrap argument, ordinary remote-call behavior and lightweight imports remain
+unchanged. The runtime polls the existing scoped target RPC using the explicit
+platform `CHALK_FUNCTION_QUEUE_TOKEN_FILE`; ordinary volume credentials are separate.
+The controller delivers one `scaling-group-metadata` file beside that token in
+its read-only mount. Kubernetes projects `metadata.labels` as newline-separated
+`key="value"` entries; HOST uses the same representation. The runtime captures
+`chalk.ai/scaling-group` and `chalk.ai/scaling-group-revision` once before
+starting its engine. The file is bounded to 64 KiB of valid UTF-8. Required
+values contain 1–63 Kubernetes label characters (ASCII alphanumeric, dot,
+underscore or hyphen, beginning and ending alphanumeric), so their quoted
+representation needs no escape decoding. Unrelated labels are ignored. Missing,
+duplicate or malformed required entries refuse startup. It never discovers its
+own revision from the deployment's
+mutable current selection. Missing metadata refuses managed startup. Both the
+controller and HOST hypervisor must support this metadata before enabling the
+managed runtime image; ordinary remote-call workers do not read this file.
+The mutable selected target and manifest identities remain on the scoped RPC.
+The static bootstrap does not change the existing lease policy: reads have a
+three-second deadline, successful observations last at most fifteen seconds,
+and failed authenticated refreshes close admission. No selected target keeps
+the replica unready while it waits within the startup budget. Authentication, configuration, resident verification and synchronization
+failures close admission and stop the owned engine process group.
+
+User handlers retain their request/response conversion and call the engine at
+reserved loopback `CHALK_MODEL_ENGINE_URL`, set before importing the handler.
+The SDK owns the engine process, target leases, native execution drain and
+sparse updates. Managed sparse engines retain the existing pinned BF16/TP1
+profile and explicit caller layout requirements.
+
+An optional `initial_model_dir` can point at a snapshot-restored checkpoint
+outside the stream volume. The actual native model source must match that
+configured path, and the resident tensors must pass the same complete seed
+verification against the stream keyframe before admission opens. Naming a seed
+version alone never establishes this proof. This path can still read the
+reference keyframe and makes no faster startup guarantee.
+
+During a target transition the shared model service can still route to a replica
+which has not applied the requested target. Its native admission returns
+`Unavailable`; callers can retry while updates converge. Execution begins only
+when the request's exact target fingerprint matches the installed resident
+identity and its lease is live. Generic replica health/counts describe container
+lifecycle and do not by themselves establish an observed applied version or
+registry convergence.
+
+Handlers must finish the engine operation, including consuming or closing its
+response stream, before returning. Detached background inference outliving a
+handler is outside the drain contract; the native permit follows handler and
+generator execution, rather than arbitrary user-created tasks.
+
+### Native/SDK admission boundary check
+
+`scripts/test_managed_native_boundary.py` is an explicit CPU integration check,
+kept outside the default pytest paths. Run it as its own pytest process with the
+newly built native extension from chalk-remote-call-python #116 and this SDK
+checkout on `PYTHONPATH`. Its environment needs `pytest`, `grpcio`, `pyarrow` and
+`aiohttp`; it does not require Torch or load a model. Old native binaries fail the
+required API directly, rather than skipping the test.
+
+```sh
+cd /path/to/chalk-sandbox-sdk
+PYTHONPATH="$PWD:/path/to/chalk-remote-call-python" \
+  /path/to/candidate-native-venv/bin/python -m pytest -q \
+  scripts/test_managed_native_boundary.py
+```
+
+The real native gRPC handler holds an active version A call while the SDK update
+gate drains it. The check proves that mutation waits, version C is admitted only
+after completion, and old/missing/forged fingerprints and an old target generation
+are refused. The instrumented handler establishes the execution boundary; this
+check makes no GPU-weight or performance claim.

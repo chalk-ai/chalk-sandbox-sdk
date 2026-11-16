@@ -567,7 +567,7 @@ def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
     def prepare_sources(image):
         source_mount_paths.update(image.lazy_local_files_grouped_for_volume_mounts())
         sources.update(
-            {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
+            {file.dest: Path(file.src).read_bytes() for file in image.lazy_local_files}
         )
         return prepare(image)
 
@@ -602,4 +602,5 @@ def test_deploy_with_pinned_content(factory, monkeypatch, mount_path):
     )
     assert sources and all(path.startswith(root + "/") for path in sources)
     for path, source in sources.items():
-        compile(source, path, "exec")
+        if path.endswith(".py"):
+            compile(source, path, "exec")

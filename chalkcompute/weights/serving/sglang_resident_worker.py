@@ -23,6 +23,8 @@ def validate_control(value: Any) -> dict[str, Any]:
     }
     if value.get("operation") == "bind":
         fields |= {"layout_json", "layout_file_sha256"}
+        if "initial_model_directory" in value:
+            fields.add("initial_model_directory")
     if set(value) != fields:
         raise ValueError("Exact sparse control fields required")
     if value["operation"] not in ("bind", "apply"):
@@ -49,6 +51,13 @@ def validate_control(value: Any) -> dict[str, Any]:
         if not isinstance(value["layout_json"], str):
             raise ValueError("Exact serialized layout required")
         parse_layout(value["layout_json"].encode("utf-8"), value["layout_file_sha256"])
+        source = value.get("initial_model_directory", directory)
+        if (
+            not isinstance(source, str)
+            or len(source) > 4096
+            or not Path(source).is_absolute()
+        ):
+            raise ValueError("Absolute bounded initial model directory required")
     return value
 
 
@@ -97,6 +106,7 @@ def control(scheduler: Any, parameters: Any) -> dict[str, Any]:
         ResidentWeights,
         load_manifest,
         read_profile_file,
+        validate_config,
     )
     from chalkcompute.weights.serving.resident_runtime import (
         check_cuda,
@@ -113,8 +123,15 @@ def control(scheduler: Any, parameters: Any) -> dict[str, Any]:
         if resident is not None:
             raise ValueError("Sparse resident already bound; restart required")
         check_runtime_sources("sglang")
-        if Path(scheduler.server_args.model_path).resolve() != directory.resolve():
+        if (
+            Path(scheduler.server_args.model_path).resolve()
+            != Path(request.get("initial_model_directory", str(directory))).resolve()
+        ):
             raise ValueError("Initial native model directory differs")
+        if validate_config(
+            read_profile_file(Path(scheduler.server_args.model_path), "config.json")
+        ) != validate_config(read_profile_file(directory, "config.json")):
+            raise ValueError("Initial native model config differs from stream seed")
         check_cuda(next(model.parameters()).device)
         manifest = load_manifest(
             directory, request["version"], request["manifest_sha256"]

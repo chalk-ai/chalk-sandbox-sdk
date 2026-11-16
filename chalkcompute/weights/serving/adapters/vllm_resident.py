@@ -156,13 +156,18 @@ class VLLMResidentAdapter(VLLMAdapter):
                 return result
 
     async def _control(
-        self, method: str, directory: Path, manifest: WeightManifest
+        self,
+        method: str,
+        directory: Path,
+        manifest: WeightManifest,
+        expected_manifest_sha256: str | None = None,
     ) -> None:
         if self._failed:
             raise RuntimeError("Uncertain sparse adapter; restart required")
-        digest = hashlib.sha256(
-            read_profile_file(directory, "manifest.json")
-        ).hexdigest()
+        digest = (
+            expected_manifest_sha256
+            or hashlib.sha256(read_profile_file(directory, "manifest.json")).hexdigest()
+        )
         if load_manifest(directory, manifest.version, digest) != manifest:
             raise ValueError("Control manifest differs from observed manifest")
         try:
@@ -172,7 +177,11 @@ class VLLMResidentAdapter(VLLMAdapter):
                     "method": method,
                     "args": [str(directory.resolve()), manifest.version, digest]
                     + (
-                        [self._layout.raw.decode("utf-8"), self._layout.file_sha256]
+                        [
+                            self._layout.raw.decode("utf-8"),
+                            self._layout.file_sha256,
+                            str(self._model_dir),
+                        ]
                         if method == "chalk_resident_bind"
                         else []
                     ),
@@ -205,20 +214,36 @@ class VLLMResidentAdapter(VLLMAdapter):
             self._failed = True
             raise
 
-    async def initialize(self, model_dir: Path, manifest: WeightManifest) -> None:
+    async def initialize(
+        self,
+        model_dir: Path,
+        manifest: WeightManifest,
+        *,
+        expected_manifest_sha256: str | None = None,
+    ) -> None:
         if (
-            self._model_dir != model_dir.resolve()
+            self._model_dir is None
             or manifest.kind != "keyframe"
             or self._identity is not None
         ):
             raise ValueError("Bind requires the launched initial keyframe")
         self._layout.check_manifest(manifest)
-        await self._control("chalk_resident_bind", model_dir, manifest)
+        await self._control(
+            "chalk_resident_bind", model_dir, manifest, expected_manifest_sha256
+        )
 
-    async def apply(self, version_dir: Path, manifest: WeightManifest) -> None:
+    async def apply(
+        self,
+        version_dir: Path,
+        manifest: WeightManifest,
+        *,
+        expected_manifest_sha256: str | None = None,
+    ) -> None:
         if self._identity is None:
             raise RuntimeError("Native sparse resident is not bound")
-        await self._control("chalk_resident_apply", version_dir, manifest)
+        await self._control(
+            "chalk_resident_apply", version_dir, manifest, expected_manifest_sha256
+        )
 
     async def reset_cache(self) -> None:
         if self._failed or self._identity is None:

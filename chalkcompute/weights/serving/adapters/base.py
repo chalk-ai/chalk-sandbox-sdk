@@ -14,3 +14,13 @@ class EngineAdapter(Protocol):
     async def reset_cache(self) -> None: ...
 
     async def ready(self) -> bool: ...
+
+
+class FencedEngineAdapter(EngineAdapter, Protocol):
+    async def apply(
+        self,
+        version_dir: Path,
+        manifest: WeightManifest,
+        *,
+        expected_manifest_sha256: str | None = None,
+    ) -> None: ...
