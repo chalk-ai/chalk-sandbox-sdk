@@ -33,7 +33,7 @@ import logging
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -303,6 +303,9 @@ class ScalingGroupInfo:
     current_revision_id: str | None = None
     """Immutable revision currently selected to serve traffic."""
 
+    metadata: dict[str, str] = field(default_factory=dict)
+    """User-defined metadata from the scaling group's spec (see ``ScalingGroup``)."""
+
 
 @dataclass(frozen=True)
 class ScalingGroupRevisionInfo:
@@ -338,6 +341,18 @@ class ScalingGroup:
 
     ``network_policy`` configures host egress. Omit it for the server default;
     ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
+
+    ``metadata`` is a ``dict[str, str]`` stored on the scaling group's spec.
+    Unlike ``tags``, it is never turned into Kubernetes labels, so values may
+    be free text or URLs. These keys list the group on the environment's Apps
+    page (``/projects/<project>/environments/<env>/apps``):
+
+    - ``chalk.ai/app-name``: display name. Required for the group to appear.
+    - ``chalk.ai/app-description``: short description shown on the tile.
+    - ``chalk.ai/app-logo``: ``https://`` or ``data:image/`` URL of the logo.
+
+    The server reserves the ``chalk.ai/`` prefix for these keys and limits the
+    map to 64 entries.
 
     Examples
     --------
@@ -387,6 +402,7 @@ class ScalingGroup:
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
         workflow_task_queue: str | None = None,
         tags: dict[str, str] | None = None,
+        metadata: Mapping[str, str] | None = None,
         chalk_identity: bool | ChalkIdentity = False,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -481,6 +497,13 @@ class ScalingGroup:
             )
         self._workflow_task_queue = workflow_task_queue
         self._tags = dict(tags or {})
+        if metadata is not None:
+            if not isinstance(metadata, Mapping):
+                raise TypeError("metadata must be a dict[str, str]")
+            for key, value in metadata.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise TypeError("metadata must be a dict[str, str]")
+        self._metadata = dict(metadata or {})
         self._chalk_identity = chalk_identity
 
         # Set after .deploy()
@@ -586,6 +609,7 @@ class ScalingGroup:
         sg._workflow_task_queue = None
         sg._scale_from_zero_request_policy = None
         sg._tags = {}
+        sg._metadata = {}
         sg._chalk_identity = False
         sg._built_image_uri = None
         sg._scaling_group_id = None
@@ -765,6 +789,7 @@ class ScalingGroup:
                 scale_from_zero_request_policy=self._scale_from_zero_request_policy,
                 workflow_task_queue=self._workflow_task_queue,
             ),
+            metadata=dict(self._metadata),
         )
 
         logger.info("Deploying scaling group '%s'...", sg_name)
@@ -1362,6 +1387,7 @@ def _parse_scaling_group_response(data: sg_pb.ScalingGroupResponse) -> ScalingGr
         ready_replicas=data.ready_replicas,
         available_replicas=data.available_replicas,
         current_revision_id=data.revision_id or None,
+        metadata=dict(data.spec.metadata) if data.spec is not None else {},
     )
 
 

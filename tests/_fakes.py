@@ -104,13 +104,18 @@ class FakeConnectClient(StubbedConnectClient):
 
 class ScalingGroupClient(StubbedConnectClient):
     def __init__(
-        self, *, authentication: str | None = None, web_url: str | None = None
+        self,
+        *,
+        authentication: str | None = None,
+        web_url: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> None:
         self.requests: list[Any] = []
         self._access_token = "test-token"
         self.ensure_auth_calls = 0
         self.authentication = authentication
         self.web_url = web_url
+        self.metadata = metadata
 
     def _ensure_auth(self) -> None:
         self.ensure_auth_calls += 1
@@ -134,7 +139,8 @@ class ScalingGroupClient(StubbedConnectClient):
             spec = sg_pb.ScalingGroupSpec(
                 container_spec=container_pb.ChalkContainerSpec(
                     authentication=self.authentication
-                )
+                ),
+                metadata=self.metadata,
             )
             response_type = sg_pb.GetScalingGroupResponse
         else:
