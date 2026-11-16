@@ -2291,6 +2291,8 @@ def test_refresh_credentials_polls_same_revision_until_active(
             state=pb.CredentialRefreshState.PENDING
         ),
         ConnectRpcError(Code.UNAVAILABLE, "temporarily unavailable"),
+        TimeoutError("status read timed out"),
+        ConnectionError("connection failed"),
         pb.GetSandboxCredentialRefreshStatusResponse(
             state=pb.CredentialRefreshState.ACTIVE
         ),
@@ -2301,7 +2303,7 @@ def test_refresh_credentials_polls_same_revision_until_active(
     assert stub.refresh_sandbox_credentials.call_args.args[
         0
     ] == pb.RefreshSandboxCredentialsRequest(id="sandbox-123")
-    assert stub.get_sandbox_credential_refresh_status.call_count == 3
+    assert stub.get_sandbox_credential_refresh_status.call_count == 5
     for call in stub.get_sandbox_credential_refresh_status.call_args_list:
         assert call.args[0] == pb.GetSandboxCredentialRefreshStatusRequest(
             id="sandbox-123", revision="revision-1"
@@ -2311,7 +2313,8 @@ def test_refresh_credentials_polls_same_revision_until_active(
             == stub.refresh_sandbox_credentials.call_args.kwargs["headers"]
         )
         assert 0 < call.kwargs["timeout_ms"] <= 10_000
-    assert sleep.call_count == 2
+    assert sleep.call_count == 4
+    assert all(call.args[0] == 0.5 for call in sleep.call_args_list)
 
 
 @pytest.mark.parametrize(

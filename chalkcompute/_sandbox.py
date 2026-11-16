@@ -118,7 +118,7 @@ _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS = 0.25
 _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS = 2.0
 _SNAPSHOT_RPC_TIMEOUT_SECONDS = 10.0
 _SNAPSHOT_POLL_INTERVAL_SECONDS = 0.5
-_CREDENTIAL_REFRESH_POLL_INTERVAL_SECONDS = 0.25
+_CREDENTIAL_REFRESH_POLL_INTERVAL_SECONDS = 0.5
 _CREDENTIAL_REFRESH_RPC_TIMEOUT_SECONDS = 10.0
 
 if TYPE_CHECKING:
@@ -2016,47 +2016,7 @@ class Sandbox:
             raise SandboxError(
                 f"Credential refresh returned no revision for sandbox {sandbox_id}"
             )
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"Timed out refreshing credentials for sandbox {sandbox_id} (revision {revision}); refresh may still complete"
-                )
-            try:
-                status = client._stub.get_sandbox_credential_refresh_status(
-                    pb.GetSandboxCredentialRefreshStatusRequest(
-                        id=sandbox_id, revision=revision
-                    ),
-                    headers=client._headers,
-                    timeout_ms=max(
-                        1,
-                        math.ceil(
-                            min(remaining, _CREDENTIAL_REFRESH_RPC_TIMEOUT_SECONDS)
-                            * 1000
-                        ),
-                    ),
-                )
-            except ConnectRpcError as exc:
-                if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
-                    _handle_rpc_error(exc, sandbox_id)
-                    raise
-            else:
-                if status.state == pb.CredentialRefreshState.ACTIVE:
-                    return
-                if status.state != pb.CredentialRefreshState.PENDING:
-                    detail = f": {status.error_message}" if status.error_message else ""
-                    state = status.state.name.lower().removeprefix(
-                        "credential_refresh_state_"
-                    )
-                    raise SandboxError(
-                        f"Credential refresh {revision} for sandbox {sandbox_id} is {state}{detail}"
-                    )
-            time.sleep(
-                min(
-                    _CREDENTIAL_REFRESH_POLL_INTERVAL_SECONDS,
-                    max(0.0, deadline - time.monotonic()),
-                )
-            )
+        client._wait_for_credential_refresh(sandbox_id, revision, deadline=deadline)
 
     @_instrumented("chalkcompute.sandbox.suspend")
     def suspend(self) -> None:
@@ -2691,6 +2651,54 @@ class SandboxClient:
                 )
             seen_cursors.add(cursor)
         return sandboxes
+
+    def _wait_for_credential_refresh(
+        self, sandbox_id: str, revision: str, *, deadline: float
+    ) -> None:
+        """Poll the submitted revision through bounded, retryable status reads."""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out refreshing credentials for sandbox {sandbox_id} (revision {revision}); refresh may still complete"
+                )
+            try:
+                status = self._stub.get_sandbox_credential_refresh_status(
+                    pb.GetSandboxCredentialRefreshStatusRequest(
+                        id=sandbox_id, revision=revision
+                    ),
+                    headers=self._headers,
+                    timeout_ms=max(
+                        1,
+                        math.ceil(
+                            min(remaining, _CREDENTIAL_REFRESH_RPC_TIMEOUT_SECONDS)
+                            * 1000
+                        ),
+                    ),
+                )
+            except ConnectRpcError as exc:
+                if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
+                    _handle_rpc_error(exc, sandbox_id)
+                    raise
+            except (TimeoutError, *HTTP_TRANSPORT_ERRORS):
+                pass
+            else:
+                if status.state == pb.CredentialRefreshState.ACTIVE:
+                    return
+                if status.state != pb.CredentialRefreshState.PENDING:
+                    detail = f": {status.error_message}" if status.error_message else ""
+                    state = status.state.name.lower().removeprefix(
+                        "credential_refresh_state_"
+                    )
+                    raise SandboxError(
+                        f"Credential refresh {revision} for sandbox {sandbox_id} is {state}{detail}"
+                    )
+            time.sleep(
+                min(
+                    _CREDENTIAL_REFRESH_POLL_INTERVAL_SECONDS,
+                    max(0.0, deadline - time.monotonic()),
+                )
+            )
 
     def _snapshot(self, sandbox_id: str) -> SandboxSnapshot:
         # Build once: transport retries reuse this exact key and request. A lost
