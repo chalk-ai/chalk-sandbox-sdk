@@ -65,6 +65,61 @@ def test_scaling_group_deploy_forwards_spec_fields(
     assert request.spec.container_spec.network_policy == expected
 
 
+def test_scaling_group_deploy_forwards_metadata() -> None:
+    metadata = {
+        "chalk.ai/app-name": "Fraud Explorer",
+        "chalk.ai/app-description": "Browse flagged transactions",
+        "chalk.ai/app-logo": "https://example.com/logo.png",
+    }
+    client = ScalingGroupClient()
+    sg = ScalingGroup(image="nginx:alpine", name="app-group", metadata=metadata)
+    sg._client = cast(Any, client)
+
+    sg.deploy()
+
+    request = client.requests[0]
+    assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+    assert request.spec is not None
+    assert dict(request.spec.metadata) == metadata
+    # Metadata is not tags: it must not leak into Kubernetes labels.
+    assert request.spec.container_spec is not None
+    assert dict(request.spec.container_spec.tags) == {}
+    assert sg.info is not None
+    assert sg.info.metadata == metadata
+
+
+def test_scaling_group_deploy_without_metadata_sends_empty_map() -> None:
+    client = ScalingGroupClient()
+    sg = ScalingGroup(image="nginx:alpine", name="plain-group")
+    sg._client = cast(Any, client)
+
+    sg.deploy()
+
+    assert client.requests[0].spec.metadata == {}
+    assert sg.info is not None
+    assert sg.info.metadata == {}
+
+
+@pytest.mark.parametrize(
+    "metadata", [["chalk.ai/app-name"], {"chalk.ai/app-name": 1}, {1: "x"}]
+)
+def test_scaling_group_rejects_non_string_metadata(metadata: Any) -> None:
+    with pytest.raises(TypeError, match="metadata must be a dict"):
+        ScalingGroup(image="nginx:alpine", metadata=metadata)
+
+
+def test_scaling_group_from_name_reads_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = ScalingGroupClient(metadata={"chalk.ai/app-name": "Existing App"})
+    monkeypatch.setattr(scaling_group_mod, "ConnectClient", lambda **_: client)
+
+    sg = ScalingGroup.from_name("existing-group")
+
+    assert sg.info is not None
+    assert sg.info.metadata == {"chalk.ai/app-name": "Existing App"}
+
+
 @pytest.mark.parametrize(
     ("json", "data", "expected"),
     [
