@@ -1,1 +1,1 @@
-- Fix resident vLLM worker admission for exact internal CUDA batch-invariance settings while preserving launcher and runtime source checks.
+- Fix resident vLLM worker admission for exact internal CUDA batch-invariance settings and canonical generated shared-memory names while preserving launcher and pinned runtime source checks.

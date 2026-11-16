@@ -1,11 +1,13 @@
 """Public adapter/control policy tests; native CUDA admission is mocked."""
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import hashlib
 import json
 import os
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -327,6 +329,51 @@ def test_native_startup_spawn_and_internal_omp_marker_are_exact(monkeypatch):
             context.setenv(key, value)
             with pytest.raises(ValueError):
                 vllm_resident.validate_environment(worker=True)
+
+
+@pytest.mark.parametrize("worker_mode", [False, True])
+@pytest.mark.parametrize("batch_invariant", [None, "0", "1"])
+@pytest.mark.parametrize(
+    "identifier",
+    ["12345678-1234-4234-9234-123456789abc", "ffffffff-ffff-4fff-bfff-ffffffffffff"],
+)
+def test_generated_shm_name_is_worker_only_and_independent_of_batch(
+    monkeypatch, worker_mode, batch_invariant, identifier
+):
+    worker_environment(monkeypatch)
+    if batch_invariant is not None:
+        monkeypatch.setenv("VLLM_BATCH_INVARIANT", batch_invariant)
+    identifier = uuid.UUID(identifier)
+    encoded = base64.urlsafe_b64encode(identifier.bytes).rstrip(b"=").decode("ascii")
+    monkeypatch.setenv("VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME", "vllm_mm_" + encoded)
+    if worker_mode:
+        vllm_resident.validate_environment(worker=True)
+    else:
+        with pytest.raises(ValueError, match="Unreviewed"):
+            vllm_resident.validate_environment()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "arbitrary",
+        "vllm_mm_EjRWeBI0QjSSNBI0VniavA==",  # padding
+        "vllm_mm_EjRWeBI0QjSSNBI0VniavB",  # noncanonical trailing bits
+        "vllm_mm_EjRWeBI0EjSSNBI0VniavA",  # UUID1
+        "vllm_mm_EjRWeBI0QjQSNBI0VniavA",  # non-RFC variant
+        "vllm_mm_/////////////////////w",  # standard base64 alphabet
+        "vllm_mm_---------------------w",  # UUID15
+        "vllm_mm_                      ",
+        "vllm_mm_éééééééééééééééééééééé",
+        "vllm_mm_EjRWeBI0QjSSNBI0Vniav/",
+    ],
+)
+def test_worker_refuses_malformed_shm_names(monkeypatch, value):
+    worker_environment(monkeypatch)
+    monkeypatch.setenv("VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME", value)
+    with pytest.raises(ValueError, match="Unreviewed"):
+        vllm_resident.validate_environment(worker=True)
 
 
 @pytest.mark.parametrize("worker_mode", [False, True])
