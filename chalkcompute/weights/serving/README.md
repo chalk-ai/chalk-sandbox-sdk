@@ -118,6 +118,12 @@ Only the explicit authenticated no-target response is retryable during bootstrap
 Clock changes cannot extend the local monotonic deadline. Target changes still
 require the regular drain/apply/verify path before admission resumes.
 
+If an authenticated manifest-identity response advances only the generation of
+the same publication during planning, admission pauses and the next poll plans
+that generation again. The complete publication provenance and requested manifest
+identities must still match. Different-version changes at this boundary, invalid
+responses, and any error after weight mutation remain terminal.
+
 The managed launcher below connects this provider to native admission, engine
 ownership and resident verification. Production activation also requires the
 backend bootstrap change, the compatible native release and SDK dependency bump,

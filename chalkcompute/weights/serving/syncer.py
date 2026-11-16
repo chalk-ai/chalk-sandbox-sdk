@@ -22,6 +22,7 @@ from chalkcompute.weights.serving.adapters.base import (
 )
 from chalkcompute.weights.serving.managed_target import (
     ManagedWeightTarget,
+    ManagedTargetSuperseded,
     TargetProvider,
     verify_target_manifest,
 )
@@ -282,6 +283,11 @@ class WeightSyncer:
                     if managed_target is not None
                     else await asyncio.to_thread(self.plan, target)
                 )
+            except ManagedTargetSuperseded:
+                # Planning has not written weights. Keep admission closed until
+                # the next poll verifies and drains the newer target generation.
+                await self.gate.pause()
+                return False
             except Exception:
                 if managed_target is not None:
                     await self.gate.fail(
