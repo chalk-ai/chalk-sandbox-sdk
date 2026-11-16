@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import math
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout
@@ -22,6 +24,19 @@ from chalkcompute.weights.serving.resident import (
     validate_config,
 )
 from chalkcompute.weights.serving.resident_runtime import check_runtime_sources
+
+
+def _is_generated_shm_name(value: str) -> bool:
+    if len(value) != 30 or not value.startswith("vllm_mm_"):
+        return False
+    try:
+        identifier = uuid.UUID(
+            bytes=base64.b64decode(value[8:] + "==", altchars=b"-_", validate=True)
+        )
+    except ValueError:
+        return False
+    canonical = base64.urlsafe_b64encode(identifier.bytes).rstrip(b"=").decode("ascii")
+    return identifier.version == 4 and value[8:] == canonical
 
 
 def validate_environment(*, worker: bool = False) -> None:
@@ -39,6 +54,22 @@ def validate_environment(*, worker: bool = False) -> None:
         # Pinned native worker startup sets this internal marker. It may be
         # absent when OMP_NUM_THREADS was already supplied by the container.
         allowed["VLLM_OMP_NUM_THREADS_SET_BY_VLLM"] = {"1"}
+        # Pinned envs-cache initialization generates this IPC name even for
+        # text-only models. Launcher refusal prevents caller-supplied names;
+        # canonical syntax alone does not authenticate shared-memory ownership.
+        shm_name = os.environ.get("VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME")
+        if shm_name is not None and _is_generated_shm_name(shm_name):
+            allowed["VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME"] = {shm_name}
+        if os.environ.get("VLLM_BATCH_INVARIANT") == "1":
+            # The pinned CUDA batch-invariance initializer sets these exact
+            # values before worker binding. They remain forbidden to launchers.
+            allowed.update(
+                {
+                    "VLLM_ALLREDUCE_USE_SYMM_MEM": {"0"},
+                    "VLLM_CUSTOM_ALLREDUCE_ALGO": {"1stage"},
+                    "VLLM_USE_AOT_COMPILE": {"0"},
+                }
+            )
     if any(
         key.startswith("VLLM_") and value not in allowed.get(key, set())
         for key, value in os.environ.items()
