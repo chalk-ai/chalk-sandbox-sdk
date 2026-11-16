@@ -6,10 +6,11 @@ import hashlib
 import json
 import re
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from chalkcompute._weights_format import WeightManifest, version_dir
 from chalkcompute.weights.layout import WeightSchema
@@ -17,6 +18,10 @@ from chalkcompute.weights.layout import WeightSchema
 
 class ManagedTargetError(ValueError):
     """The delivered managed target is incomplete, stale, or inconsistent."""
+
+
+class ModelTargetNotSelected(ManagedTargetError):
+    """An authenticated revision has not received its initial desired target."""
 
 
 _FIELDS = frozenset(
@@ -79,6 +84,29 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ManagedTargetError(f"Duplicate target descriptor key: {key}")
         result[key] = value
     return result
+
+
+_FINGERPRINT_FIELDS = (
+    "deployment_id",
+    "revision_id",
+    "target_generation",
+    "stream_id",
+    "logical_version",
+    "volume_id",
+    "volume_version_id",
+    "manifest_sha256",
+    "weight_schema_sha256",
+)
+
+
+def target_fingerprint(target: Mapping[str, str | int]) -> str:
+    """Canonical cross-language admission constraint, independent of lease renewal."""
+    digest = hashlib.sha256(b"chalk.model-weight-target.v1\x00")
+    for field in _FINGERPRINT_FIELDS:
+        encoded = str(target[field]).encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -144,6 +172,10 @@ class ManagedWeightTarget:
             lease_expires_at=_utc_timestamp(value["lease_expires_at"]),
         )
 
+    def fingerprint(self) -> str:
+        """Cross-language admission constraint; not an authentication credential."""
+        return target_fingerprint(self.observation())
+
     def observation(self) -> dict[str, str | int]:
         """The exact fenced target identity reported after successful apply."""
         return {
@@ -181,39 +213,21 @@ class ManagedWeightTarget:
         )
 
 
-class ManagedTargetProvider:
-    """Read and fence a renewable descriptor delivered by the control plane.
+class TargetProvider(Protocol):
+    def current(self) -> ManagedWeightTarget: ...
 
-    Writers must atomically replace the JSON file. A transient missing or
-    malformed descriptor is treated as a delivery failure by the serving loop.
-    """
+    def assert_current(self, expected: ManagedWeightTarget) -> ManagedWeightTarget: ...
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        expected_deployment_id: str | None = None,
-        expected_revision_id: str | None = None,
-        expected_stream_id: str | None = None,
-        expected_volume_id: str | None = None,
-    ) -> None:
-        self.path = path
-        self.expected = {
-            "deployment_id": expected_deployment_id,
-            "revision_id": expected_revision_id,
-            "stream_id": expected_stream_id,
-            "volume_id": expected_volume_id,
-        }
+
+class TargetFence:
+    """Reject identity changes, stale generations and mutated publications."""
+
+    def __init__(self, expected: Mapping[str, str | None]) -> None:
+        self.expected = expected
         self._lock = threading.Lock()
         self._accepted: ManagedWeightTarget | None = None
 
-    def current(self) -> ManagedWeightTarget:
-        try:
-            target = ManagedWeightTarget.from_json(self.path.read_bytes())
-        except OSError as exc:
-            raise ManagedTargetError(
-                f"Cannot read target descriptor {self.path}: {exc}"
-            ) from exc
+    def accept(self, target: ManagedWeightTarget) -> ManagedWeightTarget:
         now = datetime.now(timezone.utc)
         if target.lease_expires_at <= now:
             raise ManagedTargetError("Managed target lease has expired")
@@ -245,6 +259,37 @@ class ManagedTargetProvider:
                         )
             self._accepted = target
         return target
+
+
+class ManagedTargetProvider:
+    """Read a local/test descriptor written by atomic file replacement."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        expected_deployment_id: str | None = None,
+        expected_revision_id: str | None = None,
+        expected_stream_id: str | None = None,
+        expected_volume_id: str | None = None,
+    ) -> None:
+        self.path = path
+        self.expected = {
+            "deployment_id": expected_deployment_id,
+            "revision_id": expected_revision_id,
+            "stream_id": expected_stream_id,
+            "volume_id": expected_volume_id,
+        }
+        self._fence = TargetFence(self.expected)
+
+    def current(self) -> ManagedWeightTarget:
+        try:
+            target = ManagedWeightTarget.from_json(self.path.read_bytes())
+        except OSError as exc:
+            raise ManagedTargetError(
+                f"Cannot read target descriptor {self.path}: {exc}"
+            ) from exc
+        return self._fence.accept(target)
 
     def assert_current(self, expected: ManagedWeightTarget) -> ManagedWeightTarget:
         current = self.current()
