@@ -64,7 +64,7 @@ def test_sandbox_snapshot_fork_suspend_restore() -> None:
         )
         assert write.exit_code == 0, f"Could not write state: {write.stderr_text}"
 
-        snapshot = source.snapshot(timeout=300)
+        snapshot = source.snapshot()
         assert snapshot.status == "completed"
         loaded = client.get_snapshot(snapshot.id)
         assert loaded.status == "completed"
