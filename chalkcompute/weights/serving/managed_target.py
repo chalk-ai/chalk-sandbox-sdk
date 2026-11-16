@@ -24,6 +24,10 @@ class ModelTargetNotSelected(ManagedTargetError):
     """An authenticated revision has not received its initial desired target."""
 
 
+class ManagedTargetSuperseded(ManagedTargetError):
+    """Authenticated planning observes a newer generation of the same publication."""
+
+
 _FIELDS = frozenset(
     {
         "schema_version",

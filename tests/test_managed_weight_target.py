@@ -21,6 +21,7 @@ from chalkcompute.weights.layout import WeightSchema
 from chalkcompute.weights.serving.managed_target import (
     ManagedTargetError,
     ManagedTargetProvider,
+    ManagedTargetSuperseded,
 )
 from chalkcompute.weights.serving.full_checkpoint import FullCheckpointSyncer
 from chalkcompute.weights.serving.supervisor import (
@@ -437,6 +438,53 @@ def test_managed_target_lease_expiry_fails_closed_without_renewal(tmp_path):
         assert unavailable.status == 503
         await watcher
         await client.close()
+
+    asyncio.run(run())
+
+
+def test_supersession_after_weight_mutation_remains_terminal(tmp_path):
+    from chalkcompute.weights.serving.syncer import ApplyError
+
+    class Adapter:
+        def __init__(self):
+            self.writes = 0
+
+        async def apply(self, *args, **kwargs):
+            self.writes += 1
+            raise ManagedTargetSuperseded("Target changed after a write")
+
+        async def reset_cache(self):
+            raise AssertionError("A partial update cannot reset and resume")
+
+    async def run():
+        root = tmp_path / "weights"
+        root.mkdir()
+        initial = _put_manifest(root, 0, None)
+        next_version = _put_manifest(root, 1, 0)
+        target_path = tmp_path / "target.json"
+        _write_target(target_path, _descriptor(root, initial, generation=1))
+        gate = AdmissionGate()
+        adapter = Adapter()
+        syncer = WeightSyncer(
+            root,
+            adapter,
+            gate,
+            managed_target=_provider(target_path),
+            reload=lambda _: None,
+        )
+
+        async def launch(_):
+            pass
+
+        await syncer.bootstrap(launch)
+        _write_target(target_path, _descriptor(root, next_version, generation=2))
+        with pytest.raises(ApplyError) as error:
+            await syncer.sync_once()
+        assert isinstance(error.value.__cause__, ManagedTargetSuperseded)
+        assert adapter.writes == 1
+        assert gate.failed.is_set() and not gate.healthy and not gate.ready
+        assert gate.applied_target["target_generation"] == 1
+        assert gate.version == 0
 
     asyncio.run(run())
 
