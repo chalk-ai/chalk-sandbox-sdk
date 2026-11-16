@@ -69,6 +69,16 @@ cannot extend the native monotonic deadline. `volume_version_id` is recorded in
 the desired/applied tuple as supplied publication provenance. This file adapter
 does not attest which immutable volume snapshot backs the local mount.
 
+Managed health reports include the exact `applied_target`, its absolute UTC
+`lease_expires_at`, and `lease_remaining_seconds` measured against the local
+monotonic deadline. Paused, failed, expired, or mismatched installed versions
+report `healthy: false` and zero remaining time. An observer must bind the report
+to the actual replica incarnation, compare the complete desired target, and
+conservatively bound freshness from its probe start time. The report does not
+establish authenticated controller acknowledgement or routing readiness by itself.
+Lease renewal must match the entire installed target, including publication
+hashes and volume provenance; matching only its generation is insufficient.
+
 This is a local integration primitive, not trusted controller delivery. No
 controller transport, signature/authentication, or immutable mount binding is
 included. Do not use it to activate a production model deployment until those
