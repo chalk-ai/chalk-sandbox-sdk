@@ -1207,6 +1207,8 @@ def test_sandbox_terminate_ephemeral_mount_does_not_create_volume_client(
     with SandboxClient() as client:
         stub = MagicMock(wraps=_Stub())
         stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        stub.refresh_sandbox_credentials = MagicMock()
+        stub.get_sandbox_credential_refresh_status = MagicMock()
         client._stub = stub
         sandbox = Sandbox(
             image="ubuntu:latest",
@@ -1231,6 +1233,8 @@ def lifecycle_sandbox(
     with SandboxClient() as client:
         stub = MagicMock(wraps=_Stub())
         stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        stub.refresh_sandbox_credentials = MagicMock()
+        stub.get_sandbox_credential_refresh_status = MagicMock()
         client._stub = stub
         sandbox = (
             client.get("sandbox-123")
@@ -1321,7 +1325,9 @@ def test_sandbox_metadata_errors_after_terminate(
     )
 
 
-@pytest.mark.parametrize("operation", ["exec", "fs", "snapshot", "suspend", "restore"])
+@pytest.mark.parametrize(
+    "operation", ["exec", "fs", "snapshot", "suspend", "restore", "refresh_credentials"]
+)
 def test_sandbox_running_operations_after_terminate_report_termination(
     lifecycle_sandbox: tuple[Sandbox, MagicMock], operation: str
 ) -> None:
@@ -1384,6 +1390,8 @@ def test_sandbox_rerun_clears_terminated_metadata(failure_stage: str | None) -> 
     with SandboxClient() as client:
         stub = MagicMock(wraps=_Stub())
         stub.terminate_sandbox = MagicMock(return_value=pb.TerminateSandboxResponse())
+        stub.refresh_sandbox_credentials = MagicMock()
+        stub.get_sandbox_credential_refresh_status = MagicMock()
         client._stub = stub
         sandbox = Sandbox(image="ubuntu:latest", sandbox_client=client).run()
         sandbox.terminate()
@@ -2269,3 +2277,113 @@ def test_sandbox_client_create_forwards_runtime() -> None:
 
     assert stub.request is not None
     assert stub.request.source.value.runtime == container_pb.Runtime.RUNC
+
+
+def test_refresh_credentials_polls_same_revision_until_active(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    stub.refresh_sandbox_credentials.return_value = (
+        pb.RefreshSandboxCredentialsResponse(revision="revision-1")
+    )
+    stub.get_sandbox_credential_refresh_status.side_effect = [
+        pb.GetSandboxCredentialRefreshStatusResponse(
+            state=pb.CredentialRefreshState.PENDING
+        ),
+        ConnectRpcError(Code.UNAVAILABLE, "temporarily unavailable"),
+        pb.GetSandboxCredentialRefreshStatusResponse(
+            state=pb.CredentialRefreshState.ACTIVE
+        ),
+    ]
+    with patch("chalkcompute._sandbox.time.sleep") as sleep:
+        assert sandbox.refresh_credentials() is None
+    stub.refresh_sandbox_credentials.assert_called_once()
+    assert stub.refresh_sandbox_credentials.call_args.args[
+        0
+    ] == pb.RefreshSandboxCredentialsRequest(id="sandbox-123")
+    assert stub.get_sandbox_credential_refresh_status.call_count == 3
+    for call in stub.get_sandbox_credential_refresh_status.call_args_list:
+        assert call.args[0] == pb.GetSandboxCredentialRefreshStatusRequest(
+            id="sandbox-123", revision="revision-1"
+        )
+        assert (
+            call.kwargs["headers"]
+            == stub.refresh_sandbox_credentials.call_args.kwargs["headers"]
+        )
+        assert 0 < call.kwargs["timeout_ms"] <= 10_000
+    assert sleep.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "state, detail, message",
+    [
+        (
+            pb.CredentialRefreshState.FAILED,
+            "listener rejected",
+            "failed: listener rejected",
+        ),
+        (pb.CredentialRefreshState.SUPERSEDED, "", "superseded"),
+        (pb.CredentialRefreshState.UNSPECIFIED, "", "unspecified"),
+    ],
+)
+def test_refresh_credentials_reports_terminal_failure(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+    state: pb.CredentialRefreshState,
+    detail: str,
+    message: str,
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    stub.refresh_sandbox_credentials.return_value = (
+        pb.RefreshSandboxCredentialsResponse(revision="revision-1")
+    )
+    stub.get_sandbox_credential_refresh_status.return_value = (
+        pb.GetSandboxCredentialRefreshStatusResponse(state=state, error_message=detail)
+    )
+    with pytest.raises(SandboxError, match=message):
+        sandbox.refresh_credentials()
+    stub.refresh_sandbox_credentials.assert_called_once()
+    stub.get_sandbox_credential_refresh_status.assert_called_once()
+
+
+def test_refresh_credentials_bounds_polling_by_overall_timeout(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    stub.refresh_sandbox_credentials.return_value = (
+        pb.RefreshSandboxCredentialsResponse(revision="revision-1")
+    )
+    stub.get_sandbox_credential_refresh_status.return_value = (
+        pb.GetSandboxCredentialRefreshStatusResponse(
+            state=pb.CredentialRefreshState.PENDING
+        )
+    )
+    with (
+        patch("chalkcompute._sandbox.time.monotonic", side_effect=[0.0, 0.5, 0.9, 1.0]),
+        patch("chalkcompute._sandbox.time.sleep") as sleep,
+    ):
+        with pytest.raises(TimeoutError, match="revision-1"):
+            sandbox.refresh_credentials(timeout=1.0)
+    assert (
+        stub.get_sandbox_credential_refresh_status.call_args.kwargs["timeout_ms"] == 500
+    )
+    assert sleep.call_args.args[0] == pytest.approx(0.1)
+    stub.refresh_sandbox_credentials.assert_called_once()
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_refresh_credentials_rejects_invalid_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="finite positive"):
+        Sandbox().refresh_credentials(timeout=timeout)
+
+
+def test_refresh_credentials_maps_rpc_errors_without_resubmitting(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    stub.refresh_sandbox_credentials.side_effect = ConnectRpcError(
+        Code.NOT_FOUND, "not found"
+    )
+    with pytest.raises(SandboxNotFoundError):
+        sandbox.refresh_credentials()
+    stub.refresh_sandbox_credentials.assert_called_once()
+    stub.get_sandbox_credential_refresh_status.assert_not_called()

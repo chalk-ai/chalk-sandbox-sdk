@@ -118,6 +118,8 @@ _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS = 0.25
 _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS = 2.0
 _SNAPSHOT_RPC_TIMEOUT_SECONDS = 10.0
 _SNAPSHOT_POLL_INTERVAL_SECONDS = 0.5
+_CREDENTIAL_REFRESH_POLL_INTERVAL_SECONDS = 0.25
+_CREDENTIAL_REFRESH_RPC_TIMEOUT_SECONDS = 10.0
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -1980,6 +1982,81 @@ class Sandbox:
         client = self._require_client()
         sandbox_id = self._require_started()
         return client._snapshot(sandbox_id)._wait()
+
+    @_instrumented("chalkcompute.sandbox.refresh_credentials")
+    def refresh_credentials(self, *, timeout: float = 60.0) -> None:
+        """Refresh proxy credentials from the current scoped secret values.
+
+        Poll until Envoy activates the update. Raise :class:`SandboxError` if
+        the update fails or is superseded, or :class:`TimeoutError` if ``timeout``
+        seconds elapse. A timeout does not cancel the submitted refresh.
+        Already-open connections may continue using the previous credentials.
+        """
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a finite positive number")
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        deadline = time.monotonic() + timeout
+        try:
+            response = client._stub.refresh_sandbox_credentials(
+                pb.RefreshSandboxCredentialsRequest(id=sandbox_id),
+                headers=client._headers,
+                timeout_ms=max(
+                    1,
+                    math.ceil(
+                        min(timeout, _CREDENTIAL_REFRESH_RPC_TIMEOUT_SECONDS) * 1000
+                    ),
+                ),
+            )
+        except ConnectRpcError as exc:
+            _handle_rpc_error(exc, sandbox_id)
+            raise
+        revision = response.revision
+        if not revision:
+            raise SandboxError(
+                f"Credential refresh returned no revision for sandbox {sandbox_id}"
+            )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out refreshing credentials for sandbox {sandbox_id} (revision {revision}); refresh may still complete"
+                )
+            try:
+                status = client._stub.get_sandbox_credential_refresh_status(
+                    pb.GetSandboxCredentialRefreshStatusRequest(
+                        id=sandbox_id, revision=revision
+                    ),
+                    headers=client._headers,
+                    timeout_ms=max(
+                        1,
+                        math.ceil(
+                            min(remaining, _CREDENTIAL_REFRESH_RPC_TIMEOUT_SECONDS)
+                            * 1000
+                        ),
+                    ),
+                )
+            except ConnectRpcError as exc:
+                if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
+                    _handle_rpc_error(exc, sandbox_id)
+                    raise
+            else:
+                if status.state == pb.CredentialRefreshState.ACTIVE:
+                    return
+                if status.state != pb.CredentialRefreshState.PENDING:
+                    detail = f": {status.error_message}" if status.error_message else ""
+                    state = status.state.name.lower().removeprefix(
+                        "credential_refresh_state_"
+                    )
+                    raise SandboxError(
+                        f"Credential refresh {revision} for sandbox {sandbox_id} is {state}{detail}"
+                    )
+            time.sleep(
+                min(
+                    _CREDENTIAL_REFRESH_POLL_INTERVAL_SECONDS,
+                    max(0.0, deadline - time.monotonic()),
+                )
+            )
 
     @_instrumented("chalkcompute.sandbox.suspend")
     def suspend(self) -> None:
