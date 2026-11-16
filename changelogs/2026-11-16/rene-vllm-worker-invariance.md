@@ -1,0 +1,1 @@
+- Fix resident vLLM worker admission for exact internal CUDA batch-invariance settings while preserving launcher and runtime source checks.

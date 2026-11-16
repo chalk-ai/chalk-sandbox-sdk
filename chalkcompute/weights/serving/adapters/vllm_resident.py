@@ -39,6 +39,16 @@ def validate_environment(*, worker: bool = False) -> None:
         # Pinned native worker startup sets this internal marker. It may be
         # absent when OMP_NUM_THREADS was already supplied by the container.
         allowed["VLLM_OMP_NUM_THREADS_SET_BY_VLLM"] = {"1"}
+        if os.environ.get("VLLM_BATCH_INVARIANT") == "1":
+            # The pinned CUDA batch-invariance initializer sets these exact
+            # values before worker binding. They remain forbidden to launchers.
+            allowed.update(
+                {
+                    "VLLM_ALLREDUCE_USE_SYMM_MEM": {"0"},
+                    "VLLM_CUSTOM_ALLREDUCE_ALGO": {"1stage"},
+                    "VLLM_USE_AOT_COMPILE": {"0"},
+                }
+            )
     if any(
         key.startswith("VLLM_") and value not in allowed.get(key, set())
         for key, value in os.environ.items()

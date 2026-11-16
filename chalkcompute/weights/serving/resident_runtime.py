@@ -16,6 +16,7 @@ RUNTIME_PACKAGES = {
 COMMON_PACKAGES = {"safetensors": "0.8.0", "xxhash": "3.6.0", "zstandard": "0.25.0"}
 RUNTIME_SOURCES = {
     "vllm": {
+        "model_executor/determinism/batch_invariant.py": "e8ab9cfe32a2f1523d25786a42119e28faa79c3a2cbcba838128cdd16cc6b9c8",
         "entrypoints/serve/dev/cache/api_router.py": "8f773fff7402bfbf5a8d9290bed47a7f44cde7d248592d41264625a3f7a7e51a",
         "entrypoints/serve/dev/rpc/api_router.py": "713774687e0132ad62421c3620d5fa799f59418bbbf3597255645f811d72e902",
         "model_executor/layers/linear.py": "d4b97d850eb8bdee5fd2459e7ac688d00623b54f5ec0ea590c08da0173f8b4d4",

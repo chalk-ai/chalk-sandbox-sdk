@@ -329,6 +329,48 @@ def test_native_startup_spawn_and_internal_omp_marker_are_exact(monkeypatch):
                 vllm_resident.validate_environment(worker=True)
 
 
+@pytest.mark.parametrize("worker_mode", [False, True])
+@pytest.mark.parametrize("batch_invariant", [None, "0", "1"])
+def test_batch_invariant_derived_environment_is_worker_only(
+    monkeypatch, worker_mode, batch_invariant
+):
+    worker_environment(monkeypatch)
+    if batch_invariant is not None:
+        monkeypatch.setenv("VLLM_BATCH_INVARIANT", batch_invariant)
+    vllm_resident.validate_environment(worker=worker_mode)
+    # vLLM 0.33 override_envs_for_invariance sets these on CUDA before bind.
+    for key, value in {
+        "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+        "VLLM_CUSTOM_ALLREDUCE_ALGO": "1stage",
+        "VLLM_USE_AOT_COMPILE": "0",
+    }.items():
+        monkeypatch.setenv(key, value)
+    if worker_mode and batch_invariant == "1":
+        vllm_resident.validate_environment(worker=True)
+    else:
+        with pytest.raises(ValueError, match="Unreviewed"):
+            vllm_resident.validate_environment(worker=worker_mode)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("VLLM_ALLREDUCE_USE_SYMM_MEM", "1"),
+        ("VLLM_CUSTOM_ALLREDUCE_ALGO", "2stage"),
+        ("VLLM_USE_AOT_COMPILE", "1"),
+        ("VLLM_UNREVIEWED_BATCH_FLAG", "0"),
+    ],
+)
+def test_batch_invariant_worker_rejects_conflicting_or_unknown_values(
+    monkeypatch, name, value
+):
+    worker_environment(monkeypatch)
+    monkeypatch.setenv("VLLM_BATCH_INVARIANT", "1")
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match="Unreviewed"):
+        vllm_resident.validate_environment(worker=True)
+
+
 @pytest.mark.parametrize(
     "name", ["VLLM_SERVER_DEV_MODE", "VLLM_WORKER_MULTIPROC_METHOD"]
 )
