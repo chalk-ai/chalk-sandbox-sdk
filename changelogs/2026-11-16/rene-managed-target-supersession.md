@@ -1,0 +1,1 @@
+- Defer same-publication target generation changes during authenticated pre-write planning while keeping admission closed until the new generation is verified and drained.
