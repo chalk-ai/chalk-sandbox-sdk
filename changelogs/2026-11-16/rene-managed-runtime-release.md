@@ -1,0 +1,1 @@
+- Pin remote-call 1.11.1 to provide native target admission and execution drain for opt-in managed model serving.
