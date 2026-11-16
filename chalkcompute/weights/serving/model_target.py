@@ -22,6 +22,7 @@ from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._web_identity import read_web_identity_token
 from chalkcompute.weights.serving.managed_target import (
     ManagedTargetError,
+    ManagedTargetSuperseded,
     ModelTargetNotSelected,
     ManagedWeightTarget,
     TargetFence,
@@ -239,12 +240,9 @@ class ModelDeploymentTargetProvider:
                     response, min(wall_started + _LEASE_SECONDS, token.expires_at)
                 )
                 deadline = started + target.lease_expires_at.timestamp() - wall_started
-                if (
-                    time.monotonic() >= deadline
-                    or target._immutable_tuple() != expected._immutable_tuple()
-                ):
+                if time.monotonic() >= deadline:
                     raise ManagedTargetError(
-                        "Target changed during manifest identity verification"
+                        "Manifest identity refresh exhausted its lease"
                     )
                 result: dict[int, str] = {}
                 for identity in response.manifest_identities:
@@ -264,11 +262,32 @@ class ModelDeploymentTargetProvider:
                     raise ManagedTargetError(
                         "Immutable manifest identity response is incomplete or inconsistent"
                     )
+                observed = target.observation()
+                observed["target_generation"] = expected.target_generation
+                superseded = (
+                    target.target_generation > expected.target_generation
+                    and observed == expected.observation()
+                )
+                if (
+                    target._immutable_tuple() != expected._immutable_tuple()
+                    and not superseded
+                ):
+                    raise ManagedTargetError(
+                        "Target changed during manifest identity verification"
+                    )
                 target = self._fence.accept(target)
                 self._target = target
                 self._deadline = deadline
                 self._next_poll = started + _POLL_SECONDS
+                if superseded:
+                    # Only a fully validated generation change of identical
+                    # publication content can defer planning before any writes.
+                    raise ManagedTargetSuperseded(
+                        "Same-publication target generation advanced during planning"
+                    )
                 return result
+            except ManagedTargetSuperseded:
+                raise
             except ManagedTargetError:
                 self._target = None
                 raise

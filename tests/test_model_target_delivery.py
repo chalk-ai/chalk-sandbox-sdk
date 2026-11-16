@@ -20,6 +20,7 @@ from chalkcompute._gen.chalk.weightstream.v1.service_pb import WeightStreamVersi
 from chalkcompute.weights.serving import model_target as delivery
 from chalkcompute.weights.serving.managed_target import (
     ManagedTargetError,
+    ManagedTargetSuperseded,
     ModelTargetNotSelected,
 )
 
@@ -354,8 +355,8 @@ def test_short_server_lease_refreshes_before_poll_interval(setup):
     assert second.lease_expires_at > first.lease_expires_at
 
 
-def _manifest_response(versions=(0,)):
-    result = response()
+def _manifest_response(versions=(0,), *, generation=1):
+    result = response(generation)
     result.manifest_identities.extend(
         runtime_pb.ModelWeightRuntimeManifestIdentity(
             version=version, manifest_sha256="a" * 64 if version == 0 else "b" * 64
@@ -399,7 +400,7 @@ def test_manifest_identity_response_fails_closed(setup, malformation):
     elif malformation == "leaf":
         result.manifest_identities[0].manifest_sha256 = "b" * 64
     else:
-        result.target.generation += 1
+        result.target.version.version += 1
     setup.rpc.return_value = result
     with pytest.raises(ManagedTargetError):
         setup.provider.manifest_digests(target, (0,))
@@ -442,3 +443,235 @@ def test_manifest_identity_refresh_serializes_with_lease_watcher(setup):
         renewed = watcher.result(timeout=2)
         assert renewed.lease_expires_at > target.lease_expires_at
         assert setup.provider.assert_current(target) == renewed
+
+
+def test_same_publication_newer_generation_defers_only_after_verified_identity(setup):
+    target = setup.provider.current()
+    setup.clock.advance(1)
+    setup.rpc.return_value = _manifest_response(generation=2)
+    with pytest.raises(ManagedTargetSuperseded):
+        setup.provider.manifest_digests(target, (0,))
+    latest = setup.provider.current()
+    assert latest.target_generation == 2
+    assert latest.fingerprint() != target.fingerprint()
+    assert setup.rpc.call_count == 2
+    assert setup.provider.manifest_digests(latest, (0,)) == {0: "a" * 64}
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "owner",
+        "revision",
+        "stream",
+        "volume",
+        "snapshot",
+        "manifest",
+        "schema",
+        "logical-version",
+        "missing-identity",
+        "duplicate-identity",
+        "leaf-identity",
+        "expired-lease",
+        "permission",
+        "generation-rollback",
+        "equal-generation-drift",
+    ],
+)
+def test_invalid_generation_refresh_never_becomes_retryable(setup, invalid):
+    target = setup.provider.current()
+    result = _manifest_response(generation=2)
+    selected = result.target
+    version = selected.version
+    if invalid == "owner":
+        selected.model_scaling_group_id = "other"
+    elif invalid == "revision":
+        selected.model_scaling_group_revision_id = "other"
+    elif invalid == "stream":
+        version.weight_stream_id = "other"
+    elif invalid == "volume":
+        selected.volume.volume_id = "other"
+    elif invalid == "snapshot":
+        version.volume_version_id += 1
+    elif invalid == "manifest":
+        version.manifest_sha256 = "c" * 64
+    elif invalid == "schema":
+        version.weight_schema_sha256 = "c" * 64
+    elif invalid == "logical-version":
+        version.version += 1
+    elif invalid == "missing-identity":
+        result.manifest_identities.clear()
+    elif invalid == "duplicate-identity":
+        result.manifest_identities.append(result.manifest_identities[0])
+    elif invalid == "leaf-identity":
+        result.manifest_identities[0].manifest_sha256 = "c" * 64
+    elif invalid == "expired-lease":
+        result.lease_expires_at = Timestamp(seconds=int(setup.clock.wall - 1))
+    elif invalid == "permission":
+        setup.rpc.side_effect = ConnectError(Code.PERMISSION_DENIED, "not authorized")
+    elif invalid == "generation-rollback":
+        setup.rpc.return_value = response(generation=3)
+        setup.clock.advance(3)
+        setup.provider.current()
+    else:
+        selected.generation = target.target_generation
+        version.volume_version_id += 1
+    setup.rpc.return_value = result
+    with pytest.raises(ManagedTargetError) as error:
+        setup.provider.manifest_digests(target, (0,))
+    assert not isinstance(error.value, ManagedTargetSuperseded)
+    assert setup.provider._target is None
+
+
+def test_runtime_replans_same_publication_race_without_weight_writes(
+    setup, tmp_path, monkeypatch
+):
+    import asyncio
+    import hashlib
+    from unittest.mock import AsyncMock
+
+    from chalkcompute._weights_codec import checksum
+    from chalkcompute._weights_format import TensorEntry, WeightManifest, version_dir
+    from chalkcompute.weights.layout import WeightSchema
+    from chalkcompute.weights.serving import model_runtime
+    from chalkcompute.weights.serving.adapters import vllm_resident
+    from chalkcompute.weights.serving.sparse_syncer import SparseWeightSyncer
+
+    root = tmp_path / "weights"
+    seed = root / version_dir(0)
+    seed.mkdir(parents=True)
+    payload = b"\x00\x00"
+    (seed / "weight").write_bytes(payload)
+    manifest = WeightManifest(
+        0,
+        None,
+        "keyframe",
+        "test-model",
+        "a" * 64,
+        (
+            TensorEntry(
+                "weight",
+                "bfloat16",
+                (1,),
+                "dense",
+                "weight",
+                0,
+                2,
+                1,
+                checksum(payload),
+            ),
+        ),
+    )
+    (seed / "manifest.json").write_bytes(manifest.to_json())
+    digest = hashlib.sha256(manifest.to_json()).hexdigest()
+    schema = WeightSchema.from_manifest(manifest).sha256
+    requests = 0
+    generation = 1
+
+    def fetch(request, **kwargs):
+        nonlocal requests, generation
+        if request.manifest_versions:
+            requests += 1
+            if requests == 2:
+                generation = 2
+        result = _manifest_response(generation=generation)
+        result.target.version.manifest_sha256 = digest
+        result.target.version.weight_schema_sha256 = schema
+        result.manifest_identities[0].manifest_sha256 = digest
+        return result
+
+    setup.rpc.side_effect = fetch
+
+    async def run():
+        completed = asyncio.Event()
+        process_done = asyncio.Event()
+        paused_before_retry = []
+        fingerprints = []
+
+        class Handle:
+            requires_target = True
+
+            def set_serving(self, serving, **kwargs):
+                if serving:
+                    fingerprints.append(kwargs["target_fingerprint"])
+
+            def wait_drained(self, timeout_seconds):
+                return True
+
+        process = SimpleNamespace(pid=123456789, returncode=None)
+
+        async def wait():
+            await process_done.wait()
+            return process.returncode
+
+        process.wait = wait
+
+        def killpg(pid, sig):
+            assert pid == process.pid
+            process.returncode = 0
+            process_done.set()
+
+        class Adapter:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def launch_cmd(self, directory, port):
+                return ["not-executed"]
+
+            async def ready(self):
+                return True
+
+            async def initialize(self, *args, **kwargs):
+                pass
+
+            async def apply(self, *args, **kwargs):
+                raise AssertionError("Unexpected weight write")
+
+            async def reset_cache(self):
+                raise AssertionError("Unexpected cache reset")
+
+        def make_syncer(root, adapter, gate, **kwargs):
+            syncer = SparseWeightSyncer(
+                root, adapter, gate, poll_seconds=0.01, reload=lambda _: None, **kwargs
+            )
+            original = syncer.sync_once
+
+            async def sync_once():
+                result = await original()
+                assert result is False
+                if gate.paused:
+                    paused_before_retry.append(gate.applied_target["target_generation"])
+                    assert gate.healthy and not gate.failed.is_set() and not gate.ready
+                elif gate.applied_target["target_generation"] == 2:
+                    assert paused_before_retry == [1]
+                    assert gate.ready and gate.healthy and not gate.failed.is_set()
+                    completed.set()
+                return result
+
+            syncer.sync_once = sync_once
+            return syncer
+
+        monkeypatch.setattr(vllm_resident, "VLLMResidentAdapter", Adapter)
+        monkeypatch.setattr(model_runtime, "SparseWeightSyncer", make_syncer)
+        monkeypatch.setattr(model_runtime, "os", SimpleNamespace(killpg=killpg))
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
+        )
+        runtime = model_runtime.ManagedModelRuntime(
+            model_runtime.ModelServingConfig(
+                "vllm-sparse", [], root, tmp_path / "layout.json", "a" * 64, 8001, 2
+            ),
+            Handle(),
+            setup.provider,
+        )
+        task = asyncio.create_task(runtime._run())
+        try:
+            await asyncio.wait_for(completed.wait(), 2)
+            assert process.returncode is None and not task.done()
+            assert len(set(fingerprints)) == 2
+            assert runtime.gate.applied_target["target_generation"] == 2
+        finally:
+            runtime._stop.set()
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
