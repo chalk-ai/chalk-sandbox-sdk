@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, RecordSandboxResourceRequest, RecordSandboxResourceResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
+from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxCredentialRefreshStatusRequest, GetSandboxCredentialRefreshStatusResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, RecordSandboxResourceRequest, RecordSandboxResourceResponse, RefreshSandboxCredentialsRequest, RefreshSandboxCredentialsResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -112,6 +112,44 @@ class SandboxServiceClientSync(ConnectClientSync):
                 service_name="chalk.sandbox.v2.SandboxService",
                 input=ResumeSandboxRequest,
                 output=ResumeSandboxResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def refresh_sandbox_credentials(
+        self,
+        request: RefreshSandboxCredentialsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> RefreshSandboxCredentialsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="RefreshSandboxCredentials",
+                service_name="chalk.sandbox.v2.SandboxService",
+                input=RefreshSandboxCredentialsRequest,
+                output=RefreshSandboxCredentialsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_sandbox_credential_refresh_status(
+        self,
+        request: GetSandboxCredentialRefreshStatusRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> GetSandboxCredentialRefreshStatusResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetSandboxCredentialRefreshStatus",
+                service_name="chalk.sandbox.v2.SandboxService",
+                input=GetSandboxCredentialRefreshStatusRequest,
+                output=GetSandboxCredentialRefreshStatusResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

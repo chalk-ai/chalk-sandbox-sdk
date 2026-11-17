@@ -1,0 +1,1 @@
+- Add `Sandbox.refresh_credentials()` to refresh proxy credentials and wait for Envoy activation, reporting failures and timeouts.

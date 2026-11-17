@@ -1378,3 +1378,17 @@ Retries can execute side effects more than once. Make retried handlers
 idempotent. Retryable execution and transport failures share the configured
 invocation retry budget. Connection setup and result polling do not create
 additional invocation budgets.
+
+## Refresh sandbox credentials
+
+After updating a secret used by a sandbox proxy rule, refresh its credentials:
+
+```python
+sandbox.refresh_credentials(timeout=60)
+```
+
+This call polls until Envoy activates the refreshed credentials. Rejected or
+superseded updates raise `SandboxError`; exceeding the timeout raises
+`TimeoutError` without cancelling the refresh. Already-open connections may
+continue using the previous credentials. Secret references and proxy rules stay
+unchanged.
