@@ -1,1 +1,1 @@
-- Add `cc.OnlineEvaluation` to create, read, update, and delete span-level definitions with pinned scorers and telemetry input bindings.
+- Add `cc.OnlineEvaluation` to create, read, update, and delete span-level definitions with pinned scorers.

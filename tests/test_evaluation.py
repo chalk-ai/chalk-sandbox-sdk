@@ -1032,7 +1032,6 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     judge._version_info = FunctionVersionInfo(
         id="judge-v2", function_name="grade", version=2, scaling_group_name="sg-grade"
     )
-    bindings = {"input": "input_value", "output": "output_value"}
     predicate = "openinference_span_kind = 'LLM'"
     raw = {
         "id": "online-1",
@@ -1042,7 +1041,6 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
             "name": "Online quality",
             "scope": "ONLINE_EVALUATOR_SCOPE_SPAN",
             "predicate": {"sqlExpression": predicate},
-            "inputBindings": bindings,
             "sampleRate": 0.05,
             "enabled": True,
             "scorers": [
@@ -1061,7 +1059,6 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
             **raw["spec"],
             "enabled": False,
             "predicate": {"sqlExpression": ""},
-            "inputBindings": {"input": "span_name", "output": "output_value"},
         },
     }
     connect = _FakeConnectClient(
@@ -1104,12 +1101,10 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
         "Online quality",
         where=predicate,
         sample_rate=0.05,
-        inputs=bindings,
         scorers=[judge],
     )
     assert created.revision == 1
     create_request = connect.calls[-1][1]
-    assert create_request.spec.input_bindings == bindings
     assert (
         create_request.spec.scorers[0].spec.implementation.value.function_version_id
         == "judge-v2"
@@ -1117,15 +1112,11 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
 
     saved = cc.OnlineEvaluation.from_id(created.id)
     assert saved.where == predicate
-    assert saved.inputs == bindings
     assert saved.scorers[0].function_version_id == "judge-v2"
-    updated = saved.update(
-        enabled=False, where="", inputs={**bindings, "input": "span_name"}
-    )
+    updated = saved.update(enabled=False, where="")
     update_request = connect.calls[-1][1]
     assert update_request.expected_revision == 1
     assert update_request.spec.predicate.sql_expression == ""
-    assert update_request.spec.input_bindings["input"] == "span_name"
     assert update_request.spec.enabled is False
     assert update_request.spec.metadata.to_json() == '{"owner":"ml"}'
     assert (
@@ -1136,7 +1127,6 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     assert updated.revision == 2
     reread = updated.refresh()
     assert reread.where == ""
-    assert reread.inputs["input"] == "span_name"
     assert reread.enabled is False
 
     with pytest.raises(EvaluationError, match="concurrently") as stale:

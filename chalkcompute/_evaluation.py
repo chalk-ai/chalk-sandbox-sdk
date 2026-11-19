@@ -518,11 +518,6 @@ class OnlineEvaluation:
         return self._spec.sample_rate
 
     @property
-    def inputs(self) -> dict[str, str]:
-        """Explicit bindings from function scorer arguments to telemetry columns."""
-        return dict(self._spec.input_bindings)
-
-    @property
     def scorers(self) -> tuple[OnlineEvaluationScorer, ...]:
         return tuple(_online_scorer_from_proto(scorer) for scorer in self._spec.scorers)
 
@@ -538,7 +533,6 @@ class OnlineEvaluation:
         scope: Literal["span"] = "span",
         where: str = "",
         sample_rate: float = 1.0,
-        inputs: Mapping[str, str] | None = None,
         scorers: Sequence[DeployedFunction | SqlExpression],
         enabled: bool = True,
         chalk_client: Any | None = None,
@@ -546,15 +540,13 @@ class OnlineEvaluation:
         """Save a definition over the active environment's ingested telemetry spans.
 
         Pass deployed function scorers, which are pinned to their current versions,
-        or Chalk SQL expressions. Map scorer arguments to telemetry span columns
-        with ``inputs``, for example ``{"input": "input_value"}``.
+        or Chalk SQL expressions.
         """
         return EvaluationClient(chalk_client=chalk_client).create_online(
             name,
             scope=scope,
             where=where,
             sample_rate=sample_rate,
-            inputs=inputs,
             scorers=scorers,
             enabled=enabled,
         )
@@ -576,16 +568,14 @@ class OnlineEvaluation:
         name: str | None = None,
         where: str | None = None,
         sample_rate: float | None = None,
-        inputs: Mapping[str, str] | None = None,
         scorers: Sequence[DeployedFunction | SqlExpression] | None = None,
         enabled: bool | None = None,
     ) -> OnlineEvaluation:
         """Save changes and return the new revision.
 
         Omitted fields keep their saved values. Pass an empty string to clear
-        the predicate or an empty mapping to clear the bindings. A stale handle
-        raises :class:`EvaluationError` with status code 409. Refresh before
-        retrying the edit.
+        the predicate. A stale handle raises :class:`EvaluationError` with
+        status code 409. Refresh before retrying the edit.
         """
         spec = evaluation_pb.OnlineEvaluatorSpec.from_binary(self._spec.to_binary())
         if name is not None:
@@ -596,8 +586,6 @@ class OnlineEvaluation:
             )
         if sample_rate is not None:
             spec.sample_rate = sample_rate
-        if inputs is not None:
-            spec.input_bindings = dict(inputs)
         if scorers is not None:
             spec.scorers = _online_scorer_specs(scorers)
         if enabled is not None:
@@ -790,7 +778,6 @@ class EvaluationClient:
         scope: Literal["span"] = "span",
         where: str = "",
         sample_rate: float = 1.0,
-        inputs: Mapping[str, str] | None = None,
         scorers: Sequence[DeployedFunction | SqlExpression],
         enabled: bool = True,
     ) -> OnlineEvaluation:
@@ -805,7 +792,6 @@ class EvaluationClient:
             scope=evaluation_pb.OnlineEvaluatorScope.SPAN,
             predicate=evaluation_pb.OnlineEvaluatorPredicate(sql_expression=where),
             sample_rate=sample_rate,
-            input_bindings=None if inputs is None else dict(inputs),
             scorers=_online_scorer_specs(scorers),
             enabled=enabled,
         )
