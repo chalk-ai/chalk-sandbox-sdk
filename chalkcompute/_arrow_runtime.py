@@ -29,9 +29,105 @@ def _chalk_has_contract(annotation):
     return isinstance(annotation, type) and hasattr(annotation, "__chalk_arrow_type__")
 
 
+def _chalk_record_kind(annotation):
+    if not isinstance(annotation, type) or _chalk_has_contract(annotation):
+        return None
+    if _chalk_dataclasses.is_dataclass(annotation):
+        # These fields cannot be reconstructed by passing the stored values to __init__.
+        init_code = getattr(annotation.__init__, "__code__", None)
+        if (
+            not annotation.__dataclass_params__.init
+            or init_code is None
+            or init_code.co_filename != "<string>"
+            or hasattr(annotation, "__post_init__")
+        ):
+            return None
+        fields = _chalk_dataclasses.fields(annotation)
+        if any(not field.init for field in fields):
+            return None
+        if any(
+            ty is _chalk_dataclasses.InitVar
+            or isinstance(ty, _chalk_dataclasses.InitVar)
+            for ty in _chalk_typing.get_type_hints(annotation).values()
+        ):
+            return None
+        return "dataclass"
+    model = next(
+        (
+            base
+            for base in annotation.__mro__
+            if base.__module__ in ("pydantic.main", "pydantic.v1.main")
+            and base.__name__ == "BaseModel"
+        ),
+        None,
+    )
+    if model is not None:
+        # Reconstructing a validated value must not run a user transformation a second time.
+        if annotation.__init__ is not model.__init__ or getattr(
+            annotation, "__pydantic_post_init__", None
+        ):
+            return None
+        if getattr(annotation, "model_config", {}) or any(
+            "Config" in base.__dict__
+            for base in annotation.__mro__[: annotation.__mro__.index(model)]
+        ):
+            return None
+        decorators = getattr(annotation, "__pydantic_decorators__", None)
+        if decorators is not None and any(
+            getattr(decorators, name, None)
+            for name in (
+                "validators",
+                "field_validators",
+                "root_validators",
+                "model_validators",
+                "field_serializers",
+                "model_serializers",
+                "computed_fields",
+            )
+        ):
+            return None
+        if any(
+            getattr(annotation, name, None)
+            for name in (
+                "__validators__",
+                "__pre_root_validators__",
+                "__post_root_validators__",
+            )
+        ):
+            return None
+        fields = (
+            annotation.model_fields
+            if hasattr(annotation, "model_fields")
+            else annotation.__fields__
+        )
+        # The Arrow struct uses field names. Alias paths can require a different input shape.
+        if any(
+            getattr(field, "metadata", None)
+            or (getattr(field, "validation_alias", None) or field.alias or name) != name
+            for name, field in fields.items()
+        ):
+            return None
+        return "pydantic"
+    return None
+
+
 def _chalk_struct_fields(annotation):
     if not isinstance(annotation, type):
         return {}
+    kind = _chalk_record_kind(annotation)
+    if kind is not None:
+        hints = _chalk_typing.get_type_hints(annotation, include_extras=True)
+        if kind == "dataclass":
+            return {
+                field.name: hints[field.name]
+                for field in _chalk_dataclasses.fields(annotation)
+            }
+        fields = (
+            annotation.model_fields
+            if hasattr(annotation, "model_fields")
+            else annotation.__fields__
+        )
+        return {name: hints[name] for name in fields}
     if (
         _chalk_dataclasses.is_dataclass(annotation)
         or _chalk_typing.is_typeddict(annotation)
@@ -50,13 +146,13 @@ def _chalk_struct_fields(annotation):
     return {}
 
 
-def _chalk_needs_codec(annotation, *, collections_only=False, seen=()):
+def _chalk_needs_codec(annotation, *, schema_only=False, seen=()):
     annotation = _chalk_unwrap(annotation)
     origin = _chalk_typing.get_origin(annotation)
-    if origin in (tuple, set, frozenset):
+    if origin in (tuple, set, frozenset) or _chalk_record_kind(annotation) is not None:
         return True
     if _chalk_has_contract(annotation):
-        return not collections_only
+        return not schema_only
     if annotation in seen:
         return False
     children = (
@@ -65,9 +161,7 @@ def _chalk_needs_codec(annotation, *, collections_only=False, seen=()):
         else _chalk_struct_fields(annotation).values()
     )
     return any(
-        _chalk_needs_codec(
-            item, collections_only=collections_only, seen=(*seen, annotation)
-        )
+        _chalk_needs_codec(item, schema_only=schema_only, seen=(*seen, annotation))
         for item in children
     )
 
@@ -156,7 +250,11 @@ def _chalk_converter(annotation, *, encoding):
         name: _chalk_nullable_converter(child, encoding=encoding)
         for name, child in _chalk_struct_fields(annotation).items()
     }
-    if fields:
+    if (
+        fields
+        or _chalk_record_kind(annotation) is not None
+        or _chalk_typing.is_typeddict(annotation)
+    ):
         if encoding:
             return lambda value: {
                 name: convert(
@@ -187,8 +285,8 @@ def _chalk_nullable_converter(annotation, *, encoding):
     return lambda scalar: convert(scalar) if scalar.is_valid else None
 
 
-def _chalk_decoder(annotation):
-    if _chalk_needs_codec(annotation):
+def _chalk_decoder(annotation, *, from_schema=False):
+    if from_schema or _chalk_needs_codec(annotation):
         return _chalk_nullable_converter(annotation, encoding=False)
     return None
 
@@ -204,8 +302,8 @@ def _chalk_column_decoder(annotation):
     return lambda column: [decoder(value) for value in column]
 
 
-def _chalk_encoder(annotation, dtype=None):
-    if not _chalk_needs_codec(annotation):
+def _chalk_encoder(annotation, dtype=None, *, from_schema=False):
+    if not from_schema and not _chalk_needs_codec(annotation):
         return None
     convert = _chalk_nullable_converter(annotation, encoding=True)
 

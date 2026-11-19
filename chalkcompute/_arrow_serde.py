@@ -73,18 +73,18 @@ def unwrap_annotation(annotation: Any) -> Any:
     return _chalk_unwrap(annotation)
 
 
-def has_collection_annotation(annotation: Any) -> bool:
-    """Whether the wire schema needs Python collection metadata."""
+def has_typed_wire_annotation(annotation: Any) -> bool:
+    """Whether a field needs a Python record or collection marker."""
     from chalkcompute._arrow_runtime import _chalk_needs_codec
 
-    return _chalk_needs_codec(annotation, collections_only=True)
+    return _chalk_needs_codec(annotation, schema_only=True)
 
 
 def arrow_encoder_for_annotation(annotation: Any) -> Callable[[Any], Any] | None:
     from functools import cache
     from chalkcompute._arrow_runtime import _chalk_encoder
 
-    if not has_collection_annotation(annotation):
+    if not has_typed_wire_annotation(annotation):
         return _chalk_encoder(annotation)
 
     # Import PyArrow when the first value is serialized; registration only requires
