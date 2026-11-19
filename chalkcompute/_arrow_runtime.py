@@ -146,10 +146,38 @@ def _chalk_struct_fields(annotation):
     return {}
 
 
-def _chalk_needs_codec(annotation, *, schema_only=False, seen=()):
+def _chalk_can_rebuild_records(annotation, seen=()):
+    annotation = _chalk_unwrap(annotation)
+    if annotation in seen or _chalk_has_contract(annotation):
+        return True
+    origin = _chalk_typing.get_origin(annotation)
+    if origin is not None:
+        children = _chalk_typing.get_args(annotation)
+    else:
+        if (
+            isinstance(annotation, type)
+            and (
+                _chalk_dataclasses.is_dataclass(annotation)
+                or hasattr(annotation, "model_fields")
+                or hasattr(annotation, "__fields__")
+            )
+            and _chalk_record_kind(annotation) is None
+        ):
+            return False
+        children = _chalk_struct_fields(annotation).values()
+    return all(
+        _chalk_can_rebuild_records(child, (*seen, annotation)) for child in children
+    )
+
+
+def _chalk_needs_codec(annotation, *, schema_only=False, seen=(), records=None):
     annotation = _chalk_unwrap(annotation)
     origin = _chalk_typing.get_origin(annotation)
-    if origin in (tuple, set, frozenset) or _chalk_record_kind(annotation) is not None:
+    if records is None:
+        records = _chalk_can_rebuild_records(annotation)
+    if origin in (tuple, set, frozenset) or (
+        records and _chalk_record_kind(annotation) is not None
+    ):
         return True
     if _chalk_has_contract(annotation):
         return not schema_only
@@ -161,7 +189,9 @@ def _chalk_needs_codec(annotation, *, schema_only=False, seen=()):
         else _chalk_struct_fields(annotation).values()
     )
     return any(
-        _chalk_needs_codec(item, schema_only=schema_only, seen=(*seen, annotation))
+        _chalk_needs_codec(
+            item, schema_only=schema_only, seen=(*seen, annotation), records=records
+        )
         for item in children
     )
 

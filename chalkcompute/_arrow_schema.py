@@ -138,7 +138,7 @@ def _rich_field(name: str, annotation: Any, *, typed_wire: bool) -> Any:
     inner = _unwrap_annotated(inner)
     origin = get_origin(inner)
     metadata: dict[str, str] = {}
-    if (record := _chalk_record_kind(inner)) is not None:
+    if typed_wire and (record := _chalk_record_kind(inner)) is not None:
         metadata["chalk.python.record"] = record
         metadata["chalk.python.type"] = f"{inner.__module__}.{inner.__qualname__}"
     elif origin in (set, frozenset, tuple):

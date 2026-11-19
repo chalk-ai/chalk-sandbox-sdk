@@ -1,7 +1,5 @@
 """Catalog record registration and end-to-end worker IPC."""
 
-from __future__ import annotations
-
 import sys
 from dataclasses import dataclass
 from types import ModuleType
@@ -149,3 +147,22 @@ def test_model_with_extra_fields_keeps_legacy_wire_contract():
 
     field = rich_to_arrow_schema({"p": OpenRecord}).columns[0]
     assert "chalk.python.record" not in field.metadata
+
+
+def test_nested_post_init_cannot_run_twice_on_decode():
+    from chalkcompute._arrow_runtime import _chalk_decoder
+
+    @dataclass
+    class Inner:
+        n: int
+
+        def __post_init__(self):
+            self.n += 1
+
+    @dataclass
+    class Outer:
+        inner: Inner
+
+    field = rich_to_arrow_schema({"p": Outer}).columns[0]
+    assert "chalk.python.record" not in field.metadata
+    assert _chalk_decoder(Outer) is None
