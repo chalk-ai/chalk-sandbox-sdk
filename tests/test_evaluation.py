@@ -1101,23 +1101,26 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
 
     created = cc.OnlineEvaluation.create(
         "Online quality",
-        where=predicate,
+        predicate=predicate,
         sample_rate=0.05,
         scorers=[judge],
     )
     assert created.revision == 1
     create_request = connect.calls[-1][1]
+    assert create_request.spec.scope is cc.OnlineEvaluatorScope.SPAN
+    assert create_request.spec.predicate.sql_expression == predicate
     assert (
         create_request.spec.scorers[0].spec.implementation.value.function_version_id
         == "judge-v2"
     )
 
     saved = cc.OnlineEvaluation.from_id(created.id)
-    assert saved.where == predicate
+    assert saved.scope is cc.OnlineEvaluatorScope.SPAN
+    assert saved.predicate == predicate
     assert saved.scorers == (
         cc.EvaluationScorer(id="grade", function_version_id="judge-v2"),
     )
-    updated = saved.update(enabled=False, where="")
+    updated = saved.update(enabled=False, predicate="")
     update_request = connect.calls[-1][1]
     assert update_request.expected_revision == 1
     assert update_request.spec.predicate.sql_expression == ""
@@ -1127,10 +1130,10 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
         update_request.spec.scorers[0].spec.implementation.value.function_version_id
         == "judge-v2"
     )
-    assert saved.where == predicate
+    assert saved.predicate == predicate
     assert updated.revision == 2
     reread = updated.refresh()
-    assert reread.where == ""
+    assert reread.predicate == ""
     assert reread.enabled is False
     assert reread.scorers == saved.scorers
 

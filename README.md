@@ -732,8 +732,8 @@ judge = cc.scorers.llm_judge(
 if __name__ == "__main__":
     evaluation = cc.OnlineEvaluation.create(
         "LLM answer quality",
-        scope="span",
-        where=(
+        scope=cc.OnlineEvaluatorScope.SPAN,
+        predicate=(
             "openinference_span_kind = 'LLM' "
             "AND input_value IS NOT NULL AND output_value IS NOT NULL"
         ),

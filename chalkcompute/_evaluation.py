@@ -5,6 +5,11 @@ function version and one or more deployed scorer function versions.  Creating
 an evaluation persists that immutable definition; :meth:`Evaluation.run`
 queues a separate execution of it.
 
+Online evaluations bind one or more scorers to incoming telemetry in a Chalk
+environment.  An enabled evaluation scores a sample of spans that match its
+predicate.  Creating an online evaluation persists its first revision, and
+:meth:`OnlineEvaluation.update` saves a new revision.
+
 The task and scorers may be handles returned directly by
 ``@chalkcompute.function`` or references created with
 ``RemoteFunction.from_name`` / ``RemoteFunction.from_id``.  In either case,
@@ -35,6 +40,7 @@ from chalkcompute._connect import ConnectClient
 from chalkcompute._function import DeployedFunction, FunctionVersionInfo, RemoteFunction
 from chalkcompute._gen.chalk.evaluation.v1 import service_connect as evaluation_connect
 from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
+from chalkcompute._gen.chalk.evaluation.v1.service_pb import OnlineEvaluatorScope
 from chalkcompute._tracing import _instrumented
 
 
@@ -495,11 +501,11 @@ class OnlineEvaluation:
         return self._spec.name
 
     @property
-    def scope(self) -> Literal["span"]:
-        return "span"
+    def scope(self) -> OnlineEvaluatorScope:
+        return self._spec.scope
 
     @property
-    def where(self) -> str:
+    def predicate(self) -> str:
         predicate = self._spec.predicate
         return "" if predicate is None else predicate.sql_expression
 
@@ -523,8 +529,8 @@ class OnlineEvaluation:
         cls,
         name: str,
         *,
-        scope: Literal["span"] = "span",
-        where: str = "",
+        scope: OnlineEvaluatorScope = OnlineEvaluatorScope.SPAN,
+        predicate: str = "",
         sample_rate: float = 1.0,
         scorers: Sequence[DeployedFunction | SqlExpression],
         enabled: bool = True,
@@ -539,7 +545,7 @@ class OnlineEvaluation:
         return EvaluationClient(chalk_client=chalk_client).create_online(
             name,
             scope=scope,
-            where=where,
+            predicate=predicate,
             sample_rate=sample_rate,
             scorers=scorers,
             enabled=enabled,
@@ -560,7 +566,7 @@ class OnlineEvaluation:
         self,
         *,
         name: str | None = None,
-        where: str | None = None,
+        predicate: str | None = None,
         sample_rate: float | None = None,
         scorers: Sequence[DeployedFunction | SqlExpression] | None = None,
         enabled: bool | None = None,
@@ -574,9 +580,9 @@ class OnlineEvaluation:
         spec = evaluation_pb.OnlineEvaluatorSpec.from_binary(self._spec.to_binary())
         if name is not None:
             spec.name = _optional_id(name, name="name") or ""
-        if where is not None:
+        if predicate is not None:
             spec.predicate = evaluation_pb.OnlineEvaluatorPredicate(
-                sql_expression=where
+                sql_expression=predicate
             )
         if sample_rate is not None:
             spec.sample_rate = sample_rate
@@ -769,22 +775,20 @@ class EvaluationClient:
         self,
         name: str,
         *,
-        scope: Literal["span"] = "span",
-        where: str = "",
+        scope: OnlineEvaluatorScope = OnlineEvaluatorScope.SPAN,
+        predicate: str = "",
         sample_rate: float = 1.0,
         scorers: Sequence[DeployedFunction | SqlExpression],
         enabled: bool = True,
     ) -> OnlineEvaluation:
         """Persist a span-level online evaluation in the active environment."""
-        if scope != "span":
-            raise ValueError("only span scope is supported")
         name = name.strip()
         if not name:
             raise ValueError("name is required")
         spec = evaluation_pb.OnlineEvaluatorSpec(
             name=name,
-            scope=evaluation_pb.OnlineEvaluatorScope.SPAN,
-            predicate=evaluation_pb.OnlineEvaluatorPredicate(sql_expression=where),
+            scope=scope,
+            predicate=evaluation_pb.OnlineEvaluatorPredicate(sql_expression=predicate),
             sample_rate=sample_rate,
             scorers=_online_scorer_specs(scorers),
             enabled=enabled,
@@ -844,10 +848,6 @@ class EvaluationClient:
         if raw is None or raw.spec is None:
             raise EvaluationError(
                 "response did not include an online evaluation definition"
-            )
-        if raw.spec.scope != evaluation_pb.OnlineEvaluatorScope.SPAN:
-            raise EvaluationError(
-                f"unsupported online evaluation scope: {raw.spec.scope}"
             )
         return OnlineEvaluation(
             raw.id, raw.revision, raw.environment_id, raw.spec, self
