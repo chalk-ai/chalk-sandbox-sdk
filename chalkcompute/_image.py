@@ -1083,7 +1083,8 @@ class Image:
                     shown += f" (+{remaining} more)"
                 logger.warning(
                     "add_local_dir skipped %d file(s) that resolve outside "
-                    "the source directory: %s",
+                    "the source directory: %s. If you need them, add their targets "
+                    "explicitly with add_local_file or add_local_dir.",
                     len(skipped),
                     shown,
                 )
@@ -1122,7 +1123,7 @@ class Image:
                     LazyLocalFile(src=str(real), dest=file_dest, mount_root=dest)
                 )
             else:
-                content = _read_copy_file(file_path)
+                content = _read_copy_file(real)
                 copy_size = _validate_copy_total_size(
                     current_size=copy_size,
                     added_size=len(content),
