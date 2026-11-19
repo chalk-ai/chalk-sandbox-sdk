@@ -9,6 +9,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from protobuf import Oneof
@@ -143,6 +144,43 @@ def test_container_add_local_dir() -> None:
             assert r2.stdout_text.strip() == "world"
         finally:
             c.stop()
+
+
+@needs_staging
+@pytest.mark.parametrize("strategy", ["copy", "volume"])
+def test_container_add_local_dir_skips_symlinks_resolving_outside_src(
+    tmp_path: Path, strategy: Literal["copy", "volume"]
+) -> None:
+    """add_local_dir skips symlinks that resolve outside src."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "greeting.txt").write_text("hello")
+    (src / "in_link.txt").symlink_to("greeting.txt")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel.txt").write_text("OUTSIDE-SENTINEL")
+    (src / "out_link.txt").symlink_to(outside / "sentinel.txt")
+
+    img = Image.debian_slim().add_local_dir(str(src), "/app/mydir", strategy=strategy)
+    c = Container(
+        image=img,
+        name=f"test-add-local-dir-symlink-{strategy}-{uuid.uuid4().hex[:8]}",
+    )
+    try:
+        c.run()
+
+        greeting = c.exec("cat", "/app/mydir/greeting.txt")
+        assert greeting.exit_code == 0, greeting.stderr_text
+        assert greeting.stdout_text.strip() == "hello"
+
+        in_link = c.exec("cat", "/app/mydir/in_link.txt")
+        assert in_link.exit_code == 0, in_link.stderr_text
+        assert in_link.stdout_text.strip() == "hello"
+
+        out_link = c.exec("test", "-e", "/app/mydir/out_link.txt")
+        assert out_link.exit_code != 0
+    finally:
+        c.stop()
 
 
 @needs_staging

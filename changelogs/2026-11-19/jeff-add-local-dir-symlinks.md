@@ -1,0 +1,1 @@
+- `Image.add_local_dir` now skips symlinks whose target resolves outside the source directory.
