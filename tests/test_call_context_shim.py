@@ -61,6 +61,37 @@ def _load_shim(source: str) -> dict:
     return ns
 
 
+def _call_tuple_shim(target, events, contexts, *, batched=False, method=False):
+    from typing import get_type_hints
+
+    from chalkcompute._arrow_schema import rich_to_arrow_schema
+    from chalkcompute._catalog_collections import catalog_collection_codec
+
+    field = rich_to_arrow_schema({"result": get_type_hints(target)["return"]}).columns[
+        0
+    ]
+    if method:
+        source = _generate_class_handler_shim(
+            "Svc",
+            "run",
+            True,
+            None,
+            False,
+            None,
+            False,
+            batched=batched,
+            output_field=field,
+        )
+    else:
+        source = _generate_handler_shim("echo", batched=batched, output_field=field)
+    rows = _load_shim(source)["handler"](events, contexts)
+    decode = catalog_collection_codec(field, encoding=False)
+    assert decode is not None
+    if batched:
+        return [[decode(row) for row in batch] for batch in rows]
+    return [decode(row) for row in rows]
+
+
 def _row_metadata_column(values: list[bytes | None]) -> pa.Array:
     return pa.array(values, pa.binary())
 
@@ -212,13 +243,15 @@ class TestNonBatchedShim:
             return (get_call_context().get("k"), get_row_metadata())
 
         _install_user_module(echo=echo)
-        ns = _load_shim(_generate_handler_shim("echo"))
         event = {
             "x": pa.array([1, 2]),
             _ROW_METADATA_COLUMN: _row_metadata_column([b"s-1", b"s-2"]),
         }
 
-        assert ns["handler"](event, {"k": "v"}) == [("v", b"s-1"), ("v", b"s-2")]
+        assert _call_tuple_shim(echo, event, {"k": "v"}) == [
+            ("v", b"s-1"),
+            ("v", b"s-2"),
+        ]
 
     def test_async_generator(self):
         async def expand(n: int):
@@ -377,7 +410,6 @@ class TestBatchedShim:
             return (x, get_row_metadata())
 
         _install_user_module(echo=echo)
-        ns = _load_shim(_generate_handler_shim("echo", batched=True))
         events = [
             {
                 "x": pa.array([1, 2]),
@@ -389,7 +421,7 @@ class TestBatchedShim:
             },
         ]
 
-        assert ns["handler"](events, [{}, {}]) == [
+        assert _call_tuple_shim(echo, events, [{}, {}], batched=True) == [
             [(1, b"s-1"), (2, b"s-2")],
             [(3, b"s-3")],
         ]
@@ -401,10 +433,11 @@ class TestBatchedShim:
             return (x, get_call_context().get("caller"))
 
         _install_user_module(echo=echo)
-        ns = _load_shim(_generate_handler_shim("echo", batched=True))
         events = [{"x": pa.array([1, 2])}, {"x": pa.array([3])}]
 
-        assert ns["handler"](events, [{"caller": "a"}, {"caller": "b"}]) == [
+        assert _call_tuple_shim(
+            echo, events, [{"caller": "a"}, {"caller": "b"}], batched=True
+        ) == [
             [(1, "a"), (2, "a")],
             [(3, "b")],
         ]
@@ -414,7 +447,6 @@ class TestBatchedShim:
             return (x, dict(get_call_context()), get_row_metadata())
 
         _install_user_module(echo=echo)
-        ns = _load_shim(_generate_handler_shim("echo", batched=True))
         events = [
             {"x": pa.array([1])},
             {
@@ -423,7 +455,7 @@ class TestBatchedShim:
             },
         ]
 
-        assert ns["handler"](events, [{}, {"caller": "b"}]) == [
+        assert _call_tuple_shim(echo, events, [{}, {"caller": "b"}], batched=True) == [
             [(1, {}, None)],
             [(2, {"caller": "b"}, b"s-2")],
         ]
@@ -434,7 +466,6 @@ class TestBatchedShim:
             return (x, get_call_context().get("caller"), get_row_metadata())
 
         _install_user_module(echo=echo)
-        ns = _load_shim(_generate_handler_shim("echo", batched=True))
         events = [
             {
                 "x": pa.array([1, 2]),
@@ -443,7 +474,9 @@ class TestBatchedShim:
             {"x": pa.array([3])},
         ]
 
-        assert ns["handler"](events, [{"caller": "a"}, {"caller": "b"}]) == [
+        assert _call_tuple_shim(
+            echo, events, [{"caller": "a"}, {"caller": "b"}], batched=True
+        ) == [
             [(1, "a", b"s-1"), (2, "a", b"s-2")],
             [(3, "b", None)],
         ]
@@ -469,13 +502,15 @@ class TestClassShim:
                 return (x, get_call_context().get("k"), get_row_metadata())
 
         _install_user_module(Svc=Svc)
-        ns = self._shim()
         event = {
             "x": pa.array([1, 2]),
             _ROW_METADATA_COLUMN: _row_metadata_column([b"s-1", b"s-2"]),
         }
 
-        assert ns["handler"](event, {"k": "v"}) == [(1, "v", b"s-1"), (2, "v", b"s-2")]
+        assert _call_tuple_shim(Svc.run, event, {"k": "v"}, method=True) == [
+            (1, "v", b"s-1"),
+            (2, "v", b"s-2"),
+        ]
 
     def test_batched_method_sees_both_channels(self):
         class Svc:
@@ -483,7 +518,6 @@ class TestClassShim:
                 return (x, get_call_context().get("k"), get_row_metadata())
 
         _install_user_module(Svc=Svc)
-        ns = self._shim(batched=True)
         events = [
             {
                 "x": pa.array([1]),
@@ -491,7 +525,9 @@ class TestClassShim:
             }
         ]
 
-        assert ns["handler"](events, [{"k": "v"}]) == [[(1, "v", b"s-1")]]
+        assert _call_tuple_shim(
+            Svc.run, events, [{"k": "v"}], batched=True, method=True
+        ) == [[(1, "v", b"s-1")]]
 
     def test_method_that_reads_neither(self):
         class Svc:
