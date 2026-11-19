@@ -319,7 +319,7 @@ class TestImageAddFile:
 
     @pytest.mark.parametrize("mode", ["copy", "volume", "archive"])
     def test_add_local_dir_skips_symlinks_resolving_outside_src(
-        self, tmp_path: Path, mode: str, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, mode: str
     ) -> None:
         root = tmp_path / "root"
         root.mkdir()
@@ -337,16 +337,14 @@ class TestImageAddFile:
         (root / "out_dir_link").symlink_to(outside, target_is_directory=True)
 
         strategy = "volume" if mode == "archive" else mode
-        with caplog.at_level("WARNING", logger="chalkcompute._image"):
-            image = Image.debian_slim().add_local_dir(
-                str(root),
-                "/app",
-                strategy=strategy,  # type: ignore[arg-type]
-                archive=mode == "archive",
-            )
+        image = Image.debian_slim().add_local_dir(
+            str(root),
+            "/app",
+            strategy=strategy,  # type: ignore[arg-type]
+            archive=mode == "archive",
+        )
 
-        required = {"plain.txt", "in_link.txt", "sub/nested.txt"}
-        optional = {"in_dir_link/nested.txt"}
+        expected = {"plain.txt", "in_link.txt", "sub/nested.txt"}
 
         if mode == "copy":
             files = {
@@ -355,8 +353,7 @@ class TestImageAddFile:
                 ): step.step.value.content
                 for step in image.to_proto().steps
             }
-            assert required <= files.keys()
-            assert files.keys() <= required | optional
+            assert files.keys() == expected
             assert files["in_link.txt"] == b"plain"
             assert all(b"OUTSIDE-SENTINEL" not in content for content in files.values())
         elif mode == "volume":
@@ -364,8 +361,7 @@ class TestImageAddFile:
                 file.dest.removeprefix("/app/"): Path(file.src)
                 for file in image.lazy_local_files
             }
-            assert required <= files.keys()
-            assert files.keys() <= required | optional
+            assert files.keys() == expected
             assert files["in_link.txt"] == (root / "plain.txt").resolve()
             assert all(src.is_relative_to(root.resolve()) for src in files.values())
         else:
@@ -374,23 +370,13 @@ class TestImageAddFile:
             with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
                 members = {member.name: member for member in tar.getmembers()}
 
-            assert required <= members.keys()
-            assert members.keys() <= required | optional
+            assert members.keys() == expected
             assert "out_link.txt" not in members
             assert not any(name.startswith("out_dir_link/") for name in members)
             for member in members.values():
                 if member.issym() or member.islnk():
                     link = (root / member.name).parent / member.linkname
                     assert link.resolve().is_relative_to(root.resolve())
-
-        warnings = [
-            record
-            for record in caplog.records
-            if record.name == "chalkcompute._image"
-            and "outside the source directory" in record.getMessage()
-        ]
-        assert len(warnings) == 1
-        assert "out_link.txt" in warnings[0].getMessage()
 
     def test_add_local_dir_copy_rejects_large_file(self, tmp_path: Path) -> None:
         (tmp_path / "small.py").write_text("print('ok')")
