@@ -1027,7 +1027,9 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     class Grade:
         score: float
 
-    judge = scorers.llm_judge(Grade, model="model", inputs=("input", "output"))
+    judge = scorers.llm_judge(
+        Grade, model="model", inputs=("input_value", "output_value")
+    )
     assert isinstance(judge, RemoteFunction)
     judge._version_info = FunctionVersionInfo(
         id="judge-v2", function_name="grade", version=2, scaling_group_name="sg-grade"
@@ -1112,7 +1114,9 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
 
     saved = cc.OnlineEvaluation.from_id(created.id)
     assert saved.where == predicate
-    assert saved.scorers[0].function_version_id == "judge-v2"
+    assert saved.scorers == (
+        cc.EvaluationScorer(id="grade", function_version_id="judge-v2"),
+    )
     updated = saved.update(enabled=False, where="")
     update_request = connect.calls[-1][1]
     assert update_request.expected_revision == 1
@@ -1128,6 +1132,7 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     reread = updated.refresh()
     assert reread.where == ""
     assert reread.enabled is False
+    assert reread.scorers == saved.scorers
 
     with pytest.raises(EvaluationError, match="concurrently") as stale:
         saved.update(enabled=False)

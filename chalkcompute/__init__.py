@@ -114,7 +114,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     "EvaluationSuite": ("chalkcompute._evaluation", "EvaluationSuite"),
     "OnlineEvaluation": ("chalkcompute._evaluation", "OnlineEvaluation"),
-    "OnlineEvaluationScorer": ("chalkcompute._evaluation", "OnlineEvaluationScorer"),
     # _trace.py
     "SessionSummary": ("chalkcompute._trace", "SessionSummary"),
     "Span": ("chalkcompute._trace", "Span"),

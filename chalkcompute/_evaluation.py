@@ -481,16 +481,6 @@ class Evaluation:
 
 
 @dataclass(frozen=True)
-class OnlineEvaluationScorer:
-    """A scorer and its pinned version or SQL expression."""
-
-    name: str
-    function_version_id: str | None
-    sql_expression: str | None
-    depends_on: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class OnlineEvaluation:
     """A revision of a persisted online evaluation over environment telemetry."""
 
@@ -518,8 +508,11 @@ class OnlineEvaluation:
         return self._spec.sample_rate
 
     @property
-    def scorers(self) -> tuple[OnlineEvaluationScorer, ...]:
-        return tuple(_online_scorer_from_proto(scorer) for scorer in self._spec.scorers)
+    def scorers(self) -> tuple[EvaluationScorer, ...]:
+        return tuple(
+            _scorer_from_proto(scorer.name, scorer.spec)
+            for scorer in self._spec.scorers
+        )
 
     @property
     def enabled(self) -> bool:
@@ -540,7 +533,8 @@ class OnlineEvaluation:
         """Save a definition over the active environment's ingested telemetry spans.
 
         Pass deployed function scorers, which are pinned to their current versions,
-        or Chalk SQL expressions.
+        or Chalk SQL expressions. Use telemetry column names for function
+        arguments, such as ``input_value`` and ``output_value`` for a judge.
         """
         return EvaluationClient(chalk_client=chalk_client).create_online(
             name,
@@ -1292,26 +1286,6 @@ def _online_scorer_specs(
     return specs
 
 
-def _online_scorer_from_proto(
-    raw: evaluation_pb.OnlineEvaluatorScorer,
-) -> OnlineEvaluationScorer:
-    implementation = None if raw.spec is None else raw.spec.implementation
-    return OnlineEvaluationScorer(
-        name=raw.name,
-        function_version_id=(
-            implementation.value.function_version_id
-            if implementation is not None and implementation.field == "function"
-            else None
-        ),
-        sql_expression=(
-            implementation.value.expression
-            if implementation is not None and implementation.field == "sql_expression"
-            else None
-        ),
-        depends_on=tuple(raw.depends_on),
-    )
-
-
 def _resolve_function_version(function: DeployedFunction, *, role: str) -> str:
     return _deployed_function_version(function, role=role).id
 
@@ -1383,7 +1357,7 @@ def _evaluation_suite_from_proto(
 def _evaluation_from_proto(
     raw: evaluation_pb.Evaluation, client: EvaluationClient
 ) -> Evaluation:
-    scorers = tuple(_scorer_from_proto(value) for value in raw.scorers)
+    scorers = tuple(_scorer_from_proto(value.id, value.spec) for value in raw.scorers)
     return Evaluation(
         id=raw.id,
         name=raw.name,
@@ -1412,10 +1386,12 @@ def _evaluation_from_proto(
     )
 
 
-def _scorer_from_proto(raw: evaluation_pb.EvaluationScorer) -> EvaluationScorer:
-    implementation = None if raw.spec is None else raw.spec.implementation
+def _scorer_from_proto(
+    scorer_id: str, spec: evaluation_pb.EvaluationScorerSpec | None
+) -> EvaluationScorer:
+    implementation = None if spec is None else spec.implementation
     return EvaluationScorer(
-        id=raw.id,
+        id=scorer_id,
         function_version_id=(
             implementation.value.function_version_id or None
             if implementation is not None and implementation.field == "function"
