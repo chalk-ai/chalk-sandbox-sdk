@@ -1392,3 +1392,11 @@ superseded updates raise `SandboxError`; exceeding the timeout raises
 `TimeoutError` without cancelling the refresh. Already-open connections may
 continue using the previous credentials. Secret references and proxy rules stay
 unchanged.
+
+## Exec stream errors
+
+`Sandbox.exec()` and `exec_stream()` read the final RPC status before completing.
+On RPC failure, `ExecStreamError.code` identifies the error and `.result` retains
+the known exit status and, for `exec()`, collected output. `DATA_LOSS` is not retried.
+After a terminal event, the SDK allows 30 seconds for the final status, then cancels
+the response and raises `DEADLINE_EXCEEDED`. Running commands are unaffected.
