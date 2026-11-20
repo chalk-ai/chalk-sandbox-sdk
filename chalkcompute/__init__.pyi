@@ -84,6 +84,20 @@ from chalkcompute._gen.chalk.evaluation.v1.service_pb import (
     OnlineEvaluatorScope as OnlineEvaluatorScope,
 )
 from chalkcompute._evaluation import SqlExpression as SqlExpression
+from chalkcompute._experiment import Experiment as Experiment
+from chalkcompute._experiment import ExperimentClient as ExperimentClient
+from chalkcompute._experiment import ExperimentError as ExperimentError
+from chalkcompute._experiment import ExperimentFailedError as ExperimentFailedError
+from chalkcompute._experiment import (
+    ExperimentNotFoundError as ExperimentNotFoundError,
+)
+from chalkcompute._experiment import ExperimentPhase as ExperimentPhase
+from chalkcompute._experiment import ExperimentResult as ExperimentResult
+from chalkcompute._experiment import (
+    ExperimentScorerResult as ExperimentScorerResult,
+)
+from chalkcompute._experiment import ExperimentStatus as ExperimentStatus
+from chalkcompute._experiment import ExperimentStep as ExperimentStep
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -303,6 +317,16 @@ __all__ = [
     "EvaluationSuite",
     "OnlineEvaluation",
     "OnlineEvaluatorScope",
+    "Experiment",
+    "ExperimentClient",
+    "ExperimentError",
+    "ExperimentFailedError",
+    "ExperimentNotFoundError",
+    "ExperimentPhase",
+    "ExperimentResult",
+    "ExperimentScorerResult",
+    "ExperimentStatus",
+    "ExperimentStep",
     "SqlExpression",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",

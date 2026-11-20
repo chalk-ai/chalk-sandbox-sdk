@@ -432,7 +432,9 @@ def _build_method_schemas(method_func: Callable[..., Any]) -> tuple[Any, Any]:
     """
     from chalkcompute._arrow_schema import rich_to_arrow_schema
 
-    hints = typing.get_type_hints(method_func)
+    from chalkcompute._arrow_serde import unwrap_result_annotation
+
+    hints = typing.get_type_hints(method_func, include_extras=True)
     sig = inspect.signature(method_func)
 
     input_types: dict[str, type] = {}
@@ -448,7 +450,9 @@ def _build_method_schemas(method_func: Callable[..., Any]) -> tuple[Any, Any]:
     return_type = hints.get("return")
     if return_type is None:
         raise TypeError("Method must have a return type annotation")
-    output_schema = rich_to_arrow_schema({"result": return_type})
+    output_schema = rich_to_arrow_schema(
+        {"result": unwrap_result_annotation(return_type)}
+    )
 
     return input_schema, output_schema
 
@@ -488,6 +492,7 @@ def _generate_class_handler_shim(
     *,
     batched: bool = False,
     bind_models: bool = False,
+    output_field: Any | None = None,
 ) -> str:
     """Generate a handler shim for a single method on a class.
 
@@ -600,10 +605,35 @@ def _generate_class_handler_shim(
     )
 
     method_caller = "_instance" if method_has_self else class_name
+    from chalkcompute._arrow_serde import handler_runtime_source
+    from chalkcompute._catalog_collections import output_dtype_source
+
+    parts.extend([handler_runtime_source(), output_dtype_source(output_field)])
+    parts.append(
+        textwrap.dedent(f"""\
+        _target = inspect.unwrap({method_caller}.{method_name})
+        _input_decoders = {{
+            name: _chalk_column_decoder(annotation)
+            for name, annotation in _chalk_typing.get_type_hints(_target, include_extras=True).items()
+            if name != "return"
+        }}
+        _output_encoder = _chalk_encoder(_chalk_result_annotation(_target), dtype=_output_dtype)
+
+
+        def _decoded_columns(event):
+            return {{
+                name: _input_decoders.get(name, _chalk_to_pylist)(column)
+                for name, column in event.items() if name != _ROW_METADATA_COLUMN
+            }}
+
+
+        def _encoded(value):
+            return value if _output_encoder is None else _output_encoder(value)
+        """)
+    )
     if batched:
         parts.append(
             textwrap.dedent(f"""\
-            _target = inspect.unwrap({method_caller}.{method_name})
             _is_coroutine = inspect.iscoroutinefunction(_target)
 
 
@@ -618,18 +648,14 @@ def _generate_class_handler_shim(
                             row_metadata = (
                                 row_metadata.to_pylist() if row_metadata is not None else None
                             )
-                            columns = {{
-                                k: v.to_pylist()
-                                for k, v in event.items()
-                                if k != _ROW_METADATA_COLUMN
-                            }}
+                            columns = _decoded_columns(event)
                             n = len(next(iter(columns.values())))
                             per_caller = []
                             for i in range(n):
                                 kwargs = {{k: v[i] for k, v in columns.items()}}
                                 with _call_scope(context, row_metadata, i, False):
-                                    per_caller.append(await {method_caller}.{method_name}(**kwargs))
-                            results.append(per_caller)
+                                    per_caller.append(_encoded(await {method_caller}.{method_name}(**kwargs)))
+                            results.append(_output_rows(per_caller))
                         return results
                     return asyncio.run(_run_all())
                 results = []
@@ -639,25 +665,20 @@ def _generate_class_handler_shim(
                     row_metadata = (
                         row_metadata.to_pylist() if row_metadata is not None else None
                     )
-                    columns = {{
-                        k: v.to_pylist()
-                        for k, v in event.items()
-                        if k != _ROW_METADATA_COLUMN
-                    }}
+                    columns = _decoded_columns(event)
                     n = len(next(iter(columns.values())))
                     per_caller = []
                     for i in range(n):
                         kwargs = {{k: v[i] for k, v in columns.items()}}
                         with _call_scope(context, row_metadata, i, False):
-                            per_caller.append({method_caller}.{method_name}(**kwargs))
-                    results.append(per_caller)
+                            per_caller.append(_encoded({method_caller}.{method_name}(**kwargs)))
+                    results.append(_output_rows(per_caller))
                 return results
             """).rstrip()
         )
     else:
         parts.append(
             textwrap.dedent(f"""\
-            _target = inspect.unwrap({method_caller}.{method_name})
             _is_sync_gen = inspect.isgeneratorfunction(_target)
             _is_async_gen = inspect.isasyncgenfunction(_target)
             _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
@@ -665,40 +686,39 @@ def _generate_class_handler_shim(
 
             def handler(event, context):
                 row_metadata = event.get(_ROW_METADATA_COLUMN)
-                event = {{
-                    k: v for k, v in event.items() if k != _ROW_METADATA_COLUMN
-                }}
-                n = len(next(iter(event.values())))
+                columns = _decoded_columns(event)
+                n = len(next(iter(columns.values())))
                 if _is_sync_gen:
                     def _gen():
                         for i in range(n):
-                            kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                            kwargs = {{k: v[i] for k, v in columns.items()}}
                             with _call_scope(context, row_metadata, i, True):
-                                yield from {method_caller}.{method_name}(**kwargs)
+                                for item in {method_caller}.{method_name}(**kwargs):
+                                    yield _output_item(_encoded(item))
                     return _gen()
                 elif _is_async_gen:
                     async def _agen():
                         for i in range(n):
-                            kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                            kwargs = {{k: v[i] for k, v in columns.items()}}
                             with _call_scope(context, row_metadata, i, True):
                                 async for item in {method_caller}.{method_name}(**kwargs):
-                                    yield item
+                                    yield _output_item(_encoded(item))
                     return _agen()
                 elif _is_coroutine:
                     import asyncio
                     results = []
                     for i in range(n):
-                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        kwargs = {{k: v[i] for k, v in columns.items()}}
                         with _call_scope(context, row_metadata, i, True):
-                            results.append(asyncio.run({method_caller}.{method_name}(**kwargs)))
-                    return results
+                            results.append(_encoded(asyncio.run({method_caller}.{method_name}(**kwargs))))
+                    return _output_rows(results)
                 else:
                     results = []
                     for i in range(n):
-                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        kwargs = {{k: v[i] for k, v in columns.items()}}
                         with _call_scope(context, row_metadata, i, True):
-                            results.append({method_caller}.{method_name}(**kwargs))
-                    return results
+                            results.append(_encoded({method_caller}.{method_name}(**kwargs)))
+                    return _output_rows(results)
             """).rstrip()
         )
 
@@ -1173,6 +1193,8 @@ class RemoteClass:
         from chalkcompute._model import MODELS_ENV_VAR
 
         bind_models = bool(self._env.get(MODELS_ENV_VAR))
+        from chalkcompute._catalog_collections import collection_output_field
+
         # Generate one handler shim per method
         for method_info in self._methods.values():
             shim_content = _generate_class_handler_shim(
@@ -1185,6 +1207,7 @@ class RemoteClass:
                 after_has_self=_has_self(after_func) if after_func else False,
                 batched=self._max_batching_size is not None,
                 bind_models=bind_models,
+                output_field=collection_output_field(method_info.func),
             )
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)

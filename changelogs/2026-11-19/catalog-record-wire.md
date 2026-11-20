@@ -1,0 +1,1 @@
+- Preserve plain annotated dataclass and Pydantic records in catalog function arguments and results.

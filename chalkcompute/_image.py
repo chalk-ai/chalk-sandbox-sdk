@@ -995,6 +995,7 @@ class Image:
         at any level within ``src`` (each scoped to its directory subtree,
         matching go-git's behavior).  The ``.git/`` directory is always
         excluded.  Negation patterns (``!``) are supported.
+        Symlinks whose target resolves outside ``src`` are skipped.
 
         Parameters
         ----------
@@ -1056,8 +1057,10 @@ class Image:
                 return True
             return any(_match_exclude(rel_str, pat) for pat in _extra_exclude)
 
-        def _iter_files() -> list[Path]:
+        def _iter_files() -> list[tuple[Path, Path]]:
+            root = src_path.resolve()
             result = []
+            skipped = []
             for file_path in sorted(src_path.rglob("*")):
                 if not file_path.is_file():
                     continue
@@ -1068,7 +1071,23 @@ class Image:
                     continue
                 if _is_excluded(rel_str):
                     continue
-                result.append(file_path)
+                real = file_path.resolve()
+                if not real.is_relative_to(root):
+                    skipped.append(rel)
+                    continue
+                result.append((file_path, real))
+            if skipped:
+                shown = ", ".join(str(path) for path in skipped[:3])
+                remaining = len(skipped) - 3
+                if remaining > 0:
+                    shown += f" (+{remaining} more)"
+                logger.warning(
+                    "add_local_dir skipped %d file(s) that resolve outside "
+                    "the source directory: %s. If you need them, add their targets "
+                    "explicitly with add_local_file or add_local_dir.",
+                    len(skipped),
+                    shown,
+                )
             return result
 
         if archive and strategy == "volume":
@@ -1076,7 +1095,7 @@ class Image:
             if files:
                 buf = io.BytesIO()
                 with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-                    for file_path in files:
+                    for file_path, _ in files:
                         rel = file_path.relative_to(src_path)
                         tar.add(str(file_path), arcname=str(rel))
                 data = buf.getvalue()
@@ -1096,17 +1115,15 @@ class Image:
             return new
 
         copy_size = _inline_copy_size(new._steps)
-        for file_path in _iter_files():
+        for file_path, real in _iter_files():
             rel = file_path.relative_to(src_path)
             file_dest = os.path.join(dest, str(rel))
             if strategy == "volume":
                 new._lazy_local_files.add(
-                    LazyLocalFile(
-                        src=str(file_path.resolve()), dest=file_dest, mount_root=dest
-                    )
+                    LazyLocalFile(src=str(real), dest=file_dest, mount_root=dest)
                 )
             else:
-                content = _read_copy_file(file_path)
+                content = _read_copy_file(real)
                 copy_size = _validate_copy_total_size(
                     current_size=copy_size,
                     added_size=len(content),
