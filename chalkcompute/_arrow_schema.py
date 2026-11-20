@@ -119,17 +119,18 @@ def rich_to_arrow_schema(
         The serialized Arrow schema.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
-    from chalkcompute._arrow_serde import has_collection_annotation
+    from chalkcompute._arrow_serde import has_typed_wire_annotation
 
     return arrow_pb.Schema(
         columns=[
-            _rich_field(name, typ, logical_collection=has_collection_annotation(typ))
+            _rich_field(name, typ, typed_wire=has_typed_wire_annotation(typ))
             for name, typ in params.items()
         ]
     )
 
 
-def _rich_field(name: str, annotation: Any, *, logical_collection: bool) -> Any:
+def _rich_field(name: str, annotation: Any, *, typed_wire: bool) -> Any:
+    from chalkcompute._arrow_runtime import _chalk_record_kind
     from chalkcompute._arrow_serde import has_chalk_arrow_contract
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 
@@ -137,14 +138,17 @@ def _rich_field(name: str, annotation: Any, *, logical_collection: bool) -> Any:
     inner = _unwrap_annotated(inner)
     origin = get_origin(inner)
     metadata: dict[str, str] = {}
-    if origin in (set, frozenset, tuple):
+    if typed_wire and (record := _chalk_record_kind(inner)) is not None:
+        metadata["chalk.python.record"] = record
+        metadata["chalk.python.type"] = f"{inner.__module__}.{inner.__qualname__}"
+    elif origin in (set, frozenset, tuple):
         metadata["chalk.python.collection"] = origin.__name__
     elif has_chalk_arrow_contract(inner) and isinstance(
         getattr(inner, "__chalk_type_id__", None), str
     ):
         metadata["chalk.python.type"] = inner.__chalk_type_id__
     elif (
-        logical_collection
+        typed_wire
         and isinstance(inner, type)
         and (
             inner
@@ -168,13 +172,13 @@ def _rich_field(name: str, annotation: Any, *, logical_collection: bool) -> Any:
         metadata["chalk.python.type"] = f"{inner.__module__}.{inner.__qualname__}"
     return arrow_pb.Field(
         name=name,
-        arrow_type=_rich_to_arrow_type(inner, logical_collection=logical_collection),
+        arrow_type=_rich_to_arrow_type(inner, typed_wire=typed_wire),
         nullable=nullable,
         metadata=metadata,
     )
 
 
-def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
+def _rich_to_arrow_type(python_type: Any, *, typed_wire: bool) -> Any:
     """Recursively convert a Python type to an ``arrow_pb.ArrowType``.
 
     Parameters
@@ -219,7 +223,7 @@ def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
         args = get_args(python_type)
 
         if origin in (Annotated, getattr(typing, "Annotated", Annotated)):
-            return _rich_to_arrow_type(args[0], logical_collection=logical_collection)
+            return _rich_to_arrow_type(args[0], typed_wire=typed_wire)
 
         if origin in (list, set, frozenset) or (
             origin is tuple and len(args) == 2 and args[1] is ...
@@ -229,9 +233,7 @@ def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
             return arrow_type(
                 "large_list",
                 arrow_pb.List(
-                    field_type=_rich_field(
-                        "item", args[0], logical_collection=logical_collection
-                    )
+                    field_type=_rich_field("item", args[0], typed_wire=typed_wire)
                 ),
             )
 
@@ -242,7 +244,7 @@ def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
                 "struct",
                 arrow_pb.Struct(
                     sub_field_types=[
-                        _rich_field(str(i), item, logical_collection=logical_collection)
+                        _rich_field(str(i), item, typed_wire=typed_wire)
                         for i, item in enumerate(args)
                     ]
                 ),
@@ -252,17 +254,13 @@ def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
             if len(args) != 2:
                 raise TypeError("Dict types must have key and value annotations.")
             key_type, value_type = args
-            key_field = _rich_field(
-                "key", key_type, logical_collection=logical_collection
-            )
+            key_field = _rich_field("key", key_type, typed_wire=typed_wire)
             key_field.nullable = False
             return arrow_type(
                 "map",
                 arrow_pb.Map(
                     key_field=key_field,
-                    item_field=_rich_field(
-                        "value", value_type, logical_collection=logical_collection
-                    ),
+                    item_field=_rich_field("value", value_type, typed_wire=typed_wire),
                 ),
             )
 
@@ -275,9 +273,7 @@ def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
     if issubclass(python_type, enum.Enum):
         # Infer from first member's value type
         first = next(iter(python_type))
-        return _rich_to_arrow_type(
-            type(first.value), logical_collection=logical_collection
-        )
+        return _rich_to_arrow_type(type(first.value), typed_wire=typed_wire)
 
     # ---- Structured types (dataclass, namedtuple, TypedDict, attrs, pydantic) ----
     if (
@@ -287,15 +283,15 @@ def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
         or _has_attrs(python_type)
         or _is_pydantic_basemodel(python_type)
     ):
-        annotations = typing.get_type_hints(python_type)
+        from chalkcompute._arrow_runtime import _chalk_struct_fields
+
+        annotations = _chalk_struct_fields(python_type)
         sub_fields = []
         for field_name, field_type in annotations.items():
             if field_name.startswith("__"):
                 continue
             sub_fields.append(
-                _rich_field(
-                    field_name, field_type, logical_collection=logical_collection
-                )
+                _rich_field(field_name, field_type, typed_wire=typed_wire)
             )
         return arrow_type("struct", arrow_pb.Struct(sub_field_types=sub_fields))
 

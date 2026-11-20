@@ -65,16 +65,17 @@ def _pyarrow_type_from_field(field):
     return _pyarrow_field(json.loads(field.to_json())).type
 
 
-def _has_collection(field: dict) -> bool:
-    if "chalk.python.collection" in field.get("metadata", {}):
+def _has_wire_marker(field: dict) -> bool:
+    metadata = field.get("metadata", {})
+    if "chalk.python.collection" in metadata or "chalk.python.record" in metadata:
         return True
     ((kind, data),) = (field.get("arrowType") or {"none": {}}).items()
     if kind in ("list", "largeList", "fixedSizeList"):
-        return _has_collection(data["fieldType"])
+        return _has_wire_marker(data["fieldType"])
     if kind == "struct":
-        return any(_has_collection(child) for child in data.get("subFieldTypes", []))
+        return any(_has_wire_marker(child) for child in data.get("subFieldTypes", []))
     if kind == "map":
-        return _has_collection(data["keyField"]) or _has_collection(data["itemField"])
+        return _has_wire_marker(data["keyField"]) or _has_wire_marker(data["itemField"])
     return False
 
 
@@ -82,12 +83,12 @@ def collection_output_field(func):
     from typing import get_type_hints
 
     from ._arrow_schema import rich_to_arrow_schema
-    from ._arrow_serde import has_collection_annotation, unwrap_result_annotation
+    from ._arrow_serde import has_typed_wire_annotation, unwrap_result_annotation
 
     annotation = unwrap_result_annotation(
         get_type_hints(func, include_extras=True).get("return")
     )
-    if has_collection_annotation(annotation):
+    if has_typed_wire_annotation(annotation):
         return rich_to_arrow_schema({"result": annotation}).columns[0]
     return None
 
@@ -95,7 +96,7 @@ def collection_output_field(func):
 def output_dtype_source(field: Any | None) -> str:
     if field is not None:
         spec = json.loads(field.to_json())
-        if _has_collection(spec):
+        if _has_wire_marker(spec):
             return (
                 inspect.getsource(_pyarrow_field)
                 + f"""
@@ -161,11 +162,11 @@ def catalog_collection_codec(field, *, encoding: bool):
     from ._arrow_runtime import _chalk_decoder, _chalk_encoder
 
     spec = json.loads(field.to_json())
-    if not _has_collection(spec):
+    if not _has_wire_marker(spec):
         return None
     annotation = _collection_annotation(spec)
     if not encoding:
-        return _chalk_decoder(annotation)
+        return _chalk_decoder(annotation, from_schema=True)
 
     # Attaching to a function only needs its catalog metadata. Import PyArrow
     # when a caller actually sends Arrow values.
@@ -173,6 +174,8 @@ def catalog_collection_codec(field, *, encoding: bool):
 
     @lru_cache(maxsize=1)
     def encoder():
-        return _chalk_encoder(annotation, dtype=_pyarrow_field(spec).type)
+        return _chalk_encoder(
+            annotation, dtype=_pyarrow_field(spec).type, from_schema=True
+        )
 
     return lambda value: encoder()(value)
