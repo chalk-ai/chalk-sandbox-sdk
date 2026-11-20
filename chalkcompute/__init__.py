@@ -22,6 +22,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ArtifactError": ("chalkcompute._artifact", "ArtifactError"),
     "ArtifactNotFoundError": ("chalkcompute._artifact", "ArtifactNotFoundError"),
     "UsageBudget": ("chalkcompute._usage_budget", "UsageBudget"),
+    "ExecStreamError": ("chalkcompute._exec", "ExecStreamError"),
     # _container.py
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),

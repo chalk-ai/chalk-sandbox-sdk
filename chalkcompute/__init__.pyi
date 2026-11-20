@@ -1,3 +1,4 @@
+from chalkcompute._exec import ExecStreamError as ExecStreamError
 from chalkcompute._weights import WeightStream as WeightStream
 from chalkcompute._weights import WeightPublisher as WeightPublisher
 from chalkcompute._weights_format import WeightStreamError as WeightStreamError
@@ -350,6 +351,7 @@ __all__ = [
     "ExecEvent",
     "ExecProcess",
     "ExecResult",
+    "ExecStreamError",
     "PythonExecution",
     "PythonSkippedArtifact",
     "ResourceDetector",
