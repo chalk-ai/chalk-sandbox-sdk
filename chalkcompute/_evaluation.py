@@ -276,9 +276,6 @@ class EvaluationScorer:
     sql_expression: str | None = None
     """The Chalk SQL expression, when the scorer is one."""
 
-    name: str | None = None
-    """Result and dependency name, when attached to an online evaluation."""
-
 
 class EvaluationRunStatus(str, Enum):
     """Lifecycle state of an evaluation run."""
@@ -518,14 +515,10 @@ class OnlineEvaluation:
 
     @property
     def scorers(self) -> tuple[EvaluationScorer, ...]:
-        scorers = []
-        for scorer in self._spec.scorers:
-            if not scorer.id:
-                raise EvaluationError(
-                    "online evaluation response did not include a server-assigned scorer ID"
-                )
-            scorers.append(_scorer_from_proto(scorer.id, scorer.spec, name=scorer.name))
-        return tuple(scorers)
+        return tuple(
+            _scorer_from_proto(scorer.name, scorer.spec)
+            for scorer in self._spec.scorers
+        )
 
     @property
     def enabled(self) -> bool:
@@ -1441,15 +1434,11 @@ def _evaluation_from_proto(
 
 
 def _scorer_from_proto(
-    scorer_id: str,
-    spec: evaluation_pb.EvaluationScorerSpec | None,
-    *,
-    name: str | None = None,
+    scorer_id: str, spec: evaluation_pb.EvaluationScorerSpec | None
 ) -> EvaluationScorer:
     implementation = None if spec is None else spec.implementation
     return EvaluationScorer(
         id=scorer_id,
-        name=name,
         function_version_id=(
             implementation.value.function_version_id or None
             if implementation is not None and implementation.field == "function"

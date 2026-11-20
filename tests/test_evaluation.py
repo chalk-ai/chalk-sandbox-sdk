@@ -1047,7 +1047,6 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
             "enabled": True,
             "scorers": [
                 {
-                    "id": "scorer-1",
                     "name": "grade",
                     "spec": {"function": {"functionVersionId": "judge-v2"}},
                 }
@@ -1119,9 +1118,7 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     assert saved.scope is cc.OnlineEvaluatorScope.SPAN
     assert saved.predicate == predicate
     assert saved.scorers == (
-        cc.EvaluationScorer(
-            id="scorer-1", name="grade", function_version_id="judge-v2"
-        ),
+        cc.EvaluationScorer(id="grade", function_version_id="judge-v2"),
     )
     updated = saved.update(enabled=False, predicate="")
     update_request = connect.calls[-1][1]

@@ -750,8 +750,7 @@ evaluation definition persist after the script exits.
 
 Use `cc.OnlineEvaluation.list(enabled=True, limit=20)` to iterate the newest
 enabled evaluations. The SDK follows server pagination automatically.
-Each scorer exposes its server-assigned entry ID as `scorer.id` and its
-result and dependency name as `scorer.name`.
+Online scorer IDs are their names within the evaluator.
 
 ### Reading span metrics
 
