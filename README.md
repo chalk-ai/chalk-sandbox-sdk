@@ -889,7 +889,8 @@ model named by the run's `agent_model` metadata for training to change what it
 answers with.
 
 `cc.Experiment.from_id` and `cc.Experiment.list_all(evaluation=...)` attach to
-existing experiments. `experiment.cancel()` stops one, and
+existing experiments; the list holds at most the 100 most recent.
+`experiment.cancel()` stops one, and
 `experiment.retry()` resumes a failed or canceled one at its latest training
 step, reusing the rollouts already scored.
 

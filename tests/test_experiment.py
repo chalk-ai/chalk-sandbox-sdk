@@ -189,6 +189,40 @@ def test_start_takes_an_evaluation_handle_without_fetching_it() -> None:
     assert sorted(request.config.reward_weights) == ["scorer-a", "scorer-b"]
 
 
+def test_classmethods_reuse_the_client_an_evaluation_handle_was_loaded_with() -> None:
+    client, connect = _client(
+        {
+            "get_evaluation": [_evaluation_response()],
+            "start_experiment": [_response(experiment_pb.StartExperimentResponse)],
+            "list_experiments": [
+                _message(
+                    experiment_pb.ListExperimentsResponse,
+                    {"experiments": [_experiment_dict()]},
+                )
+            ],
+        }
+    )
+    evaluation = client.evaluations.get("eval-1")
+
+    # No chalk_client: an ambient client would need real credentials here.
+    started = chalkcompute.Experiment.start(
+        evaluation,
+        base_model="Qwen/Qwen3-4B-Instruct-2507",
+        gpu="nvidia-l4:1",
+        steps=1,
+        samples_per_row=2,
+    )
+    listed = chalkcompute.Experiment.list_all(evaluation=evaluation)
+
+    assert [method for method, _ in connect.calls] == [
+        "get_evaluation",
+        "start_experiment",
+        "list_experiments",
+    ]
+    assert started.id == "exp-1"
+    assert [experiment.id for experiment in listed] == ["exp-1"]
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

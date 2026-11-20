@@ -208,7 +208,8 @@ class Experiment:
             Evaluation runs per step; each dataset row gets this many samples.
         reward_weights
             Scorer id to reward weight; a scorer to minimize takes a negative
-            weight. Defaults to every scorer of the evaluation at ``1.0``.
+            weight. Defaults to every scorer of the evaluation at ``1.0``,
+            which reads the evaluation when only its id is given.
         learning_rate, lora_rank
             Left unset, the server chooses.
         register_as
@@ -221,7 +222,7 @@ class Experiment:
         compute_class
             Where training runs execute. Defaults to Kubernetes.
         """
-        return ExperimentClient(chalk_client=chalk_client).start(
+        return _client_for(evaluation, chalk_client).start(
             evaluation,
             base_model=base_model,
             gpu=gpu,
@@ -250,11 +251,12 @@ class Experiment:
         evaluation: Evaluation | str | None = None,
         chalk_client: Any | None = None,
     ) -> list[Experiment]:
-        """List the environment's experiments, newest first.
+        """List the environment's most recent experiments, newest first.
 
-        ``evaluation`` keeps only the experiments it judged.
+        ``evaluation`` keeps only the experiments it judged. The server returns
+        at most its 100 newest matches and offers no way to page past them.
         """
-        return ExperimentClient(chalk_client=chalk_client).list(evaluation=evaluation)
+        return _client_for(evaluation, chalk_client).list(evaluation=evaluation)
 
     @property
     def is_terminal(self) -> bool:
@@ -475,9 +477,10 @@ class ExperimentClient:
     def list(
         self, *, evaluation: Evaluation | str | None = None
     ) -> builtins.list[Experiment]:
-        """List the environment's experiments, newest first.
+        """List the environment's most recent experiments, newest first.
 
-        ``evaluation`` keeps only the experiments it judged.
+        ``evaluation`` keeps only the experiments it judged. The server returns
+        at most its 100 newest matches and offers no way to page past them.
         """
         filters = experiment_pb.ListExperimentsFilters(
             evaluation_id=None if evaluation is None else _evaluation_id(evaluation)
@@ -574,6 +577,20 @@ class ExperimentClient:
                 f"{getattr(method, '__name__', 'experiment RPC')} failed: {exc}",
                 status_code=status_code,
             ) from exc
+
+
+def _client_for(
+    evaluation: Evaluation | str | None, chalk_client: Any | None
+) -> ExperimentClient:
+    # An evaluation handle carries the credentials and environment it was loaded
+    # with; a fresh client would send its id to the ambient environment instead.
+    if (
+        chalk_client is None
+        and isinstance(evaluation, Evaluation)
+        and evaluation._client is not None
+    ):
+        return ExperimentClient(connect_client=evaluation._client._connect)
+    return ExperimentClient(chalk_client=chalk_client)
 
 
 def _evaluation_id(evaluation: Evaluation | str) -> str:
