@@ -376,6 +376,7 @@ def test_wait_polls_until_success(monkeypatch: pytest.MonkeyPatch) -> None:
                 _response(
                     experiment_pb.GetExperimentResponse,
                     status="EXPERIMENT_STATUS_SUCCEEDED",
+                    finalRunId="run-final",
                 ),
             ]
         }
@@ -385,6 +386,27 @@ def test_wait_polls_until_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert finished.status is ExperimentStatus.SUCCEEDED
     assert len(connect.calls) == 3
+
+
+def test_wait_raises_for_a_success_that_has_no_final_run() -> None:
+    client, _ = _client(
+        {
+            "get_experiment": [
+                _response(
+                    experiment_pb.GetExperimentResponse,
+                    status="EXPERIMENT_STATUS_SUCCEEDED",
+                    modelVersionId="version-3",
+                )
+            ]
+        }
+    )
+    experiment = client.get("exp-1")
+
+    with pytest.raises(ExperimentError, match="experiments_enabled") as raised:
+        experiment.wait()
+
+    assert not isinstance(raised.value, ExperimentFailedError)
+    assert experiment.wait(raise_on_failure=False) is experiment
 
 
 @pytest.mark.parametrize(

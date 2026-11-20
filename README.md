@@ -888,6 +888,10 @@ defaults to every scorer of the evaluation at `1.0`. The task has to call the
 model named by the run's `agent_model` metadata for training to change what it
 answers with.
 
+The environment needs the `experiments_enabled` feature flag. Without it the
+server runs a post-training, which trains and registers a model but has no
+baseline or final run, and `wait()` raises for one.
+
 `cc.Experiment.from_id` and `cc.Experiment.list_all(evaluation=...)` attach to
 existing experiments; the list holds at most the 100 most recent.
 `experiment.cancel()` stops one, and

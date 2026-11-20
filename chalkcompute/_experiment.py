@@ -193,6 +193,10 @@ class Experiment:
     ) -> Experiment:
         """Start an experiment on an existing evaluation.
 
+        The environment needs the ``experiments_enabled`` feature flag. Without
+        it the server runs a post-training, which trains and registers a model
+        but has no baseline or final run; :meth:`wait` raises for one.
+
         Parameters
         ----------
         evaluation
@@ -311,7 +315,9 @@ class Experiment:
             Seconds between status polls.
         raise_on_failure
             Raise :class:`ExperimentFailedError` for a failed or canceled
-            experiment. Set to ``False`` to inspect the terminal handle directly.
+            experiment, and :class:`ExperimentError` for one that succeeded
+            without a final run and so has no comparison to report. Set to
+            ``False`` to inspect the terminal handle directly.
         """
         if timeout is not None and timeout < 0:
             raise ValueError("timeout must be >= 0 or None")
@@ -334,6 +340,16 @@ class Experiment:
 
         if raise_on_failure and current.status is not ExperimentStatus.SUCCEEDED:
             raise ExperimentFailedError(current)
+        # The server reports success for a post-training too, which trains and
+        # registers a model but never runs the baseline or the final run.
+        if raise_on_failure and current.final_run_id is None:
+            raise ExperimentError(
+                f"Experiment {current.id!r} succeeded without a final run, so it "
+                "has no baseline-to-trained comparison. The server runs a "
+                "post-training in place of an experiment when the environment "
+                "does not have the experiments_enabled feature flag on. Pass "
+                "raise_on_failure=False to inspect it."
+            )
         return current
 
     def cancel(self) -> Experiment:
