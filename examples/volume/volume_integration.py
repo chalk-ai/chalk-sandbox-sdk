@@ -68,8 +68,6 @@ if __name__ == "__main__":
         _bump_via_function,
         name=f"volume-counter-bump-{uuid.uuid4().hex[:8]}",
         image=Image.debian_slim(python_version="3.12"),
-        cpu="1",
-        memory="2Gi",
         volumes=[(COUNTER_VOLUME, MOUNT)],
     )
     try:
@@ -80,8 +78,6 @@ if __name__ == "__main__":
 
     # Attach to a Sandbox
     sandbox = Sandbox(
-        cpu="1",
-        memory="2Gi",
         image=Image.debian_slim(python_version="3.12"),
         volumes=[(COUNTER_VOLUME, MOUNT)],
     )

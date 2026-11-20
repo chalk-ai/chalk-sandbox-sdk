@@ -66,6 +66,12 @@ The task function runs one Harbor trial per dataset row; the trial's own environ
 further sandbox, created with the function's platform identity (`chalk_identity=True`). The
 scorer's metadata keeps the trial name, all rewards, any exception, and wall time.
 
+The task and scorer register under their Python names, `run_harbor_trial` and
+`score_harbor_trial`, using the default capacity settings. They remain deployed
+for inspection after the script finishes. Earlier versions used `harbor-trial`
+and `harbor-reward`; running this version creates new functions without renaming
+or deleting those deployments or changing evaluations pinned to their versions.
+
 Each row's trace shows the trial. Harbor emits no telemetry, and the agent runs inside
 the trial's sandbox, so `chalk_harbor.tracing.emit_trial_spans` replays the trial's record
 afterwards, under the row's session and with the original timestamps:
