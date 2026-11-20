@@ -789,3 +789,35 @@ class TestShimViaRemoteCallLib:
             [{}, {}],
         )
         assert _decode_result_column(payloads) == [[11], [22, 33]]
+
+
+@pytest.mark.parametrize("attached", [False, True])
+@pytest.mark.parametrize("value", [None, (set(), ()), ({"a", "b"}, (1, None, 2))])
+def test_collection_client_and_handler_roundtrip(attached, value):
+    from chalk_remote_call.servicer import process_batches
+    from chalkcompute._function import _apply_function_version, _build_schemas
+    from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb
+
+    def echo(
+        x: tuple[set[str], tuple[int | None, ...]] | None,
+    ) -> tuple[set[str], tuple[int | None, ...]] | None:
+        if x is not None:
+            assert (
+                isinstance(x, tuple)
+                and isinstance(x[0], set)
+                and isinstance(x[1], tuple)
+            )
+        return x
+
+    inputs, outputs = _build_schemas(echo)
+    fn = RemoteFunction(echo)
+    if attached:
+        fn = RemoteFunction._make_empty()
+        version = service_pb.ExternalFunctionVersion(
+            function_name="echo", input_arrow_schema=inputs, output_arrow_schema=outputs
+        )
+        _apply_function_version(fn, version, is_current=True)
+    _install_user_module(echo=echo)
+    shim = _load_shim(_generate_handler_shim("echo", output_field=outputs.columns[0]))
+    chunks = process_batches(fn._serialize_call_args(value), shim["handler"], None, {})
+    assert fn._decode_result_chunks(chunks) == [value]

@@ -621,6 +621,7 @@ def _generate_handler_shim(
     module_name: str = _USER_MODULE_NAME,
     batched: bool = False,
     bind_models: bool = False,
+    output_field: Any | None = None,
 ) -> str:
     """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
@@ -664,7 +665,9 @@ def _generate_handler_shim(
     from chalkcompute._arrow_serde import handler_runtime_source
 
     bootstrap += "__chalk_generated_handler__ = True\n"
-    serde_runtime = handler_runtime_source()
+    from chalkcompute._catalog_collections import output_dtype_source
+
+    serde_runtime = handler_runtime_source() + "\n" + output_dtype_source(output_field)
     if batched:
         # Flatten all (caller_idx, row_idx, kwargs) across every caller so
         # each item is an independent unit of work.  Results are collected in
@@ -695,7 +698,7 @@ def _generate_handler_shim(
                 for name, annotation in _input_types.items()
                 if name != "return"
             }}
-            _output_encoder = _chalk_encoder(_output_type)
+            _output_encoder = _chalk_encoder(_output_type, dtype=_output_dtype)
 
 
             def _flatten_events(events, contexts):
@@ -731,7 +734,7 @@ def _generate_handler_shim(
                 bucket = {{}}
                 for (ci, ri, _, _, _), val in zip(work, flat_results):
                     bucket.setdefault(ci, {{}})[ri] = val
-                return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
+                return [_output_rows([bucket[ci][ri] for ri in sorted(bucket[ci])])
                         for ci in range(n_callers)]
 
 
@@ -804,7 +807,7 @@ def _generate_handler_shim(
                         if _output_encoder is not None:
                             value = _output_encoder(value)
                         bucket.setdefault(ci, {{}})[ri] = value
-                return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
+                return [_output_rows([bucket[ci][ri] for ri in sorted(bucket[ci])])
                         for ci in range(len(events))]
             """)
         )
@@ -833,7 +836,7 @@ def _generate_handler_shim(
             for name, annotation in _input_types.items()
             if name != "return"
         }}
-        _output_encoder = _chalk_encoder(_output_type)
+        _output_encoder = _chalk_encoder(_output_type, dtype=_output_dtype)
 
 
         def _kwargs_for_row(columns, row):
@@ -886,7 +889,7 @@ def _generate_handler_shim(
                                 yield from {func_name}(**kwargs)
                             else:
                                 for item in {func_name}(**kwargs):
-                                    yield _output_encoder(item)
+                                    yield _output_item(_output_encoder(item))
                 return _gen()
             elif _is_async_gen:
                 async def _agen():
@@ -894,7 +897,7 @@ def _generate_handler_shim(
                         kwargs = _kwargs_for_row(columns, i)
                         with _call_scope(context, row_metadata, i):
                             async for item in {func_name}(**kwargs):
-                                yield item if _output_encoder is None else _output_encoder(item)
+                                yield item if _output_encoder is None else _output_item(_output_encoder(item))
                 return _agen()
             elif _is_coroutine:
                 import asyncio
@@ -906,7 +909,7 @@ def _generate_handler_shim(
                     if _output_encoder is not None:
                         result = _output_encoder(result)
                     results.append(result)
-                return results
+                return _output_rows(results)
             else:
                 results = []
                 for i in range(n):
@@ -916,7 +919,7 @@ def _generate_handler_shim(
                     if _output_encoder is not None:
                         result = _output_encoder(result)
                     results.append(result)
-                return results
+                return _output_rows(results)
         """)
     )
 
@@ -2057,7 +2060,20 @@ def _apply_function_version(
     function._call_parameter_names, function._bind_call_arguments = (
         _compile_catalog_argument_binder(function._input_field_names)
     )
-    function._arrow_input_serializers = (None,) * len(function._call_parameter_names)
+    from chalkcompute._catalog_collections import catalog_collection_codec
+
+    input_fields = getattr(efv.input_arrow_schema, "columns", None)
+    function._arrow_input_serializers = (
+        tuple(catalog_collection_codec(field, encoding=True) for field in input_fields)
+        if input_fields is not None
+        else (None,) * len(function._call_parameter_names)
+    )
+    output_fields = getattr(efv.output_arrow_schema, "columns", None)
+    function._arrow_result_deserializer = (
+        catalog_collection_codec(output_fields[0], encoding=False)
+        if output_fields and len(output_fields) == 1
+        else None
+    )
     function._is_generator, function._is_async = _extract_function_traits(efv)
 
 
@@ -2769,9 +2785,12 @@ class RemoteFunction:
         """Generate the handler shim and finalize the deploy image env."""
         from chalkcompute._model import MODELS_ENV_VAR
 
+        from chalkcompute._catalog_collections import collection_output_field
+
         handler_shim = _generate_handler_shim(
             self._func_name,
             module_name=shim_module,
+            output_field=collection_output_field(self._func),
             batched=self._max_batching_size is not None,
             bind_models=bool(self._env.get(MODELS_ENV_VAR)),
         )
@@ -3630,7 +3649,7 @@ class RemoteFunction:
             for value, serializer in zip(values, self._arrow_input_serializers):
                 if serializer is not None:
                     serialized = serializer(value)
-                    arrays.append(pa.array([serialized], type=serialized.type))
+                    arrays.append(pa.repeat(serialized, 1))
                 else:
                     arrays.append(pa.array([value]))
             names = self._call_parameter_names

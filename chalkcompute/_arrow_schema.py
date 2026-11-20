@@ -15,11 +15,7 @@ from typing import (
     Annotated,
     Any,
     Dict,
-    FrozenSet,
-    List,
     Mapping,
-    Set,
-    Tuple,
     Union,
     get_args,
     get_origin,
@@ -123,52 +119,68 @@ def rich_to_arrow_schema(
         The serialized Arrow schema.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
-    from chalkcompute._arrow_serde import (
-        chalk_arrow_type,
-        has_chalk_arrow_contract,
+    from chalkcompute._arrow_serde import has_collection_annotation
+
+    return arrow_pb.Schema(
+        columns=[
+            _rich_field(name, typ, logical_collection=has_collection_annotation(typ))
+            for name, typ in params.items()
+        ]
     )
 
-    columns = []
-    for name, typ in params.items():
-        # Unwrap Optional first: an Arrow-contract class is still one when it is
-        # optional, and a column Chalk may bind to null must say so. The runtime
-        # decoders already yield None for an invalid scalar.
-        inner, nullable = _unwrap_optional(typ)
-        if has_chalk_arrow_contract(inner):
-            columns.append(
-                arrow_pb.Field(
-                    name=name,
-                    arrow_type=chalk_arrow_type(inner),
-                    nullable=nullable,
-                    metadata=(
-                        {"chalk.python.type": inner.__chalk_type_id__}
-                        if isinstance(getattr(inner, "__chalk_type_id__", None), str)
-                        else {}
-                    ),
-                )
+
+def _rich_field(name: str, annotation: Any, *, logical_collection: bool) -> Any:
+    from chalkcompute._arrow_serde import has_chalk_arrow_contract
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
+
+    inner, nullable = _unwrap_optional(annotation)
+    inner = _unwrap_annotated(inner)
+    origin = get_origin(inner)
+    metadata: dict[str, str] = {}
+    if origin in (set, frozenset, tuple):
+        metadata["chalk.python.collection"] = origin.__name__
+    elif has_chalk_arrow_contract(inner) and isinstance(
+        getattr(inner, "__chalk_type_id__", None), str
+    ):
+        metadata["chalk.python.type"] = inner.__chalk_type_id__
+    elif (
+        logical_collection
+        and isinstance(inner, type)
+        and (
+            inner
+            not in (
+                bool,
+                int,
+                float,
+                str,
+                bytes,
+                type(None),
+                datetime,
+                date,
+                time,
+                timedelta,
             )
-            continue
-        columns.append(
-            arrow_pb.Field(
-                name=name,
-                arrow_type=_rich_to_arrow_type(inner),
-                nullable=nullable,
-            )
+            and not is_typeddict(inner)
         )
-    return arrow_pb.Schema(columns=columns)
+    ):
+        # A compiler with only the physical type cannot reproduce Python construction,
+        # equality, or hashing for these collection members.
+        metadata["chalk.python.type"] = f"{inner.__module__}.{inner.__qualname__}"
+    return arrow_pb.Field(
+        name=name,
+        arrow_type=_rich_to_arrow_type(inner, logical_collection=logical_collection),
+        nullable=nullable,
+        metadata=metadata,
+    )
 
 
-def _rich_to_arrow_type(
-    python_type: Any, *, allow_custom_contract: bool = False
-) -> Any:
+def _rich_to_arrow_type(python_type: Any, *, logical_collection: bool) -> Any:
     """Recursively convert a Python type to an ``arrow_pb.ArrowType``.
 
     Parameters
     ----------
     python_type
         The Python type annotation to convert.
-    allow_custom_contract
-        Whether a nested type may use its declared Arrow contract.
 
     Returns
     -------
@@ -197,7 +209,7 @@ def _rich_to_arrow_type(
     if _is_optional(python_type):
         python_type = next(a for a in get_args(python_type) if a is not _NoneType)
 
-    if allow_custom_contract and has_chalk_arrow_contract(python_type):
+    if has_chalk_arrow_contract(python_type):
         return chalk_arrow_type(python_type)
 
     origin = get_origin(python_type)
@@ -207,59 +219,49 @@ def _rich_to_arrow_type(
         args = get_args(python_type)
 
         if origin in (Annotated, getattr(typing, "Annotated", Annotated)):
-            return _rich_to_arrow_type(args[0])
+            return _rich_to_arrow_type(args[0], logical_collection=logical_collection)
 
-        if origin in (list, List, set, Set, frozenset, FrozenSet):
-            inner, nullable = _unwrap_optional(args[0])
+        if origin in (list, set, frozenset) or (
+            origin is tuple and len(args) == 2 and args[1] is ...
+        ):
+            if not args:
+                raise TypeError(f"{origin.__name__} requires an element annotation")
             return arrow_type(
                 "large_list",
                 arrow_pb.List(
-                    field_type=arrow_pb.Field(
-                        name="item",
-                        arrow_type=_rich_to_arrow_type(
-                            inner,
-                            allow_custom_contract=not nullable
-                            and origin in (list, List),
-                        ),
-                        nullable=nullable,
+                    field_type=_rich_field(
+                        "item", args[0], logical_collection=logical_collection
                     )
                 ),
             )
 
-        if origin in (tuple, Tuple):
-            if len(args) == 2 and args[1] is ...:
-                inner, nullable = _unwrap_optional(args[0])
-                return arrow_type(
-                    "large_list",
-                    arrow_pb.List(
-                        field_type=arrow_pb.Field(
-                            name="item",
-                            arrow_type=_rich_to_arrow_type(inner),
-                            nullable=nullable,
-                        )
-                    ),
-                )
-            raise TypeError(
-                "Only variable-length homogeneous tuples are supported (e.g. Tuple[int, ...])."
+        if origin is tuple:
+            if not args and python_type is typing.Tuple:
+                raise TypeError("Tuple requires element annotations")
+            return arrow_type(
+                "struct",
+                arrow_pb.Struct(
+                    sub_field_types=[
+                        _rich_field(str(i), item, logical_collection=logical_collection)
+                        for i, item in enumerate(args)
+                    ]
+                ),
             )
 
         if origin in (dict, Dict, Mapping, collections.abc.Mapping):
             if len(args) != 2:
                 raise TypeError("Dict types must have key and value annotations.")
             key_type, value_type = args
-            val_inner, val_nullable = _unwrap_optional(value_type)
+            key_field = _rich_field(
+                "key", key_type, logical_collection=logical_collection
+            )
+            key_field.nullable = False
             return arrow_type(
                 "map",
                 arrow_pb.Map(
-                    key_field=arrow_pb.Field(
-                        name="key",
-                        arrow_type=_rich_to_arrow_type(key_type),
-                        nullable=False,
-                    ),
-                    item_field=arrow_pb.Field(
-                        name="value",
-                        arrow_type=_rich_to_arrow_type(val_inner),
-                        nullable=val_nullable,
+                    key_field=key_field,
+                    item_field=_rich_field(
+                        "value", value_type, logical_collection=logical_collection
                     ),
                 ),
             )
@@ -273,7 +275,9 @@ def _rich_to_arrow_type(
     if issubclass(python_type, enum.Enum):
         # Infer from first member's value type
         first = next(iter(python_type))
-        return _rich_to_arrow_type(type(first.value))
+        return _rich_to_arrow_type(
+            type(first.value), logical_collection=logical_collection
+        )
 
     # ---- Structured types (dataclass, namedtuple, TypedDict, attrs, pydantic) ----
     if (
@@ -288,12 +292,9 @@ def _rich_to_arrow_type(
         for field_name, field_type in annotations.items():
             if field_name.startswith("__"):
                 continue
-            inner, nullable = _unwrap_optional(field_type)
             sub_fields.append(
-                arrow_pb.Field(
-                    name=field_name,
-                    arrow_type=_rich_to_arrow_type(inner),
-                    nullable=nullable,
+                _rich_field(
+                    field_name, field_type, logical_collection=logical_collection
                 )
             )
         return arrow_type("struct", arrow_pb.Struct(sub_field_types=sub_fields))
