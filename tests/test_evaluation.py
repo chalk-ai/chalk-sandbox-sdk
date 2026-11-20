@@ -1016,3 +1016,175 @@ def test_archive_suite_translates_not_found() -> None:
     )
     with pytest.raises(EvaluationNotFoundError):
         EvaluationClient(connect_client=transport).archive_suite("missing")
+
+
+def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
+    monkeypatch: pytest.MonkeyPatch, no_deploy: Any
+) -> None:
+    import chalkcompute as cc
+
+    @dataclass
+    class Grade:
+        score: float
+
+    judge = scorers.llm_judge(
+        Grade, model="model", inputs=("input_value", "output_value")
+    )
+    assert isinstance(judge, RemoteFunction)
+    judge._version_info = FunctionVersionInfo(
+        id="judge-v2", function_name="grade", version=2, scaling_group_name="sg-grade"
+    )
+    predicate = "openinference_span_kind = 'LLM'"
+    raw = {
+        "id": "online-1",
+        "environmentId": "env-1",
+        "revision": "1",
+        "spec": {
+            "name": "Online quality",
+            "scope": "ONLINE_EVALUATOR_SCOPE_SPAN",
+            "predicate": {"sqlExpression": predicate},
+            "sampleRate": 0.05,
+            "enabled": True,
+            "scorers": [
+                {
+                    "name": "grade",
+                    "spec": {"function": {"functionVersionId": "judge-v2"}},
+                }
+            ],
+            "metadata": {"owner": "ml"},
+        },
+    }
+    updated_raw = {
+        **raw,
+        "revision": "2",
+        "spec": {
+            **raw["spec"],
+            "enabled": False,
+            "predicate": {"sqlExpression": ""},
+        },
+    }
+    connect = _FakeConnectClient(
+        {
+            "create_online_evaluator": [
+                _message(
+                    evaluation_pb.CreateOnlineEvaluatorResponse,
+                    {"onlineEvaluator": raw},
+                )
+            ],
+            "get_online_evaluator": [
+                _message(
+                    evaluation_pb.GetOnlineEvaluatorResponse, {"onlineEvaluator": raw}
+                ),
+                _message(
+                    evaluation_pb.GetOnlineEvaluatorResponse,
+                    {"onlineEvaluator": updated_raw},
+                ),
+                ConnectRpcError(Code.NOT_FOUND, "online evaluator not found"),
+            ],
+            "update_online_evaluator": [
+                _message(
+                    evaluation_pb.UpdateOnlineEvaluatorResponse,
+                    {"onlineEvaluator": updated_raw},
+                ),
+                ConnectRpcError(
+                    Code.ABORTED, "online evaluator was updated concurrently"
+                ),
+            ],
+            "delete_online_evaluator": [
+                evaluation_pb.DeleteOnlineEvaluatorResponse(
+                    online_evaluator_id="online-1"
+                )
+            ],
+        }
+    )
+    monkeypatch.setattr("chalkcompute._evaluation.ConnectClient", lambda **_: connect)
+
+    created = cc.OnlineEvaluation.create(
+        "Online quality",
+        predicate=predicate,
+        sample_rate=0.05,
+        scorers=[judge],
+    )
+    assert created.revision == 1
+    create_request = connect.calls[-1][1]
+    assert create_request.spec.scope is cc.OnlineEvaluatorScope.SPAN
+    assert create_request.spec.predicate.sql_expression == predicate
+    assert (
+        create_request.spec.scorers[0].spec.implementation.value.function_version_id
+        == "judge-v2"
+    )
+
+    saved = cc.OnlineEvaluation.from_id(created.id)
+    assert saved.scope is cc.OnlineEvaluatorScope.SPAN
+    assert saved.predicate == predicate
+    assert saved.scorers == (
+        cc.EvaluationScorer(id="grade", function_version_id="judge-v2"),
+    )
+    updated = saved.update(enabled=False, predicate="")
+    update_request = connect.calls[-1][1]
+    assert update_request.expected_revision == 1
+    assert update_request.spec.predicate.sql_expression == ""
+    assert update_request.spec.enabled is False
+    assert update_request.spec.metadata.to_json() == '{"owner":"ml"}'
+    assert (
+        update_request.spec.scorers[0].spec.implementation.value.function_version_id
+        == "judge-v2"
+    )
+    assert saved.predicate == predicate
+    assert updated.revision == 2
+    reread = updated.refresh()
+    assert reread.predicate == ""
+    assert reread.enabled is False
+    assert reread.scorers == saved.scorers
+
+    with pytest.raises(EvaluationError, match="concurrently") as stale:
+        saved.update(enabled=False)
+    assert stale.value.status_code == 409
+    updated.delete()
+    assert connect.calls[-1][1].online_evaluator_id == updated.id
+    with pytest.raises(EvaluationNotFoundError) as missing:
+        cc.OnlineEvaluation.from_id(updated.id)
+    assert missing.value.status_code == 404
+
+
+def test_list_online_evaluations_paginates_with_enabled_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import chalkcompute as cc
+
+    def evaluator(evaluator_id: str) -> evaluation_pb.OnlineEvaluator:
+        return evaluation_pb.OnlineEvaluator(
+            id=evaluator_id,
+            revision=1,
+            spec=evaluation_pb.OnlineEvaluatorSpec(
+                name="Span quality",
+                scope=cc.OnlineEvaluatorScope.SPAN,
+                enabled=False,
+            ),
+        )
+
+    connect = _FakeConnectClient(
+        {
+            "list_online_evaluators": [
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=[evaluator("newer")], next_cursor="page-2"
+                ),
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=[evaluator("older")], next_cursor="page-3"
+                ),
+            ],
+        }
+    )
+    monkeypatch.setattr("chalkcompute._evaluation.ConnectClient", lambda **_: connect)
+
+    evaluations = cc.OnlineEvaluation.list(enabled=False, limit=2)
+    assert connect.calls == []
+    assert [evaluation.id for evaluation in evaluations] == ["newer", "older"]
+
+    first, second = (request for _, request in connect.calls)
+    assert first.limit == 2
+    assert first.cursor == ""
+    assert second.limit == 1
+    assert second.cursor == "page-2"
+    assert first.filters.to_json() == '{"enabled":false}'
+    assert second.filters.to_json() == '{"enabled":false}'

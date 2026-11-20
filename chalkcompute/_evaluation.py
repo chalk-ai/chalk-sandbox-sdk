@@ -5,6 +5,11 @@ function version and one or more deployed scorer function versions.  Creating
 an evaluation persists that immutable definition; :meth:`Evaluation.run`
 queues a separate execution of it.
 
+Online evaluations bind one or more scorers to incoming telemetry in a Chalk
+environment.  An enabled evaluation scores a sample of spans that match its
+predicate.  Creating an online evaluation persists its first revision, and
+:meth:`OnlineEvaluation.update` saves a new revision.
+
 The task and scorers may be handles returned directly by
 ``@chalkcompute.function`` or references created with
 ``RemoteFunction.from_name`` / ``RemoteFunction.from_id``.  In either case,
@@ -32,9 +37,10 @@ from protobuf.wkt import struct_pb
 
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._connect import ConnectClient
-from chalkcompute._function import DeployedFunction, RemoteFunction
+from chalkcompute._function import DeployedFunction, FunctionVersionInfo, RemoteFunction
 from chalkcompute._gen.chalk.evaluation.v1 import service_connect as evaluation_connect
 from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
+from chalkcompute._gen.chalk.evaluation.v1.service_pb import OnlineEvaluatorScope
 from chalkcompute._tracing import _instrumented
 
 
@@ -480,6 +486,130 @@ class Evaluation:
         return self._client
 
 
+@dataclass(frozen=True)
+class OnlineEvaluation:
+    """A revision of a persisted online evaluation over environment telemetry."""
+
+    id: str
+    revision: int
+    environment_id: str
+    _spec: evaluation_pb.OnlineEvaluatorSpec = field(repr=False)
+    _client: EvaluationClient = field(repr=False, compare=False)
+
+    @property
+    def name(self) -> str:
+        return self._spec.name
+
+    @property
+    def scope(self) -> OnlineEvaluatorScope:
+        return self._spec.scope
+
+    @property
+    def predicate(self) -> str:
+        predicate = self._spec.predicate
+        return "" if predicate is None else predicate.sql_expression
+
+    @property
+    def sample_rate(self) -> float:
+        return self._spec.sample_rate
+
+    @property
+    def scorers(self) -> tuple[EvaluationScorer, ...]:
+        return tuple(
+            _scorer_from_proto(scorer.name, scorer.spec)
+            for scorer in self._spec.scorers
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return self._spec.enabled
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        *,
+        scope: OnlineEvaluatorScope = OnlineEvaluatorScope.SPAN,
+        predicate: str = "",
+        sample_rate: float = 1.0,
+        scorers: Sequence[DeployedFunction | SqlExpression],
+        enabled: bool = True,
+        chalk_client: Any | None = None,
+    ) -> OnlineEvaluation:
+        """Save a definition over the active environment's ingested telemetry spans.
+
+        Pass deployed function scorers, which are pinned to their current versions,
+        or Chalk SQL expressions. Use telemetry column names for function
+        arguments, such as ``input_value`` and ``output_value`` for a judge.
+        """
+        return EvaluationClient(chalk_client=chalk_client).create_online(
+            name,
+            scope=scope,
+            predicate=predicate,
+            sample_rate=sample_rate,
+            scorers=scorers,
+            enabled=enabled,
+        )
+
+    @classmethod
+    def from_id(
+        cls, evaluation_id: str, *, chalk_client: Any | None = None
+    ) -> OnlineEvaluation:
+        """Fetch the current revision of an online evaluation by identifier."""
+        return EvaluationClient(chalk_client=chalk_client).get_online(evaluation_id)
+
+    @classmethod
+    def list(
+        cls,
+        *,
+        enabled: bool | None = None,
+        limit: int | None = None,
+        chalk_client: Any | None = None,
+    ) -> Iterator[OnlineEvaluation]:
+        """Iterate online evaluations newest first, optionally filtered by enabled state."""
+        return EvaluationClient(chalk_client=chalk_client).list_online(
+            enabled=enabled, limit=limit
+        )
+
+    def refresh(self) -> OnlineEvaluation:
+        """Fetch the current revision with this handle's client."""
+        return self._client.get_online(self.id)
+
+    def update(
+        self,
+        *,
+        name: str | None = None,
+        predicate: str | None = None,
+        sample_rate: float | None = None,
+        scorers: Sequence[DeployedFunction | SqlExpression] | None = None,
+        enabled: bool | None = None,
+    ) -> OnlineEvaluation:
+        """Save changes and return the new revision.
+
+        Omitted fields keep their saved values. Pass an empty string to clear
+        the predicate. A stale handle raises :class:`EvaluationError` with
+        status code 409. Refresh before retrying the edit.
+        """
+        spec = evaluation_pb.OnlineEvaluatorSpec.from_binary(self._spec.to_binary())
+        if name is not None:
+            spec.name = _optional_id(name, name="name") or ""
+        if predicate is not None:
+            spec.predicate = evaluation_pb.OnlineEvaluatorPredicate(
+                sql_expression=predicate
+            )
+        if sample_rate is not None:
+            spec.sample_rate = sample_rate
+        if scorers is not None:
+            spec.scorers = _online_scorer_specs(scorers)
+        if enabled is not None:
+            spec.enabled = enabled
+        return self._client._update_online(self.id, self.revision, spec)
+
+    def delete(self) -> None:
+        """Delete this online evaluation."""
+        self._client.delete_online(self.id)
+
+
 @dataclass
 class EvaluationRun:
     """A queued or completed execution of an evaluation."""
@@ -652,6 +782,123 @@ class EvaluationClient:
         if chalk_client is not None and connect_client is not None:
             raise ValueError("pass only one of chalk_client or connect_client")
         self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
+
+    @_instrumented("chalkcompute.online_evaluation.create")
+    def create_online(
+        self,
+        name: str,
+        *,
+        scope: OnlineEvaluatorScope = OnlineEvaluatorScope.SPAN,
+        predicate: str = "",
+        sample_rate: float = 1.0,
+        scorers: Sequence[DeployedFunction | SqlExpression],
+        enabled: bool = True,
+    ) -> OnlineEvaluation:
+        """Persist a span-level online evaluation in the active environment."""
+        name = name.strip()
+        if not name:
+            raise ValueError("name is required")
+        spec = evaluation_pb.OnlineEvaluatorSpec(
+            name=name,
+            scope=scope,
+            predicate=evaluation_pb.OnlineEvaluatorPredicate(sql_expression=predicate),
+            sample_rate=sample_rate,
+            scorers=_online_scorer_specs(scorers),
+            enabled=enabled,
+        )
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_online_evaluator,
+            evaluation_pb.CreateOnlineEvaluatorRequest(spec=spec),
+        )
+        return self._online_evaluation(response.online_evaluator)
+
+    @_instrumented("chalkcompute.online_evaluation.get")
+    def get_online(self, evaluation_id: str) -> OnlineEvaluation:
+        """Fetch the current revision of an online evaluation."""
+        evaluation_id = _optional_id(evaluation_id, name="evaluation_id") or ""
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.get_online_evaluator,
+            evaluation_pb.GetOnlineEvaluatorRequest(online_evaluator_id=evaluation_id),
+            not_found_subject=f"Online evaluation not found: {evaluation_id}",
+        )
+        return self._online_evaluation(response.online_evaluator)
+
+    @_instrumented("chalkcompute.online_evaluation.list")
+    def list_online(
+        self, *, enabled: bool | None = None, limit: int | None = None
+    ) -> Iterator[OnlineEvaluation]:
+        """Iterate online evaluations in the active environment, newest first."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be >= 0 or None")
+        remaining = limit
+        cursor: str | None = None
+        filters = (
+            evaluation_pb.ListOnlineEvaluatorsFilters(enabled=enabled)
+            if enabled is not None
+            else None
+        )
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        while remaining is None or remaining > 0:
+            response = self._call(
+                stub.list_online_evaluators,
+                evaluation_pb.ListOnlineEvaluatorsRequest(
+                    limit=min(remaining, 100) if remaining is not None else 100,
+                    cursor=cursor,
+                    filters=filters,
+                ),
+            )
+            for raw in response.online_evaluators:
+                yield self._online_evaluation(raw)
+                if remaining is not None:
+                    remaining -= 1
+                    if remaining <= 0:
+                        return
+            cursor = response.next_cursor or None
+            if cursor is None:
+                return
+
+    @_instrumented("chalkcompute.online_evaluation.update")
+    def _update_online(
+        self,
+        evaluation_id: str,
+        revision: int,
+        spec: evaluation_pb.OnlineEvaluatorSpec,
+    ) -> OnlineEvaluation:
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.update_online_evaluator,
+            evaluation_pb.UpdateOnlineEvaluatorRequest(
+                online_evaluator_id=evaluation_id, expected_revision=revision, spec=spec
+            ),
+            not_found_subject=f"Online evaluation not found: {evaluation_id}",
+        )
+        return self._online_evaluation(response.online_evaluator)
+
+    @_instrumented("chalkcompute.online_evaluation.delete")
+    def delete_online(self, evaluation_id: str) -> None:
+        """Delete an online evaluation by identifier."""
+        evaluation_id = _optional_id(evaluation_id, name="evaluation_id") or ""
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        self._call(
+            stub.delete_online_evaluator,
+            evaluation_pb.DeleteOnlineEvaluatorRequest(
+                online_evaluator_id=evaluation_id
+            ),
+            not_found_subject=f"Online evaluation not found: {evaluation_id}",
+        )
+
+    def _online_evaluation(
+        self, raw: evaluation_pb.OnlineEvaluator | None
+    ) -> OnlineEvaluation:
+        if raw is None or raw.spec is None:
+            raise EvaluationError(
+                "response did not include an online evaluation definition"
+            )
+        return OnlineEvaluation(
+            raw.id, raw.revision, raw.environment_id, raw.spec, self
+        )
 
     @_instrumented("chalkcompute.evaluation_suite.create")
     def create_suite(self, name: str) -> EvaluationSuite:
@@ -1057,17 +1304,42 @@ def _scorer_spec(
                 ),
             )
         )
+    return _function_scorer_spec(_resolve_function_version(scorer, role=role))
+
+
+def _function_scorer_spec(version_id: str) -> evaluation_pb.EvaluationScorerSpec:
     return evaluation_pb.EvaluationScorerSpec(
         implementation=Oneof(
-            "function",
-            evaluation_pb.FunctionScorer(
-                function_version_id=_resolve_function_version(scorer, role=role)
-            ),
+            "function", evaluation_pb.FunctionScorer(function_version_id=version_id)
         )
     )
 
 
+def _online_scorer_specs(
+    scorers: Sequence[DeployedFunction | SqlExpression],
+) -> list[evaluation_pb.OnlineEvaluatorScorer]:
+    if not scorers:
+        raise ValueError("at least one scorer is required")
+    specs = []
+    for index, scorer in enumerate(scorers):
+        if isinstance(scorer, SqlExpression):
+            name = scorer.name
+            spec = _scorer_spec(scorer, role=f"scorer {index}")
+        else:
+            version = _deployed_function_version(scorer, role=f"scorer {index}")
+            name = version.function_name
+            spec = _function_scorer_spec(version.id)
+        specs.append(evaluation_pb.OnlineEvaluatorScorer(name=name, spec=spec))
+    return specs
+
+
 def _resolve_function_version(function: DeployedFunction, *, role: str) -> str:
+    return _deployed_function_version(function, role=role).id
+
+
+def _deployed_function_version(
+    function: DeployedFunction, *, role: str
+) -> FunctionVersionInfo:
     if not isinstance(function, RemoteFunction):
         raise TypeError(
             f"{role} must be a RemoteFunction returned by @chalkcompute.function, "
@@ -1079,7 +1351,7 @@ def _resolve_function_version(function: DeployedFunction, *, role: str) -> str:
             f"{role} function {function!r} is not deployed; call .deploy() before "
             "creating the evaluation"
         )
-    return version_info.id
+    return version_info
 
 
 def _metadata_dict(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1132,7 +1404,7 @@ def _evaluation_suite_from_proto(
 def _evaluation_from_proto(
     raw: evaluation_pb.Evaluation, client: EvaluationClient
 ) -> Evaluation:
-    scorers = tuple(_scorer_from_proto(value) for value in raw.scorers)
+    scorers = tuple(_scorer_from_proto(value.id, value.spec) for value in raw.scorers)
     return Evaluation(
         id=raw.id,
         name=raw.name,
@@ -1161,10 +1433,12 @@ def _evaluation_from_proto(
     )
 
 
-def _scorer_from_proto(raw: evaluation_pb.EvaluationScorer) -> EvaluationScorer:
-    implementation = None if raw.spec is None else raw.spec.implementation
+def _scorer_from_proto(
+    scorer_id: str, spec: evaluation_pb.EvaluationScorerSpec | None
+) -> EvaluationScorer:
+    implementation = None if spec is None else spec.implementation
     return EvaluationScorer(
-        id=raw.id,
+        id=scorer_id,
         function_version_id=(
             implementation.value.function_version_id or None
             if implementation is not None and implementation.field == "function"
@@ -1260,6 +1534,7 @@ def _http_status_for_code(code: Code) -> int | None:
         Code.PERMISSION_DENIED: 403,
         Code.NOT_FOUND: 404,
         Code.ALREADY_EXISTS: 409,
+        Code.ABORTED: 409,
         Code.RESOURCE_EXHAUSTED: 429,
         Code.INTERNAL: 500,
         Code.UNAVAILABLE: 503,

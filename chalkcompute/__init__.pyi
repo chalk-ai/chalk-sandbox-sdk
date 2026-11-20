@@ -79,6 +79,10 @@ from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
 from chalkcompute._evaluation import EvaluationSuite as EvaluationSuite
+from chalkcompute._evaluation import OnlineEvaluation as OnlineEvaluation
+from chalkcompute._gen.chalk.evaluation.v1.service_pb import (
+    OnlineEvaluatorScope as OnlineEvaluatorScope,
+)
 from chalkcompute._evaluation import SqlExpression as SqlExpression
 from chalkcompute._experiment import Experiment as Experiment
 from chalkcompute._experiment import ExperimentClient as ExperimentClient
@@ -311,6 +315,8 @@ __all__ = [
     "EvaluationScorer",
     "EvaluationScorerResult",
     "EvaluationSuite",
+    "OnlineEvaluation",
+    "OnlineEvaluatorScope",
     "Experiment",
     "ExperimentClient",
     "ExperimentError",
