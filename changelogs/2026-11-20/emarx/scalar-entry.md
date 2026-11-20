@@ -1,0 +1,1 @@
+- Publish CHALK_SCALAR_ENTRYPOINT for scalar function deployments so expression compilation can use the deployed Python callable.

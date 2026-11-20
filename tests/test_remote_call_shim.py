@@ -114,12 +114,13 @@ class TestGenerateHandlerShimNormal:
         src = _generate_handler_shim("fn")
         assert "def handler(event, context):" in src
 
-    def test_sync_scalar(self):
+    @pytest.mark.parametrize("name", ["add", "handler", "inspect"])
+    def test_sync_scalar(self, name):
         def add(x: int, y: int) -> int:
             return x + y
 
-        _install_user_module(add=add)
-        ns = _load_shim(_generate_handler_shim("add"))
+        _install_user_module(**{name: add})
+        ns = _load_shim(_generate_handler_shim(name))
         event = {"x": pa.array([1, 2, 3]), "y": pa.array([10, 20, 30])}
         assert ns["handler"](event, {}) == [11, 22, 33]
 

@@ -199,6 +199,29 @@ def test_generated_function_sources_are_stable_between_runs(monkeypatch):
             os.unlink(file)
 
 
+def _add_one(x: int) -> int:
+    return x + 1
+
+
+@pytest.mark.parametrize("batch_size", [None, 4])
+def test_scalar_entrypoint_identifies_the_deployed_callable(monkeypatch, batch_size):
+    monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", "0")
+
+    fn = RemoteFunction(
+        _add_one,
+        name="catalog-alias",
+        max_batching_size=batch_size,
+        env={"CHALK_SCALAR_ENTRYPOINT": "wrong:target"},
+    )
+    client = Client([complete()])
+    client._env_id = None
+    fn._client = client
+    fn.deploy()
+    container = client.requests[0].spec.version_spec.spec.container_spec
+    expected = "tests.test_function_deployment:_add_one" if batch_size is None else None
+    assert container.env_vars.get("CHALK_SCALAR_ENTRYPOINT") == expected
+
+
 def test_ready_reused_function_does_not_poll(monkeypatch):
     def add(x: int) -> int:
         return x
@@ -280,6 +303,8 @@ def test_redeploy_preserves_callable_and_desired_spec(
     assert [r.function_name for r in client.requests] == [registered_name] * 2
     assert client.requests[0].spec == client.requests[1].spec
     assert prepared_sources[0] == prepared_sources[1]
+    container = client.requests[0].spec.version_spec.spec.container_spec
+    assert container.env_vars["CHALK_SCALAR_ENTRYPOINT"] == "user_module:add_values"
     location = client.requests[0].spec.version_spec.config.source_location
     assert location is not None
     captured = prepared_sources[0][location.path]

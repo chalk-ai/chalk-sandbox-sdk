@@ -163,6 +163,7 @@ _RemoteCallResult = TypeVar("_RemoteCallResult")
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
+_SCALAR_ENTRYPOINT_ENV_VAR = "CHALK_SCALAR_ENTRYPOINT"
 _FNQ_STREAMS_SUPPORTED_ENV_VAR = "CHALK_FNQ_STREAMS_SUPPORTED"
 _FNQ_CANCELLATION_SUPPORTED_ENV_VAR = "CHALK_FNQ_CANCELLATION_SUPPORTED"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
@@ -818,12 +819,12 @@ def _generate_handler_shim(
         import contextlib
         import inspect
 
-        from {module_name} import {func_name}
+        from {module_name} import {func_name} as _chalk_scalar_function
 
         _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
         _ROW_METADATA_COLUMN = {_ROW_METADATA_COLUMN!r}
         _RESERVED_COLUMNS = (_NO_ARGS_SENTINEL_COLUMN, _ROW_METADATA_COLUMN)
-        _target = inspect.unwrap({func_name})
+        _target = inspect.unwrap(_chalk_scalar_function)
         _is_sync_gen = inspect.isgeneratorfunction(_target)
         _is_async_gen = inspect.isasyncgenfunction(_target)
         _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
@@ -886,9 +887,9 @@ def _generate_handler_shim(
                         kwargs = _kwargs_for_row(columns, i)
                         with _call_scope(context, row_metadata, i):
                             if _output_encoder is None:
-                                yield from {func_name}(**kwargs)
+                                yield from _chalk_scalar_function(**kwargs)
                             else:
-                                for item in {func_name}(**kwargs):
+                                for item in _chalk_scalar_function(**kwargs):
                                     yield _output_item(_output_encoder(item))
                 return _gen()
             elif _is_async_gen:
@@ -896,7 +897,7 @@ def _generate_handler_shim(
                     for i in range(n):
                         kwargs = _kwargs_for_row(columns, i)
                         with _call_scope(context, row_metadata, i):
-                            async for item in {func_name}(**kwargs):
+                            async for item in _chalk_scalar_function(**kwargs):
                                 yield item if _output_encoder is None else _output_item(_output_encoder(item))
                 return _agen()
             elif _is_coroutine:
@@ -905,7 +906,7 @@ def _generate_handler_shim(
                 for i in range(n):
                     kwargs = _kwargs_for_row(columns, i)
                     with _call_scope(context, row_metadata, i):
-                        result = asyncio.run({func_name}(**kwargs))
+                        result = asyncio.run(_chalk_scalar_function(**kwargs))
                     if _output_encoder is not None:
                         result = _output_encoder(result)
                     results.append(result)
@@ -915,7 +916,7 @@ def _generate_handler_shim(
                 for i in range(n):
                     kwargs = _kwargs_for_row(columns, i)
                     with _call_scope(context, row_metadata, i):
-                        result = {func_name}(**kwargs)
+                        result = _chalk_scalar_function(**kwargs)
                     if _output_encoder is not None:
                         result = _output_encoder(result)
                     results.append(result)
@@ -2501,6 +2502,7 @@ class RemoteFunction:
         self._port: int = 8080
         self._temp_files: list[str] = []
         self._handler_module: str = "handler"
+        self._scalar_entrypoint: str | None = None
         self._source_location: catalog_pb.FunctionSourceLocation | None = None
 
         # Input field names (populated from API response for from_id/from_name)
@@ -2787,12 +2789,25 @@ class RemoteFunction:
 
         from chalkcompute._catalog_collections import collection_output_field
 
+        output_field = collection_output_field(self._func)
+        bind_models = bool(self._env.get(MODELS_ENV_VAR))
+        # Only the plain scalar shim delegates each row directly to this callable.
+        self._scalar_entrypoint = (
+            f"{shim_module}:{self._func_name}"
+            if self._source_location is not None
+            and self._max_batching_size is None
+            and not self._is_generator
+            and not self._is_async
+            and not bind_models
+            and output_field is None
+            else None
+        )
         handler_shim = _generate_handler_shim(
             self._func_name,
             module_name=shim_module,
-            output_field=collection_output_field(self._func),
+            output_field=output_field,
             batched=self._max_batching_size is not None,
-            bind_models=bool(self._env.get(MODELS_ENV_VAR)),
+            bind_models=bind_models,
         )
         shim_path = _write_temp(handler_shim)
         temp_files.append(shim_path)
@@ -3051,13 +3066,18 @@ class RemoteFunction:
 
             resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
+            container_env = _remote_call_container_env(
+                self._env, deploy_image._env.get("PYTHONPATH", "/app")
+            )
+            if self._scalar_entrypoint is None:
+                container_env.pop(_SCALAR_ENTRYPOINT_ENV_VAR, None)
+            else:
+                container_env[_SCALAR_ENTRYPOINT_ENV_VAR] = self._scalar_entrypoint
             container_spec = ContainerSpec(
                 name=sg_name,
                 image="",
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env=_remote_call_container_env(
-                    self._env, deploy_image._env.get("PYTHONPATH", "/app")
-                ),
+                env=container_env,
                 cpu=self._cpu,
                 compute_class=self._compute_class,
                 network_policy=self._network_policy,
