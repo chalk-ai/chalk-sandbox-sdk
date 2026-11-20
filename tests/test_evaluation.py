@@ -1047,6 +1047,7 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
             "enabled": True,
             "scorers": [
                 {
+                    "id": "scorer-1",
                     "name": "grade",
                     "spec": {"function": {"functionVersionId": "judge-v2"}},
                 }
@@ -1118,7 +1119,9 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     assert saved.scope is cc.OnlineEvaluatorScope.SPAN
     assert saved.predicate == predicate
     assert saved.scorers == (
-        cc.EvaluationScorer(id="grade", function_version_id="judge-v2"),
+        cc.EvaluationScorer(
+            id="scorer-1", name="grade", function_version_id="judge-v2"
+        ),
     )
     updated = saved.update(enabled=False, predicate="")
     update_request = connect.calls[-1][1]
@@ -1145,3 +1148,46 @@ def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
     with pytest.raises(EvaluationNotFoundError) as missing:
         cc.OnlineEvaluation.from_id(updated.id)
     assert missing.value.status_code == 404
+
+
+def test_list_online_evaluations_paginates_with_enabled_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import chalkcompute as cc
+
+    def evaluator(evaluator_id: str) -> evaluation_pb.OnlineEvaluator:
+        return evaluation_pb.OnlineEvaluator(
+            id=evaluator_id,
+            revision=1,
+            spec=evaluation_pb.OnlineEvaluatorSpec(
+                name="Span quality",
+                scope=cc.OnlineEvaluatorScope.SPAN,
+                enabled=False,
+            ),
+        )
+
+    connect = _FakeConnectClient(
+        {
+            "list_online_evaluators": [
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=[evaluator("newer")], next_cursor="page-2"
+                ),
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=[evaluator("older")], next_cursor="page-3"
+                ),
+            ],
+        }
+    )
+    monkeypatch.setattr("chalkcompute._evaluation.ConnectClient", lambda **_: connect)
+
+    evaluations = cc.OnlineEvaluation.list(enabled=False, limit=2)
+    assert connect.calls == []
+    assert [evaluation.id for evaluation in evaluations] == ["newer", "older"]
+
+    first, second = (request for _, request in connect.calls)
+    assert first.limit == 2
+    assert first.cursor == ""
+    assert second.limit == 1
+    assert second.cursor == "page-2"
+    assert first.filters.to_json() == '{"enabled":false}'
+    assert second.filters.to_json() == '{"enabled":false}'

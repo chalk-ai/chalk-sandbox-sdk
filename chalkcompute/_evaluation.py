@@ -276,6 +276,9 @@ class EvaluationScorer:
     sql_expression: str | None = None
     """The Chalk SQL expression, when the scorer is one."""
 
+    name: str | None = None
+    """Result and dependency name, when attached to an online evaluation."""
+
 
 class EvaluationRunStatus(str, Enum):
     """Lifecycle state of an evaluation run."""
@@ -515,10 +518,14 @@ class OnlineEvaluation:
 
     @property
     def scorers(self) -> tuple[EvaluationScorer, ...]:
-        return tuple(
-            _scorer_from_proto(scorer.name, scorer.spec)
-            for scorer in self._spec.scorers
-        )
+        scorers = []
+        for scorer in self._spec.scorers:
+            if not scorer.id:
+                raise EvaluationError(
+                    "online evaluation response did not include a server-assigned scorer ID"
+                )
+            scorers.append(_scorer_from_proto(scorer.id, scorer.spec, name=scorer.name))
+        return tuple(scorers)
 
     @property
     def enabled(self) -> bool:
@@ -557,6 +564,19 @@ class OnlineEvaluation:
     ) -> OnlineEvaluation:
         """Fetch the current revision of an online evaluation by identifier."""
         return EvaluationClient(chalk_client=chalk_client).get_online(evaluation_id)
+
+    @classmethod
+    def list(
+        cls,
+        *,
+        enabled: bool | None = None,
+        limit: int | None = None,
+        chalk_client: Any | None = None,
+    ) -> Iterator[OnlineEvaluation]:
+        """Iterate online evaluations newest first, optionally filtered by enabled state."""
+        return EvaluationClient(chalk_client=chalk_client).list_online(
+            enabled=enabled, limit=limit
+        )
 
     def refresh(self) -> OnlineEvaluation:
         """Fetch the current revision with this handle's client."""
@@ -811,6 +831,40 @@ class EvaluationClient:
             not_found_subject=f"Online evaluation not found: {evaluation_id}",
         )
         return self._online_evaluation(response.online_evaluator)
+
+    @_instrumented("chalkcompute.online_evaluation.list")
+    def list_online(
+        self, *, enabled: bool | None = None, limit: int | None = None
+    ) -> Iterator[OnlineEvaluation]:
+        """Iterate online evaluations in the active environment, newest first."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be >= 0 or None")
+        remaining = limit
+        cursor: str | None = None
+        filters = (
+            evaluation_pb.ListOnlineEvaluatorsFilters(enabled=enabled)
+            if enabled is not None
+            else None
+        )
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        while remaining is None or remaining > 0:
+            response = self._call(
+                stub.list_online_evaluators,
+                evaluation_pb.ListOnlineEvaluatorsRequest(
+                    limit=min(remaining, 100) if remaining is not None else 100,
+                    cursor=cursor,
+                    filters=filters,
+                ),
+            )
+            for raw in response.online_evaluators:
+                yield self._online_evaluation(raw)
+                if remaining is not None:
+                    remaining -= 1
+                    if remaining <= 0:
+                        return
+            cursor = response.next_cursor or None
+            if cursor is None:
+                return
 
     @_instrumented("chalkcompute.online_evaluation.update")
     def _update_online(
@@ -1387,11 +1441,15 @@ def _evaluation_from_proto(
 
 
 def _scorer_from_proto(
-    scorer_id: str, spec: evaluation_pb.EvaluationScorerSpec | None
+    scorer_id: str,
+    spec: evaluation_pb.EvaluationScorerSpec | None,
+    *,
+    name: str | None = None,
 ) -> EvaluationScorer:
     implementation = None if spec is None else spec.implementation
     return EvaluationScorer(
         id=scorer_id,
+        name=name,
         function_version_id=(
             implementation.value.function_version_id or None
             if implementation is not None and implementation.field == "function"

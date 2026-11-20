@@ -748,6 +748,11 @@ Creation pins the deployed judge's Function version and saves an enabled
 definition with a 5% sample rate for matching spans. The judge Function and
 evaluation definition persist after the script exits.
 
+Use `cc.OnlineEvaluation.list(enabled=True, limit=20)` to iterate the newest
+enabled evaluations. The SDK follows server pagination automatically.
+Each scorer exposes its server-assigned entry ID as `scorer.id` and its
+result and dependency name as `scorer.name`.
+
 ### Reading span metrics
 
 Scorers can accept `trace: cc.Trace` and read typed usage values from each span:
