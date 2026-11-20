@@ -857,6 +857,42 @@ images on the route it is called through. Through Chalk's AI router that is any
 OpenAI-compatible connection; an Anthropic connection rejects image parts sent
 as chat completions, and Bedrock accepts only data URLs.
 
+## Experiments
+
+An experiment trains a model on an evaluation's task and judges the result with
+the same evaluation. It pins a baseline run when it starts, registers the
+trained model, and scores it with one final run, so the comparison is like for
+like. The evaluation is referenced, not owned, and can judge later experiments.
+
+```python
+import chalkcompute as cc
+
+experiment = cc.Experiment.start(
+    evaluation,  # a cc.Evaluation, or its id
+    base_model="Qwen/Qwen3-4B-Instruct-2507",
+    gpu="nvidia-l40s:1",
+    steps=4,
+    samples_per_row=8,
+    register_as="support-answer-qwen",
+).wait()
+
+experiment.baseline_run      # pinned at start
+experiment.training_run      # the training run behind the model
+experiment.final_run         # the trained model on the same dataset
+experiment.model_version_id  # registered under register_as
+print(experiment.result.table())  # scorer | baseline | trained | change
+```
+
+The reward is each scorer's score times its weight, summed; `reward_weights`
+defaults to every scorer of the evaluation at `1.0`. The task has to call the
+model named by the run's `agent_model` metadata for training to change what it
+answers with.
+
+`cc.Experiment.from_id` and `cc.Experiment.list_all(evaluation=...)` attach to
+existing experiments. `experiment.cancel()` stops one, and
+`experiment.retry()` resumes a failed or canceled one at its latest training
+step, reusing the rollouts already scored.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment
