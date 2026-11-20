@@ -124,6 +124,18 @@ reuse across runs. An override is appropriate only for an intentional naming
 contract or a uniquely named integration test. Keep existing overrides that
 callers depend on; removing one does not rename the deployed function.
 
+For `@cc.training`, omit `name=` by default. The Python function name identifies
+the callable, while the service generates a run name when omitted. Use an explicit
+name only to demonstrate an intentional run naming or shared checkpoint storage
+contract, and explain that contract beside the option. Preserve existing names
+that checkpoint consumers depend on.
+
+Omit `compute_class`, `execution_target`, and `network_policy` unless the example
+needs a specific placement, backend, or network policy. Remote training requires
+a data source and at least one resource request (`cpu`, `memory`, or `gpu`); keep
+those and the required image dependencies. Explain resource sizing and any retries
+in terms of the workload rather than copying them from another example.
+
 Avoid explicit names unless an example needs cross-process lookup, demonstrates naming,
 or deliberately reuses a resource across runs. For functions and classes, use
 the default Python-derived name for those cases whenever possible.

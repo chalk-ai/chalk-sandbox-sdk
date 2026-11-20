@@ -70,6 +70,46 @@ finally:
 and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
 sandbox with Claude Code, `gh` and Git identity configured.
 
+## Training configuration
+
+Start with the data source, image dependencies, and resources your training
+function needs. For example, a small CPU training job can start with:
+
+```python
+import chalkcompute as cc
+
+@cc.training(
+    data="my_training_dataset",
+    image=cc.Image.debian_slim().pip_install(["scikit-learn"]),
+    cpu="1",  # One CPU for this small training job.
+)
+def train_classifier(df, config):
+    from sklearn.linear_model import LogisticRegression
+
+    if hasattr(df, "collect"):
+        df = df.collect()
+    return LogisticRegression().fit(
+        df.select(config["features"]).to_numpy(),
+        df[config["label"]].to_numpy(),
+    )
+```
+
+Use an existing Dataset name and pass its feature and label column names in
+`config` when calling `train_classifier.run_training(config=...)`. Remote
+training requires at least one of `cpu`, `memory`, or `gpu`.
+
+Omit `name=` by default. The Python name identifies the training callable; the
+service generates a run name when omitted. Set `name=` only when you need an
+intentional run name or shared checkpoint storage across runs. Preserve names
+that existing checkpoint consumers depend on.
+
+Leave `compute_class`, `execution_target`, and `network_policy` unset unless you
+need specific placement, an execution backend, or network rules. Add resource
+sizing, GPUs, retries, environment variables, secrets, and metadata only when
+your workload requires them. Optional arguments are overrides, not a checklist.
+See [Model Training](https://docs.chalk.ai/docs/model_training) for the full
+training and checkpoint workflow.
+
 ## Model routers
 
 Define a stable model alias in Python and deploy it to your Chalk environment:
