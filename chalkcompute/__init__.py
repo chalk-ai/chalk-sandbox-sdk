@@ -113,6 +113,23 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "EvaluationScorerResult",
     ),
     "EvaluationSuite": ("chalkcompute._evaluation", "EvaluationSuite"),
+    # _experiment.py
+    "Experiment": ("chalkcompute._experiment", "Experiment"),
+    "ExperimentClient": ("chalkcompute._experiment", "ExperimentClient"),
+    "ExperimentError": ("chalkcompute._experiment", "ExperimentError"),
+    "ExperimentFailedError": ("chalkcompute._experiment", "ExperimentFailedError"),
+    "ExperimentNotFoundError": (
+        "chalkcompute._experiment",
+        "ExperimentNotFoundError",
+    ),
+    "ExperimentPhase": ("chalkcompute._experiment", "ExperimentPhase"),
+    "ExperimentResult": ("chalkcompute._experiment", "ExperimentResult"),
+    "ExperimentScorerResult": (
+        "chalkcompute._experiment",
+        "ExperimentScorerResult",
+    ),
+    "ExperimentStatus": ("chalkcompute._experiment", "ExperimentStatus"),
+    "ExperimentStep": ("chalkcompute._experiment", "ExperimentStep"),
     # _trace.py
     "SessionSummary": ("chalkcompute._trace", "SessionSummary"),
     "Span": ("chalkcompute._trace", "Span"),
