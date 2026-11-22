@@ -17,15 +17,134 @@ from ...container.v1 import service_pb
 from ...flags.v1 import flags_pb
 
 if TYPE_CHECKING:
-    from protobuf import DescFile
+    from protobuf import DescFile, Oneof
     from protobuf.wkt.google.protobuf.field_mask_pb import FieldMask
-    from protobuf.wkt.google.protobuf.struct_pb import Struct
+    from protobuf.wkt.google.protobuf.struct_pb import Struct, Value
     from protobuf.wkt.google.protobuf.timestamp_pb import Timestamp
 
-    from ...container.v1.service_pb import ComputeClass
+    from ...container.v1.service_pb import ComputeClass, ExecutionTarget, NetworkPolicy, ResourceLimits, SecretRef, VolumeMount
 
 
-_ExperimentConfigFields: TypeAlias = Literal["base_model", "iterations", "samples_per_row", "reward_weights", "learning_rate", "lora_rank", "trainer_image", "trainer_gpu", "policy_router_prefix", "policy_server_url", "adapter_volume", "model_registry_name", "trainer_compute_class", "trainer_allowed_hosts", "method", "teacher_model", "epochs", "kind", "recipe"]
+_ExperimentTrainingRunFields: TypeAlias = Literal["image", "resources", "config", "env", "entrypoint", "secret_refs", "volume_mounts", "compute_class", "network_policy", "execution_target", "max_retries", "dataset_name", "dataset_revision_id", "input_sql", "meta_data"]
+
+class ExperimentTrainingRun(Message[_ExperimentTrainingRunFields]):
+    """
+    The training run a CUSTOM experiment starts. Each field means what the field of the same name
+    means on chalk.server.v1.CreateTrainingRunRequest; the run's name and experiment_id are the
+    server's to set.
+
+    ```proto
+    message chalk.evaluation.v1.ExperimentTrainingRun
+    ```
+
+    Attributes:
+        image:
+            ```proto
+            string image = 1;
+            ```
+        resources:
+            ```proto
+            optional chalk.container.v1.ResourceLimits resources = 2;
+            ```
+        config:
+            The run's config. The server adds an "experiment" key, which this must not use, holding
+            experiment_id, evaluation_id, base_model, baseline_run_id when one is pinned, and where to
+            leave the model: adapter_out, adapter_dir, policy_server_url and policy_adapter_dir. The run
+            saves a LoRA adapter of base_model at <adapter_dir>/<adapter_out>, records it as a checkpoint,
+            which is what the model version is registered from, and loads it into policy_server_url under
+            the name adapter_out, which is how the final evaluation run reaches it.
+
+            ```proto
+            optional google.protobuf.Struct config = 3;
+            ```
+        env:
+            ```proto
+            map<string, string> env = 4;
+            ```
+        entrypoint:
+            ```proto
+            repeated string entrypoint = 5;
+            ```
+        secret_refs:
+            ```proto
+            repeated chalk.container.v1.SecretRef secret_refs = 6;
+            ```
+        volume_mounts:
+            The experiment's adapter_volume is mounted at adapter_dir in addition.
+
+            ```proto
+            repeated chalk.container.v1.VolumeMount volume_mounts = 7;
+            ```
+        compute_class:
+            ```proto
+            optional chalk.container.v1.ComputeClass compute_class = 8;
+            ```
+        network_policy:
+            When set, the policy server's host is allowed in addition.
+
+            ```proto
+            optional chalk.container.v1.NetworkPolicy network_policy = 9;
+            ```
+        execution_target:
+            ```proto
+            optional chalk.container.v1.ExecutionTarget execution_target = 10;
+            ```
+        max_retries:
+            ```proto
+            optional int32 max_retries = 11;
+            ```
+        data:
+            What the run trains on. Unset trains on the evaluation's dataset revision.
+
+            ```proto
+            oneof data
+            ```
+        meta_data:
+            The run's metadata. The server sets evaluation_id, replacing a value given here.
+
+            ```proto
+            map<string, google.protobuf.Value> meta_data = 15;
+            ```
+    """
+
+    __slots__ = ("image", "resources", "config", "env", "entrypoint", "secret_refs", "volume_mounts", "compute_class", "network_policy", "execution_target", "max_retries", "meta_data", "data")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            image: str = "",
+            resources: ResourceLimits | None = None,
+            config: Struct | None = None,
+            env: dict[str, str] | None = None,
+            entrypoint: list[str] | None = None,
+            secret_refs: list[SecretRef] | None = None,
+            volume_mounts: list[VolumeMount] | None = None,
+            compute_class: ComputeClass | None = None,
+            network_policy: NetworkPolicy | None = None,
+            execution_target: ExecutionTarget | None = None,
+            max_retries: int | None = None,
+            data: Oneof[Literal["dataset_name"], str] | Oneof[Literal["dataset_revision_id"], str] | Oneof[Literal["input_sql"], str] | None = None,
+            meta_data: dict[str, Value] | None = None,
+        ) -> None:
+            pass
+
+        image: str
+        resources: ResourceLimits | None
+        config: Struct | None
+        env: dict[str, str]
+        entrypoint: list[str]
+        secret_refs: list[SecretRef]
+        volume_mounts: list[VolumeMount]
+        compute_class: ComputeClass
+        network_policy: NetworkPolicy | None
+        execution_target: ExecutionTarget | None
+        max_retries: int
+        data: Oneof[Literal["dataset_name"], str] | Oneof[Literal["dataset_revision_id"], str] | Oneof[Literal["input_sql"], str] | None
+        meta_data: dict[str, Value]
+
+_ExperimentConfigFields: TypeAlias = Literal["base_model", "iterations", "samples_per_row", "reward_weights", "learning_rate", "lora_rank", "trainer_image", "trainer_gpu", "policy_router_prefix", "policy_server_url", "adapter_volume", "model_registry_name", "trainer_compute_class", "trainer_allowed_hosts", "method", "teacher_model", "epochs", "kind", "recipe", "training_run"]
 
 class ExperimentConfig(Message[_ExperimentConfigFields]):
     """
@@ -33,6 +152,11 @@ class ExperimentConfig(Message[_ExperimentConfigFields]):
     scorers as the reward. With GRPO, each iteration serves the current policy, runs the evaluation
     samples_per_row times with it, and takes one GRPO step on the scored trajectories.
     Unspecified kind is POST_TRAIN.
+
+    A CUSTOM experiment reads base_model, model_registry_name, policy_router_prefix,
+    policy_server_url, adapter_volume, reward_weights (optional, and only to report the final run's
+    weighted reward) and training_run. Every other field describes the server's own trainer and is
+    rejected.
 
     ```proto
     message chalk.evaluation.v1.ExperimentConfig
@@ -154,9 +278,15 @@ class ExperimentConfig(Message[_ExperimentConfigFields]):
             ```proto
             optional google.protobuf.Struct recipe = 19;
             ```
+        training_run:
+            CUSTOM: the training run the experiment starts.
+
+            ```proto
+            optional chalk.evaluation.v1.ExperimentTrainingRun training_run = 20;
+            ```
     """
 
-    __slots__ = ("base_model", "iterations", "samples_per_row", "reward_weights", "learning_rate", "lora_rank", "trainer_image", "trainer_gpu", "policy_router_prefix", "policy_server_url", "adapter_volume", "model_registry_name", "trainer_compute_class", "trainer_allowed_hosts", "method", "teacher_model", "epochs", "kind", "recipe")
+    __slots__ = ("base_model", "iterations", "samples_per_row", "reward_weights", "learning_rate", "lora_rank", "trainer_image", "trainer_gpu", "policy_router_prefix", "policy_server_url", "adapter_volume", "model_registry_name", "trainer_compute_class", "trainer_allowed_hosts", "method", "teacher_model", "epochs", "kind", "recipe", "training_run")
 
     if TYPE_CHECKING:
 
@@ -182,6 +312,7 @@ class ExperimentConfig(Message[_ExperimentConfigFields]):
             epochs: int | None = None,
             kind: ExperimentKind | None = None,
             recipe: Struct | None = None,
+            training_run: ExperimentTrainingRun | None = None,
         ) -> None:
             pass
 
@@ -204,6 +335,7 @@ class ExperimentConfig(Message[_ExperimentConfigFields]):
         epochs: int
         kind: ExperimentKind
         recipe: Struct | None
+        training_run: ExperimentTrainingRun | None
 
 _ExperimentIterationFields: TypeAlias = Literal["iteration", "phase", "policy_model", "evaluation_run_ids", "training_run_id", "mean_reward", "adapter_name", "model_version_id", "scorer_average_scores", "samples_generated", "samples_accepted"]
 
@@ -744,7 +876,11 @@ class RetryExperimentRequest(Message[_RetryExperimentRequestFields]):
             iterations (which may only grow), plus lora_rank and adapter_volume while no earlier iteration
             has trained an adapter. base_model, samples_per_row, policy_router_prefix and reward_weights are
             rejected: the rollouts were generated and rewarded under them, and every iteration's mean
-            reward is compared under one set of weights. Absent or empty keeps the config.
+            reward is compared under one set of weights. A CUSTOM experiment may replace training_run,
+            policy_server_url, adapter_volume and model_registry_name. Absent or empty keeps the config.
+
+            training_run and trainer_image choose the code the training run executes, and the run executes
+            as the principal who started the experiment, so only that principal may replace them.
 
             ```proto
             optional google.protobuf.FieldMask update_mask = 3;
@@ -811,14 +947,26 @@ class ExperimentKind(Enum):
             ```
         POST_TRAIN:
             Post-trains base_model on the evaluation's task with the evaluation's scorers as the reward.
+            The server runs the loop: each iteration it runs the evaluation, then starts a training run
+            of its own trainer on the scored runs.
 
             ```proto
             EXPERIMENT_KIND_POST_TRAIN = 1
+            ```
+        CUSTOM:
+            One training run, which training_run describes in full, trains the model and owns its loop:
+            how it samples, what it rewards and how many steps it takes are the run's own business. The
+            server pins the baseline, starts the run, registers what it leaves, and scores that with one
+            final evaluation run. It needs the environment's experiments_enabled flag.
+
+            ```proto
+            EXPERIMENT_KIND_CUSTOM = 2
             ```
     """
 
     UNSPECIFIED = 0
     POST_TRAIN = 1
+    CUSTOM = 2
 
 class ExperimentMethod(Enum):
     """
@@ -930,7 +1078,7 @@ class ExperimentPhase(Enum):
 
 
 _DESC = file_desc(
-    b'\n$chalk/evaluation/v1/experiment.proto\x12\x13chalk.evaluation.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xac\x08\n\x10ExperimentConfig\x12\x1d\n\nbase_model\x18\x01 \x01(\tR\tbaseModel\x12\x1e\n\niterations\x18\x02 \x01(\x05R\niterations\x12&\n\x0fsamples_per_row\x18\x03 \x01(\x05R\rsamplesPerRow\x12_\n\x0ereward_weights\x18\x04 \x03(\x0b28.chalk.evaluation.v1.ExperimentConfig.RewardWeightsEntryR\rrewardWeights\x12#\n\rlearning_rate\x18\x05 \x01(\x01R\x0clearningRate\x12\x1b\n\tlora_rank\x18\x06 \x01(\x05R\x08loraRank\x12#\n\rtrainer_image\x18\x07 \x01(\tR\x0ctrainerImage\x12\x1f\n\x0btrainer_gpu\x18\x08 \x01(\tR\ntrainerGpu\x120\n\x14policy_router_prefix\x18\t \x01(\tR\x12policyRouterPrefix\x12*\n\x11policy_server_url\x18\n \x01(\tR\x0fpolicyServerUrl\x12%\n\x0eadapter_volume\x18\x0b \x01(\tR\radapterVolume\x123\n\x13model_registry_name\x18\x0c \x01(\tH\x00R\x11modelRegistryName\x88\x01\x01\x12Y\n\x15trainer_compute_class\x18\r \x01(\x0e2 .chalk.container.v1.ComputeClassH\x01R\x13trainerComputeClass\x88\x01\x01\x122\n\x15trainer_allowed_hosts\x18\x0e \x03(\tR\x13trainerAllowedHosts\x12=\n\x06method\x18\x0f \x01(\x0e2%.chalk.evaluation.v1.ExperimentMethodR\x06method\x12(\n\rteacher_model\x18\x10 \x01(\tH\x02R\x0cteacherModel\x88\x01\x01\x12\x1b\n\x06epochs\x18\x11 \x01(\x05H\x03R\x06epochs\x88\x01\x01\x127\n\x04kind\x18\x12 \x01(\x0e2#.chalk.evaluation.v1.ExperimentKindR\x04kind\x12/\n\x06recipe\x18\x13 \x01(\x0b2\x17.google.protobuf.StructR\x06recipe\x1a@\n\x12RewardWeightsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\x16\n\x14_model_registry_nameB\x18\n\x16_trainer_compute_classB\x10\n\x0e_teacher_modelB\t\n\x07_epochs"\x80\x06\n\x13ExperimentIteration\x12\x1c\n\titeration\x18\x01 \x01(\x05R\titeration\x12:\n\x05phase\x18\x02 \x01(\x0e2$.chalk.evaluation.v1.ExperimentPhaseR\x05phase\x12!\n\x0cpolicy_model\x18\x03 \x01(\tR\x0bpolicyModel\x12,\n\x12evaluation_run_ids\x18\x04 \x03(\tR\x10evaluationRunIds\x12+\n\x0ftraining_run_id\x18\x05 \x01(\tH\x00R\rtrainingRunId\x88\x01\x01\x12$\n\x0bmean_reward\x18\x06 \x01(\x01H\x01R\nmeanReward\x88\x01\x01\x12&\n\x0cadapter_name\x18\x07 \x01(\tH\x02R\x0badapterName\x88\x01\x01\x12-\n\x10model_version_id\x18\x08 \x01(\tH\x03R\x0emodelVersionId\x88\x01\x01\x12u\n\x15scorer_average_scores\x18\t \x03(\x0b2A.chalk.evaluation.v1.ExperimentIteration.ScorerAverageScoresEntryR\x13scorerAverageScores\x120\n\x11samples_generated\x18\n \x01(\x03H\x04R\x10samplesGenerated\x88\x01\x01\x12.\n\x10samples_accepted\x18\x0b \x01(\x03H\x05R\x0fsamplesAccepted\x88\x01\x01\x1aF\n\x18ScorerAverageScoresEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\x12\n\x10_training_run_idB\x0e\n\x0c_mean_rewardB\x0f\n\r_adapter_nameB\x13\n\x11_model_version_idB\x14\n\x12_samples_generatedB\x13\n\x11_samples_accepted"\xde\t\n\nExperiment\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12#\n\revaluation_id\x18\x02 \x01(\tR\x0cevaluationId\x12=\n\x06status\x18\x03 \x01(\x0e2%.chalk.evaluation.v1.ExperimentStatusR\x06status\x12=\n\x06config\x18\x04 \x01(\x0b2%.chalk.evaluation.v1.ExperimentConfigR\x06config\x12H\n\niterations\x18\x05 \x03(\x0b2(.chalk.evaluation.v1.ExperimentIterationR\niterations\x12"\n\ncreated_by\x18\x06 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstarted_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0ccompleted_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bcompletedAt\x88\x01\x01\x12(\n\rerror_message\x18\n \x01(\tH\x03R\x0cerrorMessage\x88\x01\x01\x12\x1f\n\x0bretry_count\x18\x0b \x01(\x05R\nretryCount\x12+\n\x0fbaseline_run_id\x18\x0c \x01(\tH\x04R\rbaselineRunId\x88\x01\x01\x12+\n\x0ftraining_run_id\x18\r \x01(\tH\x05R\rtrainingRunId\x88\x01\x01\x12-\n\x10model_version_id\x18\x0e \x01(\tH\x06R\x0emodelVersionId\x88\x01\x01\x12%\n\x0cfinal_run_id\x18\x0f \x01(\tH\x07R\nfinalRunId\x88\x01\x01\x12o\n\x16baseline_scorer_scores\x18\x10 \x03(\x0b29.chalk.evaluation.v1.Experiment.BaselineScorerScoresEntryR\x14baselineScorerScores\x12f\n\x13final_scorer_scores\x18\x11 \x03(\x0b26.chalk.evaluation.v1.Experiment.FinalScorerScoresEntryR\x11finalScorerScores\x1aG\n\x19BaselineScorerScoresEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1aD\n\x16FinalScorerScoresEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\r\n\x0b_created_byB\r\n\x0b_started_atB\x0f\n\r_completed_atB\x10\n\x0e_error_messageB\x12\n\x10_baseline_run_idB\x12\n\x10_training_run_idB\x13\n\x11_model_version_idB\x0f\n\r_final_run_id"|\n\x16StartExperimentRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x12=\n\x06config\x18\x02 \x01(\x0b2%.chalk.evaluation.v1.ExperimentConfigR\x06config"Z\n\x17StartExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment";\n\x14GetExperimentRequest\x12#\n\rexperiment_id\x18\x01 \x01(\tR\x0cexperimentId"X\n\x15GetExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment"T\n\x16ListExperimentsFilters\x12(\n\revaluation_id\x18\x01 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01B\x10\n\x0e_evaluation_id"\x88\x01\n\x16ListExperimentsRequest\x12\'\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationIdB\x02\x18\x01\x12E\n\x07filters\x18\x02 \x01(\x0b2+.chalk.evaluation.v1.ListExperimentsFiltersR\x07filters"\\\n\x17ListExperimentsResponse\x12A\n\x0bexperiments\x18\x01 \x03(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\x0bexperiments">\n\x17CancelExperimentRequest\x12#\n\rexperiment_id\x18\x01 \x01(\tR\x0cexperimentId"[\n\x18CancelExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment"\xb9\x01\n\x16RetryExperimentRequest\x12#\n\rexperiment_id\x18\x01 \x01(\tR\x0cexperimentId\x12=\n\x06config\x18\x02 \x01(\x0b2%.chalk.evaluation.v1.ExperimentConfigR\x06config\x12;\n\x0bupdate_mask\x18\x03 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"Z\n\x17RetryExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment*Q\n\x0eExperimentKind\x12\x1f\n\x1bEXPERIMENT_KIND_UNSPECIFIED\x10\x00\x12\x1e\n\x1aEXPERIMENT_KIND_POST_TRAIN\x10\x01*~\n\x10ExperimentMethod\x12!\n\x1dEXPERIMENT_METHOD_UNSPECIFIED\x10\x00\x12\x1a\n\x16EXPERIMENT_METHOD_GRPO\x10\x01\x12+\n\'EXPERIMENT_METHOD_REJECTION_SAMPLED_SFT\x10\x02*\xd2\x01\n\x10ExperimentStatus\x12!\n\x1dEXPERIMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n\x19EXPERIMENT_STATUS_PENDING\x10\x01\x12\x1d\n\x19EXPERIMENT_STATUS_RUNNING\x10\x02\x12\x1f\n\x1bEXPERIMENT_STATUS_SUCCEEDED\x10\x03\x12\x1c\n\x18EXPERIMENT_STATUS_FAILED\x10\x04\x12\x1e\n\x1aEXPERIMENT_STATUS_CANCELED\x10\x05*\x8b\x01\n\x0fExperimentPhase\x12 \n\x1cEXPERIMENT_PHASE_UNSPECIFIED\x10\x00\x12\x1c\n\x18EXPERIMENT_PHASE_ROLLOUT\x10\x01\x12\x1d\n\x19EXPERIMENT_PHASE_TRAINING\x10\x02\x12\x19\n\x15EXPERIMENT_PHASE_DONE\x10\x032\x91\n\n\x11ExperimentService\x12\xfc\x01\n\x0fStartExperiment\x12+.chalk.evaluation.v1.StartExperimentRequest\x1a,.chalk.evaluation.v1.StartExperimentResponse"\x8d\x01\x80}E\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xf9\x01\n\rGetExperiment\x12).chalk.evaluation.v1.GetExperimentRequest\x1a*.chalk.evaluation.v1.GetExperimentResponse"\x90\x01\x90\x02\x01\x80}D\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xff\x01\n\x0fListExperiments\x12+.chalk.evaluation.v1.ListExperimentsRequest\x1a,.chalk.evaluation.v1.ListExperimentsResponse"\x90\x01\x90\x02\x01\x80}D\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xfc\x01\n\x0fRetryExperiment\x12+.chalk.evaluation.v1.RetryExperimentRequest\x1a,.chalk.evaluation.v1.RetryExperimentResponse"\x8d\x01\x80}E\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xff\x01\n\x10CancelExperiment\x12,.chalk.evaluation.v1.CancelExperimentRequest\x1a-.chalk.evaluation.v1.CancelExperimentResponse"\x8d\x01\x80}E\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.B\xb4\x01\n\x17com.chalk.evaluation.v1B\x0fExperimentProtoP\x01Z\x1aevaluation/v1;evaluationv1\xa2\x02\x03CEX\xaa\x02\x13Chalk.Evaluation.V1\xca\x02\x13Chalk\\Evaluation\\V1\xe2\x02\x1fChalk\\Evaluation\\V1\\GPBMetadata\xea\x02\x15Chalk::Evaluation::V1b\x06proto3',
+    b'\n$chalk/evaluation/v1/experiment.proto\x12\x13chalk.evaluation.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xb5\x08\n\x15ExperimentTrainingRun\x12\x14\n\x05image\x18\x01 \x01(\tR\x05image\x12@\n\tresources\x18\x02 \x01(\x0b2".chalk.container.v1.ResourceLimitsR\tresources\x12/\n\x06config\x18\x03 \x01(\x0b2\x17.google.protobuf.StructR\x06config\x12E\n\x03env\x18\x04 \x03(\x0b23.chalk.evaluation.v1.ExperimentTrainingRun.EnvEntryR\x03env\x12\x1e\n\nentrypoint\x18\x05 \x03(\tR\nentrypoint\x12>\n\x0bsecret_refs\x18\x06 \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12D\n\rvolume_mounts\x18\x07 \x03(\x0b2\x1f.chalk.container.v1.VolumeMountR\x0cvolumeMounts\x12J\n\rcompute_class\x18\x08 \x01(\x0e2 .chalk.container.v1.ComputeClassH\x01R\x0ccomputeClass\x88\x01\x01\x12M\n\x0enetwork_policy\x18\t \x01(\x0b2!.chalk.container.v1.NetworkPolicyH\x02R\rnetworkPolicy\x88\x01\x01\x12N\n\x10execution_target\x18\n \x01(\x0b2#.chalk.container.v1.ExecutionTargetR\x0fexecutionTarget\x12$\n\x0bmax_retries\x18\x0b \x01(\x05H\x03R\nmaxRetries\x88\x01\x01\x12#\n\x0cdataset_name\x18\x0c \x01(\tH\x00R\x0bdatasetName\x120\n\x13dataset_revision_id\x18\r \x01(\tH\x00R\x11datasetRevisionId\x12\x1d\n\tinput_sql\x18\x0e \x01(\tH\x00R\x08inputSql\x12U\n\tmeta_data\x18\x0f \x03(\x0b28.chalk.evaluation.v1.ExperimentTrainingRun.MetaDataEntryR\x08metaData\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x06\n\x04dataB\x10\n\x0e_compute_classB\x11\n\x0f_network_policyB\x0e\n\x0c_max_retries"\xfb\x08\n\x10ExperimentConfig\x12\x1d\n\nbase_model\x18\x01 \x01(\tR\tbaseModel\x12\x1e\n\niterations\x18\x02 \x01(\x05R\niterations\x12&\n\x0fsamples_per_row\x18\x03 \x01(\x05R\rsamplesPerRow\x12_\n\x0ereward_weights\x18\x04 \x03(\x0b28.chalk.evaluation.v1.ExperimentConfig.RewardWeightsEntryR\rrewardWeights\x12#\n\rlearning_rate\x18\x05 \x01(\x01R\x0clearningRate\x12\x1b\n\tlora_rank\x18\x06 \x01(\x05R\x08loraRank\x12#\n\rtrainer_image\x18\x07 \x01(\tR\x0ctrainerImage\x12\x1f\n\x0btrainer_gpu\x18\x08 \x01(\tR\ntrainerGpu\x120\n\x14policy_router_prefix\x18\t \x01(\tR\x12policyRouterPrefix\x12*\n\x11policy_server_url\x18\n \x01(\tR\x0fpolicyServerUrl\x12%\n\x0eadapter_volume\x18\x0b \x01(\tR\radapterVolume\x123\n\x13model_registry_name\x18\x0c \x01(\tH\x00R\x11modelRegistryName\x88\x01\x01\x12Y\n\x15trainer_compute_class\x18\r \x01(\x0e2 .chalk.container.v1.ComputeClassH\x01R\x13trainerComputeClass\x88\x01\x01\x122\n\x15trainer_allowed_hosts\x18\x0e \x03(\tR\x13trainerAllowedHosts\x12=\n\x06method\x18\x0f \x01(\x0e2%.chalk.evaluation.v1.ExperimentMethodR\x06method\x12(\n\rteacher_model\x18\x10 \x01(\tH\x02R\x0cteacherModel\x88\x01\x01\x12\x1b\n\x06epochs\x18\x11 \x01(\x05H\x03R\x06epochs\x88\x01\x01\x127\n\x04kind\x18\x12 \x01(\x0e2#.chalk.evaluation.v1.ExperimentKindR\x04kind\x12/\n\x06recipe\x18\x13 \x01(\x0b2\x17.google.protobuf.StructR\x06recipe\x12M\n\x0ctraining_run\x18\x14 \x01(\x0b2*.chalk.evaluation.v1.ExperimentTrainingRunR\x0btrainingRun\x1a@\n\x12RewardWeightsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\x16\n\x14_model_registry_nameB\x18\n\x16_trainer_compute_classB\x10\n\x0e_teacher_modelB\t\n\x07_epochs"\x80\x06\n\x13ExperimentIteration\x12\x1c\n\titeration\x18\x01 \x01(\x05R\titeration\x12:\n\x05phase\x18\x02 \x01(\x0e2$.chalk.evaluation.v1.ExperimentPhaseR\x05phase\x12!\n\x0cpolicy_model\x18\x03 \x01(\tR\x0bpolicyModel\x12,\n\x12evaluation_run_ids\x18\x04 \x03(\tR\x10evaluationRunIds\x12+\n\x0ftraining_run_id\x18\x05 \x01(\tH\x00R\rtrainingRunId\x88\x01\x01\x12$\n\x0bmean_reward\x18\x06 \x01(\x01H\x01R\nmeanReward\x88\x01\x01\x12&\n\x0cadapter_name\x18\x07 \x01(\tH\x02R\x0badapterName\x88\x01\x01\x12-\n\x10model_version_id\x18\x08 \x01(\tH\x03R\x0emodelVersionId\x88\x01\x01\x12u\n\x15scorer_average_scores\x18\t \x03(\x0b2A.chalk.evaluation.v1.ExperimentIteration.ScorerAverageScoresEntryR\x13scorerAverageScores\x120\n\x11samples_generated\x18\n \x01(\x03H\x04R\x10samplesGenerated\x88\x01\x01\x12.\n\x10samples_accepted\x18\x0b \x01(\x03H\x05R\x0fsamplesAccepted\x88\x01\x01\x1aF\n\x18ScorerAverageScoresEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\x12\n\x10_training_run_idB\x0e\n\x0c_mean_rewardB\x0f\n\r_adapter_nameB\x13\n\x11_model_version_idB\x14\n\x12_samples_generatedB\x13\n\x11_samples_accepted"\xde\t\n\nExperiment\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12#\n\revaluation_id\x18\x02 \x01(\tR\x0cevaluationId\x12=\n\x06status\x18\x03 \x01(\x0e2%.chalk.evaluation.v1.ExperimentStatusR\x06status\x12=\n\x06config\x18\x04 \x01(\x0b2%.chalk.evaluation.v1.ExperimentConfigR\x06config\x12H\n\niterations\x18\x05 \x03(\x0b2(.chalk.evaluation.v1.ExperimentIterationR\niterations\x12"\n\ncreated_by\x18\x06 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstarted_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0ccompleted_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bcompletedAt\x88\x01\x01\x12(\n\rerror_message\x18\n \x01(\tH\x03R\x0cerrorMessage\x88\x01\x01\x12\x1f\n\x0bretry_count\x18\x0b \x01(\x05R\nretryCount\x12+\n\x0fbaseline_run_id\x18\x0c \x01(\tH\x04R\rbaselineRunId\x88\x01\x01\x12+\n\x0ftraining_run_id\x18\r \x01(\tH\x05R\rtrainingRunId\x88\x01\x01\x12-\n\x10model_version_id\x18\x0e \x01(\tH\x06R\x0emodelVersionId\x88\x01\x01\x12%\n\x0cfinal_run_id\x18\x0f \x01(\tH\x07R\nfinalRunId\x88\x01\x01\x12o\n\x16baseline_scorer_scores\x18\x10 \x03(\x0b29.chalk.evaluation.v1.Experiment.BaselineScorerScoresEntryR\x14baselineScorerScores\x12f\n\x13final_scorer_scores\x18\x11 \x03(\x0b26.chalk.evaluation.v1.Experiment.FinalScorerScoresEntryR\x11finalScorerScores\x1aG\n\x19BaselineScorerScoresEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1aD\n\x16FinalScorerScoresEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\r\n\x0b_created_byB\r\n\x0b_started_atB\x0f\n\r_completed_atB\x10\n\x0e_error_messageB\x12\n\x10_baseline_run_idB\x12\n\x10_training_run_idB\x13\n\x11_model_version_idB\x0f\n\r_final_run_id"|\n\x16StartExperimentRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x12=\n\x06config\x18\x02 \x01(\x0b2%.chalk.evaluation.v1.ExperimentConfigR\x06config"Z\n\x17StartExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment";\n\x14GetExperimentRequest\x12#\n\rexperiment_id\x18\x01 \x01(\tR\x0cexperimentId"X\n\x15GetExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment"T\n\x16ListExperimentsFilters\x12(\n\revaluation_id\x18\x01 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01B\x10\n\x0e_evaluation_id"\x88\x01\n\x16ListExperimentsRequest\x12\'\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationIdB\x02\x18\x01\x12E\n\x07filters\x18\x02 \x01(\x0b2+.chalk.evaluation.v1.ListExperimentsFiltersR\x07filters"\\\n\x17ListExperimentsResponse\x12A\n\x0bexperiments\x18\x01 \x03(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\x0bexperiments">\n\x17CancelExperimentRequest\x12#\n\rexperiment_id\x18\x01 \x01(\tR\x0cexperimentId"[\n\x18CancelExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment"\xb9\x01\n\x16RetryExperimentRequest\x12#\n\rexperiment_id\x18\x01 \x01(\tR\x0cexperimentId\x12=\n\x06config\x18\x02 \x01(\x0b2%.chalk.evaluation.v1.ExperimentConfigR\x06config\x12;\n\x0bupdate_mask\x18\x03 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"Z\n\x17RetryExperimentResponse\x12?\n\nexperiment\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.ExperimentR\nexperiment*m\n\x0eExperimentKind\x12\x1f\n\x1bEXPERIMENT_KIND_UNSPECIFIED\x10\x00\x12\x1e\n\x1aEXPERIMENT_KIND_POST_TRAIN\x10\x01\x12\x1a\n\x16EXPERIMENT_KIND_CUSTOM\x10\x02*~\n\x10ExperimentMethod\x12!\n\x1dEXPERIMENT_METHOD_UNSPECIFIED\x10\x00\x12\x1a\n\x16EXPERIMENT_METHOD_GRPO\x10\x01\x12+\n\'EXPERIMENT_METHOD_REJECTION_SAMPLED_SFT\x10\x02*\xd2\x01\n\x10ExperimentStatus\x12!\n\x1dEXPERIMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n\x19EXPERIMENT_STATUS_PENDING\x10\x01\x12\x1d\n\x19EXPERIMENT_STATUS_RUNNING\x10\x02\x12\x1f\n\x1bEXPERIMENT_STATUS_SUCCEEDED\x10\x03\x12\x1c\n\x18EXPERIMENT_STATUS_FAILED\x10\x04\x12\x1e\n\x1aEXPERIMENT_STATUS_CANCELED\x10\x05*\x8b\x01\n\x0fExperimentPhase\x12 \n\x1cEXPERIMENT_PHASE_UNSPECIFIED\x10\x00\x12\x1c\n\x18EXPERIMENT_PHASE_ROLLOUT\x10\x01\x12\x1d\n\x19EXPERIMENT_PHASE_TRAINING\x10\x02\x12\x19\n\x15EXPERIMENT_PHASE_DONE\x10\x032\x91\n\n\x11ExperimentService\x12\xfc\x01\n\x0fStartExperiment\x12+.chalk.evaluation.v1.StartExperimentRequest\x1a,.chalk.evaluation.v1.StartExperimentResponse"\x8d\x01\x80}E\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xf9\x01\n\rGetExperiment\x12).chalk.evaluation.v1.GetExperimentRequest\x1a*.chalk.evaluation.v1.GetExperimentResponse"\x90\x01\x90\x02\x01\x80}D\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xff\x01\n\x0fListExperiments\x12+.chalk.evaluation.v1.ListExperimentsRequest\x1a,.chalk.evaluation.v1.ListExperimentsResponse"\x90\x01\x90\x02\x01\x80}D\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xfc\x01\n\x0fRetryExperiment\x12+.chalk.evaluation.v1.RetryExperimentRequest\x1a,.chalk.evaluation.v1.RetryExperimentResponse"\x8d\x01\x80}E\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.\x12\xff\x01\n\x10CancelExperiment\x12,.chalk.evaluation.v1.CancelExperimentRequest\x1a-.chalk.evaluation.v1.CancelExperimentResponse"\x8d\x01\x80}E\x92\xd3\x0e\x85\x01\n evaluation_post_training_enabled\x12aEnables experiments: training a model on an evaluation\'s task and judging it with the evaluation.B\xb4\x01\n\x17com.chalk.evaluation.v1B\x0fExperimentProtoP\x01Z\x1aevaluation/v1;evaluationv1\xa2\x02\x03CEX\xaa\x02\x13Chalk.Evaluation.V1\xca\x02\x13Chalk\\Evaluation\\V1\xe2\x02\x1fChalk\\Evaluation\\V1\\GPBMetadata\xea\x02\x15Chalk::Evaluation::V1b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),
@@ -940,6 +1088,7 @@ _DESC = file_desc(
         timestamp_pb.desc(),
     ],
     {
+        "ExperimentTrainingRun": ExperimentTrainingRun,
         "ExperimentConfig": ExperimentConfig,
         "ExperimentIteration": ExperimentIteration,
         "Experiment": Experiment,

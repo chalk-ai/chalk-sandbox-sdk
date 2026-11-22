@@ -23,6 +23,7 @@ from typing import Any
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
+from protobuf import Oneof
 from protobuf.wkt import field_mask_pb, struct_pb
 
 from chalkcompute._connect import ConnectClient
@@ -38,8 +39,9 @@ from chalkcompute._gen.chalk.evaluation.v1 import (
     experiment_connect,
     experiment_pb,
 )
+from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
 from chalkcompute._tracing import _instrumented
-from chalkcompute._training import TrainingRunHandle
+from chalkcompute._training import TrainingFunction, TrainingRunHandle
 
 
 class ExperimentError(Exception):
@@ -179,9 +181,11 @@ class Experiment:
         evaluation: Evaluation | str,
         *,
         base_model: str,
-        gpu: str,
-        steps: int,
-        samples_per_row: int,
+        train: TrainingFunction | None = None,
+        config: Any = None,
+        gpu: str | None = None,
+        steps: int | None = None,
+        samples_per_row: int | None = None,
         reward_weights: Mapping[str, float] | None = None,
         learning_rate: float | None = None,
         lora_rank: int | None = None,
@@ -189,13 +193,22 @@ class Experiment:
         recipe: Mapping[str, Any] | None = None,
         trainer_image: str | None = None,
         compute_class: ComputeClass | None = None,
+        build_timeout: float | None = None,
         chalk_client: Any | None = None,
     ) -> Experiment:
         """Start an experiment on an existing evaluation.
 
+        An experiment trains in one of two ways. With ``train=``, it runs your
+        ``@chalkcompute.training`` function as its one training run, between a
+        pinned baseline run and a final run of the model the function leaves.
+        Without it, the server runs its own trainer in a loop of rollouts and
+        training steps, which ``gpu``, ``steps`` and ``samples_per_row``
+        describe.
+
         The environment needs the ``experiments_enabled`` feature flag. Without
-        it the server runs a post-training, which trains and registers a model
-        but has no baseline or final run; :meth:`wait` raises for one.
+        it ``train=`` is refused, and the server's own loop runs as a
+        post-training, which trains and registers a model but has no baseline
+        or final run; :meth:`wait` raises for one.
 
         Parameters
         ----------
@@ -204,31 +217,51 @@ class Experiment:
             task and scorers stay fixed for the experiment's life.
         base_model
             Hugging Face id of the model training starts from.
+        train
+            A ``@chalkcompute.training`` function to run as the experiment's
+            training run, with the image, resources, data and environment it
+            declares. Its config gains an ``"experiment"`` entry naming the
+            experiment, the evaluation, the base model, the baseline run and
+            where to leave the trained model: the function saves a LoRA adapter
+            of ``base_model`` at ``adapter_dir/adapter_out``, records it as a
+            checkpoint, and loads it into ``policy_server_url`` as
+            ``adapter_out``. The settings below that describe the server's own
+            trainer are rejected alongside it.
+        config
+            With ``train=``, the dataclass or dict passed to the function.
         gpu
-            GPU request for training, e.g. ``"nvidia-l40s:1"``.
+            GPU request for the server's trainer, e.g. ``"nvidia-l40s:1"``.
         steps
-            Rollout-and-train steps to take.
+            Rollout-and-train steps the server's loop takes.
         samples_per_row
             Evaluation runs per step; each dataset row gets this many samples.
         reward_weights
             Scorer id to reward weight; a scorer to minimize takes a negative
-            weight. Defaults to every scorer of the evaluation at ``1.0``,
-            which reads the evaluation when only its id is given.
+            weight. For the server's loop this is the training reward, and
+            defaults to every scorer of the evaluation at ``1.0``, which reads
+            the evaluation when only its id is given. With ``train=`` it only
+            reports the final run's weighted reward, and defaults to none.
         learning_rate, lora_rank
-            Left unset, the server chooses.
+            For the server's trainer. Left unset, the server chooses.
         register_as
             Registry model to register the trained model under. Defaults to a
             name derived from the evaluation's.
         recipe
-            Settings passed unchanged to the trainer image, which validates them.
+            Settings passed unchanged to the server's trainer image, which
+            validates them.
         trainer_image
-            Image the training runs execute. Defaults to the server's trainer.
+            Image the server's training runs execute. Defaults to its trainer.
         compute_class
-            Where training runs execute. Defaults to Kubernetes.
+            Where the server's training runs execute. Defaults to Kubernetes.
+        build_timeout
+            With ``train=``, the longest to wait for the function's image to
+            build before giving up without starting the experiment.
         """
         return _client_for(evaluation, chalk_client).start(
             evaluation,
             base_model=base_model,
+            train=train,
+            config=config,
             gpu=gpu,
             steps=steps,
             samples_per_row=samples_per_row,
@@ -239,6 +272,7 @@ class Experiment:
             recipe=recipe,
             trainer_image=trainer_image,
             compute_class=compute_class,
+            build_timeout=build_timeout,
         )
 
     @classmethod
@@ -359,6 +393,8 @@ class Experiment:
     def retry(
         self,
         *,
+        train: TrainingFunction | None = None,
+        config: Any = None,
         gpu: str | None = None,
         steps: int | None = None,
         learning_rate: float | None = None,
@@ -366,15 +402,21 @@ class Experiment:
         recipe: Mapping[str, Any] | None = None,
         trainer_image: str | None = None,
         compute_class: ComputeClass | None = None,
+        build_timeout: float | None = None,
     ) -> Experiment:
         """Resume a failed or canceled experiment at its latest training step.
 
-        The step's completed rollout is reused. An argument replaces that
-        setting before retrying; ``steps`` may only grow. Settings the rollouts
-        were generated under, such as ``base_model``, cannot change.
+        An experiment started with ``train=`` runs its training run again;
+        passing ``train=`` here replaces that run, which only whoever started
+        the experiment may do. Otherwise the step's completed rollout is
+        reused, and an argument replaces that setting before retrying;
+        ``steps`` may only grow. Settings the rollouts were generated under,
+        such as ``base_model``, cannot change.
         """
         return self._require_client().retry(
             self.id,
+            train=train,
+            config=config,
             gpu=gpu,
             steps=steps,
             learning_rate=learning_rate,
@@ -382,6 +424,7 @@ class Experiment:
             recipe=recipe,
             trainer_image=trainer_image,
             compute_class=compute_class,
+            build_timeout=build_timeout,
         )
 
     def _require_client(self) -> ExperimentClient:
@@ -425,9 +468,11 @@ class ExperimentClient:
         evaluation: Evaluation | str,
         *,
         base_model: str,
-        gpu: str,
-        steps: int,
-        samples_per_row: int,
+        train: TrainingFunction | None = None,
+        config: Any = None,
+        gpu: str | None = None,
+        steps: int | None = None,
+        samples_per_row: int | None = None,
         reward_weights: Mapping[str, float] | None = None,
         learning_rate: float | None = None,
         lora_rank: int | None = None,
@@ -435,6 +480,7 @@ class ExperimentClient:
         recipe: Mapping[str, Any] | None = None,
         trainer_image: str | None = None,
         compute_class: ComputeClass | None = None,
+        build_timeout: float | None = None,
     ) -> Experiment:
         """Start an experiment on an existing evaluation.
 
@@ -442,32 +488,67 @@ class ExperimentClient:
         """
         evaluation_id = _evaluation_id(evaluation)
         base_model = _required(base_model, name="base_model")
-        gpu = _required(gpu, name="gpu")
-        if reward_weights is None:
-            definition = (
-                evaluation
-                if isinstance(evaluation, Evaluation)
-                else self.evaluations.get(evaluation_id)
+        server_trainer = {
+            "gpu": gpu,
+            "steps": steps,
+            "samples_per_row": samples_per_row,
+            "learning_rate": learning_rate,
+            "lora_rank": lora_rank,
+            "recipe": recipe,
+            "trainer_image": trainer_image,
+            "compute_class": compute_class,
+        }
+        if train is not None:
+            _reject_server_trainer_settings(server_trainer)
+            experiment_config = experiment_pb.ExperimentConfig(
+                kind=experiment_pb.ExperimentKind.CUSTOM,
+                base_model=base_model,
+                # The function computes its own reward, so there is none to default.
+                reward_weights=(
+                    None if reward_weights is None else _reward_weights(reward_weights)
+                ),
+                model_registry_name=_optional(register_as, name="register_as"),
+                training_run=self._training_run(train, config, build_timeout),
             )
-            reward_weights = {scorer.id: 1.0 for scorer in definition.scorers}
-        config = experiment_pb.ExperimentConfig(
-            base_model=base_model,
-            iterations=steps,
-            samples_per_row=samples_per_row,
-            reward_weights=_reward_weights(reward_weights),
-            learning_rate=0.0 if learning_rate is None else learning_rate,
-            lora_rank=0 if lora_rank is None else lora_rank,
-            trainer_image="" if trainer_image is None else trainer_image.strip(),
-            trainer_gpu=gpu,
-            model_registry_name=_optional(register_as, name="register_as"),
-            trainer_compute_class=_compute_class_to_proto(compute_class),
-            recipe=_recipe_struct(recipe),
-        )
+        else:
+            if config is not None or build_timeout is not None:
+                raise ValueError("config and build_timeout apply only with train=")
+            if gpu is None or steps is None or samples_per_row is None:
+                missing = [
+                    name
+                    for name in ("gpu", "steps", "samples_per_row")
+                    if server_trainer[name] is None
+                ]
+                raise TypeError(
+                    f"Experiment.start() needs {', '.join(missing)}, or train= to "
+                    "run a training function of your own"
+                )
+            gpu = _required(gpu, name="gpu")
+            if reward_weights is None:
+                definition = (
+                    evaluation
+                    if isinstance(evaluation, Evaluation)
+                    else self.evaluations.get(evaluation_id)
+                )
+                reward_weights = {scorer.id: 1.0 for scorer in definition.scorers}
+            experiment_config = experiment_pb.ExperimentConfig(
+                base_model=base_model,
+                iterations=steps,
+                samples_per_row=samples_per_row,
+                reward_weights=_reward_weights(reward_weights),
+                learning_rate=0.0 if learning_rate is None else learning_rate,
+                lora_rank=0 if lora_rank is None else lora_rank,
+                trainer_image="" if trainer_image is None else trainer_image.strip(),
+                trainer_gpu=gpu,
+                model_registry_name=_optional(register_as, name="register_as"),
+                trainer_compute_class=_compute_class_to_proto(compute_class),
+                recipe=_recipe_struct(recipe),
+            )
         stub = self._connect.stub(experiment_connect.ExperimentServiceClientSync)
         response = self._call(
             stub.start_experiment,
             experiment_pb.StartExperimentRequest(
-                evaluation_id=evaluation_id, config=config
+                evaluation_id=evaluation_id, config=experiment_config
             ),
             not_found_subject=f"Evaluation not found: {evaluation_id}",
         )
@@ -527,6 +608,8 @@ class ExperimentClient:
         self,
         experiment_id: str,
         *,
+        train: TrainingFunction | None = None,
+        config: Any = None,
         gpu: str | None = None,
         steps: int | None = None,
         learning_rate: float | None = None,
@@ -534,6 +617,7 @@ class ExperimentClient:
         recipe: Mapping[str, Any] | None = None,
         trainer_image: str | None = None,
         compute_class: ComputeClass | None = None,
+        build_timeout: float | None = None,
     ) -> Experiment:
         """Resume a failed or canceled experiment at its latest training step.
 
@@ -542,6 +626,20 @@ class ExperimentClient:
         experiment_id = _required(experiment_id, name="experiment_id")
         # Keyed by ExperimentConfig field name: the keys are the update mask.
         replaced: dict[str, Any] = {}
+        if train is not None:
+            _reject_server_trainer_settings(
+                {
+                    "gpu": gpu,
+                    "steps": steps,
+                    "learning_rate": learning_rate,
+                    "recipe": recipe,
+                    "trainer_image": trainer_image,
+                    "compute_class": compute_class,
+                }
+            )
+            replaced["training_run"] = self._training_run(train, config, build_timeout)
+        elif config is not None or build_timeout is not None:
+            raise ValueError("config and build_timeout apply only with train=")
         if gpu is not None:
             replaced["trainer_gpu"] = _required(gpu, name="gpu")
         if steps is not None:
@@ -571,6 +669,27 @@ class ExperimentClient:
         if response.experiment is None:
             raise ExperimentError("RetryExperiment returned no experiment")
         return _experiment_from_proto(response.experiment, self)
+
+    def _training_run(
+        self, train: TrainingFunction, config: Any, build_timeout: float | None
+    ) -> experiment_pb.ExperimentTrainingRun:
+        """Package a training function as the run an experiment starts.
+
+        This builds the function's image and uploads its source, exactly as
+        running it on its own does, but leaves starting the run to the server.
+        """
+        if not isinstance(train, TrainingFunction):
+            raise TypeError(
+                "train must be a function decorated with @chalkcompute.training"
+            )
+        return _experiment_training_run(
+            train._prepare_request(
+                config=config,
+                client=self._connect,
+                experiment_id=None,
+                build_timeout=build_timeout,
+            )
+        )
 
     def _call(
         self,
@@ -607,6 +726,61 @@ def _client_for(
     ):
         return ExperimentClient(connect_client=evaluation._client._connect)
     return ExperimentClient(chalk_client=chalk_client)
+
+
+def _reject_server_trainer_settings(settings: Mapping[str, Any]) -> None:
+    """Refuse settings of the server's own trainer alongside ``train=``.
+
+    The server rejects them too; refusing here says so before the function's
+    image is built.
+    """
+    given = [name for name, value in settings.items() if value is not None]
+    if given:
+        raise ValueError(
+            f"{', '.join(given)} configure the server's own trainer and are not "
+            "read with train=. Set resources on @chalkcompute.training and pass "
+            "the rest to the function in config=."
+        )
+
+
+def _experiment_training_run(
+    request: tr_pb.CreateTrainingRunRequest,
+) -> experiment_pb.ExperimentTrainingRun:
+    """The experiment's copy of a training run request.
+
+    The run's name and experiment id are left out: the server names the run
+    after the experiment and links the two itself.
+    """
+    source = None if request.data is None else request.data.source
+    data = None
+    if source is not None:
+        if source.field == "dataset_name":
+            data = Oneof("dataset_name", source.value)
+        elif source.field == "dataset_revision_id":
+            data = Oneof("dataset_revision_id", source.value)
+        elif source.field == "input_sql":
+            data = Oneof("input_sql", source.value)
+        else:
+            raise ExperimentError(
+                f"an experiment cannot train on a {source.field} data source"
+            )
+    return experiment_pb.ExperimentTrainingRun(
+        image=request.image,
+        resources=request.resources,
+        config=request.config,
+        env=dict(request.env) or None,
+        entrypoint=list(request.entrypoint) or None,
+        secret_refs=list(request.secret_refs) or None,
+        volume_mounts=list(request.volume_mounts) or None,
+        compute_class=(
+            request.compute_class if request.has_field("compute_class") else None
+        ),
+        network_policy=request.network_policy,
+        execution_target=request.execution_target,
+        max_retries=(request.max_retries if request.has_field("max_retries") else None),
+        data=data,
+        meta_data=dict(request.meta_data) or None,
+    )
 
 
 def _evaluation_id(evaluation: Evaluation | str) -> str:

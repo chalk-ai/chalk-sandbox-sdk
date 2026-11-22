@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from connectrpc.code import Code
@@ -21,6 +23,7 @@ from chalkcompute._experiment import (
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.evaluation.v1 import experiment_pb
 from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
+from chalkcompute._training import TrainingFunction
 from tests._fakes import FakeMethod, StubbedConnectClient
 
 
@@ -526,6 +529,134 @@ def test_retry_masks_exactly_the_replaced_settings() -> None:
     assert request.config.trainer_gpu == "nvidia-l40s:1"
     assert request.config.iterations == 3
     assert request.config.learning_rate == 2e-5
+
+
+@chalkcompute.training(
+    dataset="support-triage",
+    gpu="nvidia-l4:1",
+    cpu="8",
+    env={"MODE": "sft"},
+    metadata={"framework": "mine"},
+    max_retries=1,
+)
+def train_support(df: Any, config: Any) -> None:
+    return None
+
+
+@contextmanager
+def _packaging() -> Iterator[MagicMock]:
+    """Stand in for building the training function's image and uploading its source."""
+    image = MagicMock()
+    image.lazy_local_files = []
+    with (
+        patch.object(TrainingFunction, "_build_deploy_image", return_value=image),
+        patch("chalkcompute._training.build_image", return_value="img:latest") as build,
+    ):
+        yield build
+
+
+def test_start_with_train_hands_the_training_function_to_the_experiment() -> None:
+    client, connect = _client(
+        {"start_experiment": [_response(experiment_pb.StartExperimentResponse)]}
+    )
+
+    with _packaging():
+        client.start(
+            "eval-1",
+            base_model="Qwen/Qwen3-4B-Instruct-2507",
+            train=train_support,
+            config={"epochs": 3},
+            register_as="support-quality",
+        )
+
+    # Only the start: the function's own reward needs no scorers read to default.
+    [(method, request)] = connect.calls
+    assert method == "start_experiment"
+    config = request.config
+    assert config.kind == experiment_pb.ExperimentKind.CUSTOM
+    assert config.base_model == "Qwen/Qwen3-4B-Instruct-2507"
+    assert config.model_registry_name == "support-quality"
+    assert dict(config.reward_weights) == {}
+    # Nothing of the server's own trainer is sent, which it rejects for this kind.
+    assert (config.iterations, config.samples_per_row, config.trainer_gpu) == (0, 0, "")
+
+    run = config.training_run
+    assert run.image == "img:latest"
+    assert (run.resources.gpu, run.resources.cpu) == ("nvidia-l4:1", "8")
+    assert json.loads(run.config.to_json()) == {"epochs": 3}
+    assert run.env["MODE"] == "sft"
+    assert run.env["CHALK_TRAINING_MODULE"].endswith(".train_support")
+    assert list(run.entrypoint) == ["python", "-m", "chalkcompute._training_entrypoint"]
+    assert (run.data.field, run.data.value) == ("dataset_name", "support-triage")
+    assert run.max_retries == 1
+    assert json.loads(run.meta_data["framework"].to_json()) == "mine"
+
+
+def test_start_with_train_refuses_the_servers_trainer_settings_before_building() -> (
+    None
+):
+    client, connect = _client({})
+
+    with _packaging() as build, pytest.raises(ValueError, match="gpu, steps configure"):
+        client.start(
+            "eval-1",
+            base_model="Qwen/Qwen3-4B-Instruct-2507",
+            train=train_support,
+            gpu="nvidia-l40s:1",
+            steps=4,
+        )
+
+    build.assert_not_called()
+    assert connect.calls == []
+
+
+def test_start_with_train_needs_a_training_function() -> None:
+    client, connect = _client({})
+
+    def plain(df: Any, config: Any) -> None:
+        return None
+
+    with pytest.raises(TypeError, match="@chalkcompute.training"):
+        client.start("eval-1", base_model="Qwen/Qwen3-4B-Instruct-2507", train=plain)  # type: ignore[arg-type]
+
+    assert connect.calls == []
+
+
+def test_start_without_train_names_the_settings_it_is_missing() -> None:
+    client, connect = _client({})
+
+    with pytest.raises(TypeError, match="needs steps, samples_per_row, or train="):
+        client.start(
+            "eval-1", base_model="Qwen/Qwen3-4B-Instruct-2507", gpu="nvidia-l4:1"
+        )
+    with pytest.raises(ValueError, match="apply only with train="):
+        client.start(
+            "eval-1",
+            base_model="Qwen/Qwen3-4B-Instruct-2507",
+            gpu="nvidia-l4:1",
+            steps=1,
+            samples_per_row=2,
+            config={"epochs": 3},
+        )
+
+    assert connect.calls == []
+
+
+def test_retry_with_train_replaces_the_training_run() -> None:
+    client, connect = _client(
+        {"retry_experiment": [_response(experiment_pb.RetryExperimentResponse)]}
+    )
+
+    with _packaging():
+        client.retry(
+            "exp-1", train=train_support, config={"epochs": 5}, register_as="fixed"
+        )
+
+    request = connect.calls[-1][1]
+    assert list(request.update_mask.paths) == ["training_run", "model_registry_name"]
+    assert request.config.training_run.image == "img:latest"
+    assert json.loads(request.config.training_run.config.to_json()) == {"epochs": 5}
+    assert request.config.model_registry_name == "fixed"
 
 
 def test_get_maps_not_found_to_typed_error() -> None:

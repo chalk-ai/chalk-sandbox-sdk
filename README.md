@@ -892,6 +892,34 @@ The environment needs the `experiments_enabled` feature flag. Without it the
 server runs a post-training, which trains and registers a model but has no
 baseline or final run, and `wait()` raises for one.
 
+To train your own way, pass a training function as `train=`. The experiment
+runs it as its one training run, with the image, resources and data the
+function declares, between the pinned baseline and the final run. How the
+function samples, what it rewards and how many steps it takes are up to it.
+
+```python
+@cc.training(dataset="support-triage", gpu="nvidia-l40s:1")
+def train_support_policy(df, config):
+    experiment = config["experiment"]  # ids, base_model, where to leave the model
+    ...
+
+experiment = cc.Experiment.start(
+    evaluation,
+    base_model="Qwen/Qwen3-4B-Instruct-2507",
+    train=train_support_policy,
+    config={"lr": 2e-5, "epochs": 3},
+    register_as="support-answer-qwen",
+).wait()
+```
+
+`config["experiment"]` names the experiment, the evaluation, the base model and
+the baseline run. For the final run to reach the trained model, the function
+today has to save a LoRA adapter of `base_model` at
+`adapter_dir/adapter_out`, record it as a checkpoint, and load it into
+`policy_server_url` under the name `adapter_out`; all four are in
+`config["experiment"]`. `gpu`, `steps` and the other settings of the server's
+own trainer are refused alongside `train=`.
+
 `cc.Experiment.from_id` and `cc.Experiment.list_all(evaluation=...)` attach to
 existing experiments; the list holds at most the 100 most recent.
 `experiment.cancel()` stops one, and
