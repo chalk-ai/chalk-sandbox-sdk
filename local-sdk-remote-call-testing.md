@@ -95,6 +95,32 @@ Expected import path in the pod:
 
 ## Local SDK Wheel Override (`CHALK_FUNCTION_LOCAL_SDK_WHEEL`)
 
+For the local data plane, add `--bake-sdk-wheel` to
+`scripts/run_local_fn_deploy.sh --script ... --sdk-wheel ... --uv-run`.
+The helper resolves the standard dependency image through `Image.build()`, then
+uses Docker to install the exact wheel once into the local registry. Later runs
+reuse the image when wheel bytes, resolved base digest and platform match.
+
+`just local-fn-deploy <script> <wheel> 1 1` selects the same option. Source-overlay
+deploys without a wheel retain their existing behavior. A custom base recipe that
+differs from the baked runtime uses the ordinary mounted-wheel installation path.
+
+To prepare a binding once and reuse it across separate deployments:
+
+```bash
+uv run python -m chalkcompute._local_sdk_runtime --sdk-wheel /path/to/sdk.whl --output /tmp/sdk-runtime.json
+export CHALK_FUNCTION_LOCAL_SDK_BAKED_RUNTIME="$(cat /tmp/sdk-runtime.json)"
+export CHALK_FUNCTION_LOCAL_SDK_WHEEL=/path/to/sdk.whl
+export CHALK_FUNCTION_STRIP_SOURCE=0
+uv run python deploy.py
+```
+
+The binding contains an immutable image reference and wheel/recipe SHA256 values.
+Changing the wheel requires preparing a new binding. Before starting the handler,
+the baked entrypoint checks pip's installed-wheel archive hash in `direct_url.json`.
+A missing or mismatched hash fails startup; it does not silently run another SDK.
+Only a matching base recipe removes the `/tmp/sdk` mount and pod-time reinstall.
+
 The local `chalkcompute` wheel should be built for Linux and mounted into the
 pod as a separate lazy-file volume. At startup the wrapper should:
 

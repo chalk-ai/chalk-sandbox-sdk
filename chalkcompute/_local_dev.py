@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
+import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +14,7 @@ _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
 _LOCAL_WHEEL_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_WHEEL"
 _LOCAL_REMOTE_CALL_WHEEL_ENV_VAR = "CHALK_FUNCTION_REMOTE_CALL_WHEEL"
 _STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
+_BAKED_RUNTIME_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_BAKED_RUNTIME"
 
 _LOCAL_SDK_MOUNT = "/tmp/sdk"
 _LOCAL_REMOTE_CALL_MOUNT = "/tmp/remote-call-wheel"
@@ -69,11 +73,64 @@ def should_strip_source() -> bool:
 
 
 @dataclass(frozen=True)
+class BakedSDKRuntime:
+    image: str
+    wheel_sha256: str
+    recipe_sha256: str
+
+
+def image_recipe_sha256(image: object) -> str:
+    from chalkcompute._image import Image
+
+    assert isinstance(image, Image)
+    recipe = image._to_build_proto()
+    recipe.env = dict(sorted(recipe.env.items()))
+    return hashlib.sha256(recipe.to_binary()).hexdigest()
+
+
+def local_sdk_dependency_image(
+    base_image: object, remote_call_runtime_package: str
+) -> object:
+    from chalkcompute._image import Image
+
+    assert isinstance(base_image, Image)
+    return base_image.pip_install(
+        [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
+    )
+
+
+def _baked_runtime(wheel: str | None, strip_source: bool) -> BakedSDKRuntime | None:
+    raw = os.environ.get(_BAKED_RUNTIME_ENV_VAR)
+    if not raw or wheel is None or strip_source:
+        return None
+    try:
+        values = json.loads(raw)
+        runtime = BakedSDKRuntime(**values)
+        if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", runtime.image):
+            raise ValueError("image must be pinned by sha256")
+        if not all(
+            re.fullmatch(r"[0-9a-f]{64}", h)
+            for h in (runtime.wheel_sha256, runtime.recipe_sha256)
+        ):
+            raise ValueError("wheel and recipe require sha256 hashes")
+        with Path(wheel).open("rb") as source:
+            actual = hashlib.file_digest(source, "sha256").hexdigest()
+        if actual != runtime.wheel_sha256:
+            raise ValueError(
+                "local SDK wheel changed; bake the new wheel before deploying"
+            )
+        return runtime
+    except (OSError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid {_BAKED_RUNTIME_ENV_VAR}: {error}") from error
+
+
+@dataclass(frozen=True)
 class LocalDeployConfig:
     strip_source: bool
     sdk_copy_enabled: bool
     sdk_wheel_path: str | None
     remote_call_wheel_path: str | None
+    baked_runtime: BakedSDKRuntime | None
 
     @property
     def should_mount_sdk_source(self) -> bool:
@@ -100,10 +157,13 @@ def resolve_local_deploy_config() -> LocalDeployConfig:
         sdk_copy_enabled=sdk_copy_enabled,
         sdk_wheel_path=sdk_wheel_path,
         remote_call_wheel_path=remote_call_wheel_path,
+        baked_runtime=_baked_runtime(sdk_wheel_path, strip_source),
     )
 
 
-def wrap_entrypoint_for_local_dev(handler_cmd: list[str]) -> list[str]:
+def wrap_entrypoint_for_local_dev(
+    handler_cmd: list[str], deploy_image: object | None
+) -> list[str]:
     config = resolve_local_deploy_config()
     command = " ".join(shlex.quote(part) for part in handler_cmd)
     prelude: list[str] = []
@@ -117,11 +177,29 @@ def wrap_entrypoint_for_local_dev(handler_cmd: list[str]) -> list[str]:
 
     if config.should_install_sdk_wheel:
         assert config.sdk_wheel_path is not None
-        wheel_name = shlex.quote(Path(config.sdk_wheel_path).name)
-        prelude.append(
-            "python -m pip install --force-reinstall --no-deps "
-            f"{_LOCAL_SDK_MOUNT}/{wheel_name}"
-        )
+        from chalkcompute._image import Image
+
+        baked = config.baked_runtime
+        if (
+            baked is not None
+            and isinstance(deploy_image, Image)
+            and deploy_image._base_image == baked.image
+        ):
+            # pip records the installed archive hash; verify the image's installed
+            # wheel rather than trusting the caller's configuration alone.
+            check = (
+                "import json, sys; from importlib.metadata import distribution; "
+                "info=json.loads(distribution('chalkcompute').read_text('direct_url.json') or '{}'); "
+                "actual=info.get('archive_info',{}).get('hashes',{}).get('sha256'); "
+                f"actual == {baked.wheel_sha256!r} or sys.exit('Baked local SDK wheel metadata mismatch; rebuild the runtime image')"
+            )
+            prelude.append(f"python -c {shlex.quote(check)}")
+        else:
+            wheel_name = shlex.quote(Path(config.sdk_wheel_path).name)
+            prelude.append(
+                "python -m pip install --force-reinstall --no-deps "
+                f"{_LOCAL_SDK_MOUNT}/{wheel_name}"
+            )
     elif config.should_mount_sdk_source:
         from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
@@ -155,9 +233,22 @@ def apply_local_dev_mounts(
     if config.should_install_sdk_wheel:
         assert config.sdk_wheel_path is not None
         path = Path(config.sdk_wheel_path)
-        image = image.pip_install(
-            [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
-        ).add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
+        dependency_image = local_sdk_dependency_image(
+            image, remote_call_runtime_package
+        )
+        assert isinstance(dependency_image, Image)
+        baked = config.baked_runtime
+        if (
+            baked is not None
+            and image_recipe_sha256(dependency_image) == baked.recipe_sha256
+        ):
+            image = image._copy()
+            image._base_image = baked.image
+            image._steps = []
+        else:
+            image = dependency_image.add_local_file(
+                str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}"
+            )
     elif config.should_mount_sdk_source:
         # Installed SDKs live beside other packages in site-packages. Copying
         # the parent would shadow the container's platform-specific runtime.

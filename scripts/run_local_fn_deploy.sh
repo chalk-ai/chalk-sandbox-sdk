@@ -11,6 +11,7 @@ Usage:
 Options:
   --script PATH           Python deploy script to run.
   --sdk-wheel             Optional Linux chalkcompute wheel path.
+  --bake-sdk-wheel        Cache the exact wheel in a local runtime image before deploying.
   --python PATH           Python interpreter to run when not using uv.
                           Default: .venv/bin/python
   --uv-run                Run through "uv run python" instead of a direct interpreter.
@@ -32,6 +33,7 @@ python_bin=".venv/bin/python"
 use_uv_run=0
 use_local_sdk=1
 strip_source=0
+bake_sdk_wheel=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
         --sdk-wheel)
             sdk_wheel="$2"
             shift 2
+            ;;
+        --bake-sdk-wheel)
+            bake_sdk_wheel=1
+            shift
             ;;
         --python)
             python_bin="$2"
@@ -101,6 +107,23 @@ else
 fi
 
 unset CHALK_FUNCTION_REMOTE_CALL_WHEEL || true
+unset CHALK_FUNCTION_LOCAL_SDK_BAKED_RUNTIME || true
+if [[ "$bake_sdk_wheel" == "1" ]]; then
+    if [[ -z "$sdk_wheel" || "$strip_source" != "0" ]]; then
+        echo "--bake-sdk-wheel requires --sdk-wheel without --strip-source" >&2
+        exit 1
+    fi
+    runtime_metadata="$(mktemp)"
+    trap 'rm -f "$runtime_metadata"' EXIT
+    if [[ "$use_uv_run" == "1" ]]; then
+        uv run python -m chalkcompute._local_sdk_runtime --sdk-wheel "$CHALK_FUNCTION_LOCAL_SDK_WHEEL" --output "$runtime_metadata"
+    else
+        "$python_bin" -m chalkcompute._local_sdk_runtime --sdk-wheel "$CHALK_FUNCTION_LOCAL_SDK_WHEEL" --output "$runtime_metadata"
+    fi
+    export CHALK_FUNCTION_LOCAL_SDK_BAKED_RUNTIME="$(cat "$runtime_metadata")"
+    rm -f "$runtime_metadata"
+    trap - EXIT
+fi
 
 echo "Deploy env:"
 echo "  CHALK_FUNCTION_STRIP_SOURCE=${CHALK_FUNCTION_STRIP_SOURCE}"
