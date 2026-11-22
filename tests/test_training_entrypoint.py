@@ -204,6 +204,55 @@ def test_main_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     fake_func.assert_called_once()
 
 
+def test_main_gives_an_experiments_function_its_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from protobuf.wkt import Struct
+
+    import chalkcompute
+
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
+    monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
+    monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(tmp_path / "ckpt"))
+    monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "")
+    # The entrypoint writes this itself; registering it here restores it afterwards.
+    monkeypatch.setenv("CHALK_EXPERIMENT_CONTEXT", "")
+
+    experiment = {
+        "experiment_id": "exp-1",
+        "evaluation_id": "eval-1",
+        "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+        "adapter_out": "adapter-exp-1-1",
+        "adapter_dir": "/chalk/adapters",
+        "policy_server_url": "http://policy.internal:8000",
+        "policy_adapter_dir": "/chalk/adapters",
+    }
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=tr_pb.TrainingRun(
+            id="abcdef12-0000-0000-0000-000000000000",
+            config=Struct.from_python({"lr": 0.01, "experiment": experiment}),
+        ),
+    )
+    seen: list[str] = []
+
+    def train(df: object, config: object) -> None:
+        seen.append(chalkcompute.experiment_context().adapter_name)
+
+    with (
+        patch(
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
+        ),
+        patch(
+            "chalkcompute._training_entrypoint._discover_function", return_value=train
+        ),
+    ):
+        main()
+
+    assert seen == ["adapter-exp-1-1"]
+
+
 def test_main_function_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from protobuf.wkt import Struct
 

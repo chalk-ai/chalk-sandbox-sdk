@@ -270,6 +270,13 @@ def main() -> None:
         logger.info("Discovered training function: %s", module_path)
 
         config = _deserialize_config(run.config, func)
+        # A dataclass config keeps only its own fields, so the experiment is published
+        # separately for cc.experiment_context() rather than read from config.
+        from chalkcompute._experiment_context import _publish_experiment_context
+
+        _publish_experiment_context(
+            None if run.config is None else run.config.to_python()
+        )
 
         if revision_id:
             data_volume_name = os.environ.get(
