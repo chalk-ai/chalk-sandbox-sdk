@@ -534,8 +534,34 @@ class TrainingFunction:
         if client is None:
             client = ConnectClient()
 
+        request = self._prepare_request(
+            config=config,
+            client=client,
+            experiment_id=experiment_id,
+            build_timeout=build_timeout,
+        )
+        stub = client.stub(tr_connect.TrainingRunServiceClientSync)
+        resp = client.call(stub.create_training_run, request, timeout=60.0)
+        if resp.training_run is None:
+            raise TrainingError("CreateTrainingRun returned no training run")
+        run_id = resp.training_run.id
+        logger.info("Created training run %s", run_id)
+        return TrainingRunHandle(run_id, client)
+
+    def _prepare_request(
+        self,
+        *,
+        config: Any,
+        client: ConnectClient,
+        experiment_id: str | None,
+        build_timeout: float | None,
+    ) -> tr_pb.CreateTrainingRunRequest:
+        """Build the image, upload the source, and return the request that starts the run.
+
+        Nothing is submitted, so an experiment can start the same run itself.
+        """
         try:
-            return self._run_training(
+            return self._build_request(
                 config=config,
                 client=client,
                 experiment_id=experiment_id,
@@ -547,14 +573,14 @@ class TrainingFunction:
             _cleanup_temp_files(self._temp_files)
             self._temp_files = []
 
-    def _run_training(
+    def _build_request(
         self,
         *,
         config: Any,
         client: ConnectClient,
         experiment_id: str | None,
         build_timeout: float | None,
-    ) -> TrainingRunHandle:
+    ) -> tr_pb.CreateTrainingRunRequest:
         deploy_image = self._build_deploy_image()
         try:
             image_uri = build_image(client, deploy_image, timeout=build_timeout)
@@ -630,7 +656,7 @@ class TrainingFunction:
                 module = self._func_name
         env["CHALK_TRAINING_MODULE"] = f"{module}.{self._func_name}"
 
-        request = tr_pb.CreateTrainingRunRequest(
+        return tr_pb.CreateTrainingRunRequest(
             name=self._name,
             data=data_source,
             config=_config_to_struct(config),
@@ -651,14 +677,6 @@ class TrainingFunction:
             experiment_id=experiment_id,
             entrypoint=list(_TRAINING_ENTRYPOINT),
         )
-
-        stub = client.stub(tr_connect.TrainingRunServiceClientSync)
-        resp = client.call(stub.create_training_run, request, timeout=60.0)
-        if resp.training_run is None:
-            raise TrainingError("CreateTrainingRun returned no training run")
-        run_id = resp.training_run.id
-        logger.info("Created training run %s", run_id)
-        return TrainingRunHandle(run_id, client)
 
     def _build_data_source(self) -> tr_pb.TrainingRunDataSource:
         if self._input_sql is not None:
