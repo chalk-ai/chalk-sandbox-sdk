@@ -842,6 +842,7 @@ class Sandbox:
         group_limits: SandboxGroupLimits | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
+        trace_syscalls: Sequence[str] = (),
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -929,6 +930,9 @@ class Sandbox:
             Trace sampling for processes inside the sandbox. ``True`` traces
             every request; a :class:`~chalkcompute.TracingPolicy` sets the
             root sample rate; ``False`` turns tracing off.
+        trace_syscalls
+            Exact names of Linux syscalls to trace. An empty sequence disables
+            syscall tracing.
 
         sandbox_id
             Existing sandbox ID. With no client, authentication is resolved lazily
@@ -1054,6 +1058,7 @@ class Sandbox:
         self._oidc_token_files: dict[str, OIDCTokenFile] = {}
         self._managed_ssh: dict[str, SSHDest] = {}
         self._tracing: TracingPolicy | _RemoteFunctionTracingPolicy | None = None
+        self._trace_syscalls: tuple[str, ...] = ()
         self._chalk_client: Any | None = None
         self._built_image_uri: str | None = None
 
@@ -1083,6 +1088,7 @@ class Sandbox:
                 or group_limits is not None
                 or managed_ssh is not None
                 or tracing is not None
+                or trace_syscalls
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -1159,6 +1165,7 @@ class Sandbox:
         self._oidc_token_files = oidc_token_files
         self._managed_ssh = normalize_managed_ssh(managed_ssh)
         self._tracing = tracing_policy
+        self._trace_syscalls = tuple(trace_syscalls)
         self._chalk_client = chalk_client
         if isinstance(tracing_policy, TracingPolicy):
             # The sandbox joins the caller's trace only if the caller has one.
@@ -2317,6 +2324,7 @@ class SandboxClient:
         group_limits: SandboxGroupLimits | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
+        trace_syscalls: Sequence[str] = (),
         wait: bool = True,
         poll_interval: float | None = None,
         timeout: float = 600.0,
@@ -2383,6 +2391,9 @@ class SandboxClient:
             ``True`` traces every request inside the sandbox, a
             :class:`~chalkcompute.TracingPolicy` sets the root sample rate,
             ``False`` turns tracing off. See :class:`Sandbox`.
+        trace_syscalls
+            Exact names of Linux syscalls to trace. An empty sequence disables
+            syscall tracing.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -2423,6 +2434,7 @@ class SandboxClient:
                 group_limits=group_limits,
                 managed_ssh=managed_ssh,
                 tracing=tracing,
+                trace_syscalls=trace_syscalls,
             ),
             wait=wait,
             poll_interval=poll_interval,
@@ -2505,6 +2517,7 @@ class SandboxClient:
             oidc_token_files=sandbox._oidc_token_files,
             allow_sandbox_identity=True,
             managed_ssh=sandbox._managed_ssh,
+            trace_syscalls=sandbox._trace_syscalls,
         ).to_proto()
 
         resp = self._stub.create_sandbox(
