@@ -1,9 +1,8 @@
-"""Exercise final status and cancellation over actual HTTP/2 RPCs."""
+"""Exercise HTTP/2 final status with explicitly controlled timeout callbacks."""
 
 from concurrent.futures import ThreadPoolExecutor
 import queue
 import threading
-import time
 
 import grpc
 import pytest
@@ -16,11 +15,34 @@ from chalkcompute._sandbox import ExecProcess, SandboxClient
 
 
 @pytest.fixture
-def process_rpc(monkeypatch):
-    monkeypatch.setattr(_exec, "FINAL_STATUS_TIMEOUT_SECONDS", 0.1)
+def timers(monkeypatch):
+    started = queue.Queue()
+
+    class ManualTimer:
+        def __init__(self, interval, callback):
+            self.interval = interval
+            self.callback = callback
+            self.cancelled = False
+
+        def start(self):
+            started.put(self)
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            assert not self.cancelled
+            self.callback()
+
+    monkeypatch.setattr(_exec, "Timer", ManualTimer)
+    return started
+
+
+@pytest.fixture
+def process_rpc(timers):
     resources = []
 
-    def start(exit_code=7, final_status=None, *, terminal=True, before_exit=0.15):
+    def start(exit_code=7, final_status=None, *, terminal=True, exit_gate=None):
         closed, release = threading.Event(), threading.Event()
         pool = ThreadPoolExecutor(max_workers=2)
         server = grpc.server(pool)
@@ -29,6 +51,7 @@ def process_rpc(monkeypatch):
         def handle(requests, context):
             calls.append(True)
             context.add_callback(closed.set)
+            context.add_callback(release.set)
             yield pb.OpenSessionResponse(
                 event=Oneof("session_attached", pb.SessionAttached(session_id="s"))
             ).to_binary()
@@ -41,14 +64,14 @@ def process_rpc(monkeypatch):
                 )
             ).to_binary()
             if terminal:
-                time.sleep(
-                    before_exit
-                )  # Running commands may exceed the final-status budget.
+                if exit_gate is not None:
+                    exit_gate[0].set()
+                    exit_gate[1].wait()
                 yield pb.OpenSessionResponse(
                     event=Oneof("process_exited", pb.ProcessExited(exit_code=exit_code))
                 ).to_binary()
             if final_status == "hung":
-                release.wait(3)
+                release.wait()
             elif final_status is not None:
                 context.set_code(final_status)
                 context.set_details("late error")
@@ -72,13 +95,20 @@ def process_rpc(monkeypatch):
                 yield request
 
         responses = client._process_stub.open_session(request_iterator())
-        resources.append((server, pool, client, release, requests))
-        return ExecProcess(requests, responses, "sandbox", client), closed, calls
+        resources.append((server, pool, client, release, requests, exit_gate))
+        return (
+            ExecProcess(requests, responses, "sandbox", client),
+            closed,
+            calls,
+            release,
+        )
 
     yield start
-    for server, pool, client, release, requests in resources:
+    for server, pool, client, release, requests, exit_gate in resources:
         requests.put(None)
         release.set()
+        if exit_gate is not None:
+            exit_gate[1].set()
         server.stop(0).wait()
         pool.shutdown()
         client.close()
@@ -87,34 +117,51 @@ def process_rpc(monkeypatch):
 @pytest.mark.parametrize("method", ["wait", "output"])
 @pytest.mark.parametrize("exit_code", [0, 7])
 @pytest.mark.parametrize("status", [None, grpc.StatusCode.DATA_LOSS, "hung"])
-def test_final_status(process_rpc, method, exit_code, status):
-    process, closed, calls = process_rpc(exit_code, status)
-    if status is None:
+def test_final_status(process_rpc, timers, method, exit_code, status):
+    process, closed, calls, release = process_rpc(exit_code, status)
+
+    def consume():
         if method == "wait":
-            result = process.wait()
-            assert result.stdout == b"out\x00\xff"
-            assert result.exit_code == exit_code
-        else:
-            assert list(process.output())[-1].exit_code == exit_code
-    else:
-        with pytest.raises(ExecStreamError) as caught:
-            if method == "wait":
-                process.wait()
+            return process.wait()
+        events = []
+        for event in process.output():
+            if status is not None:
+                assert not event.is_exited
+            events.append(event)
+        return events[-1]
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        future = workers.submit(consume)
+        try:
+            if status == "hung":
+                timer = timers.get(timeout=5)
+                assert timer.interval == 30
+                timer.fire()
+                assert closed.wait(5), "the timer must cancel the actual HTTP/2 stream"
+            if status is None:
+                result = future.result(timeout=5)
+                assert result.exit_code == exit_code
+                if method == "wait":
+                    assert result.stdout == b"out\x00\xff"
             else:
-                for event in process.output():
-                    assert not event.is_exited
-        assert caught.value.code == (
-            Code.DEADLINE_EXCEEDED if status == "hung" else Code.DATA_LOSS
-        )
-        assert caught.value.result.exit_code == exit_code
-        if method == "wait":
-            assert caught.value.result.stdout == b"out\x00\xff"
-        assert closed.wait(1)
-    assert len(calls) == 1
+                with pytest.raises(ExecStreamError) as caught:
+                    future.result(timeout=5)
+                assert caught.value.code == (
+                    Code.DEADLINE_EXCEEDED if status == "hung" else Code.DATA_LOSS
+                )
+                assert caught.value.result.exit_code == exit_code
+                if method == "wait":
+                    assert caught.value.result.stdout == b"out\x00\xff"
+                assert closed.wait(5)
+            if status != "hung":
+                assert timers.get(timeout=5).cancelled
+            assert len(calls) == 1
+        finally:
+            release.set()
 
 
-def test_data_loss_before_exit_is_not_retried(process_rpc):
-    process, _, calls = process_rpc(
+def test_data_loss_before_exit_is_not_retried(process_rpc, timers):
+    process, _, calls, _ = process_rpc(
         final_status=grpc.StatusCode.DATA_LOSS, terminal=False
     )
     with pytest.raises(ExecStreamError) as caught:
@@ -122,15 +169,31 @@ def test_data_loss_before_exit_is_not_retried(process_rpc):
     assert caught.value.code == Code.DATA_LOSS
     assert caught.value.result.exit_code is None
     assert len(calls) == 1
+    assert timers.empty()
 
 
-def test_timeout_does_not_cancel_another_stream(process_rpc):
-    hung, _, _ = process_rpc(final_status="hung")
-    running, _, _ = process_rpc(before_exit=0.35)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(hung.wait)
-        second = pool.submit(running.wait)
-        with pytest.raises(ExecStreamError) as caught:
-            first.result(timeout=2)
-        assert caught.value.code == Code.DEADLINE_EXCEEDED
-        assert second.result(timeout=2).exit_code == 7
+def test_timeout_does_not_cancel_another_stream(process_rpc, timers):
+    exit_ready, allow_exit = threading.Event(), threading.Event()
+    hung, hung_closed, _, release = process_rpc(final_status="hung")
+    running, running_closed, _, _ = process_rpc(exit_gate=(exit_ready, allow_exit))
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(hung.wait)
+        second = workers.submit(running.wait)
+        try:
+            assert exit_ready.wait(5)
+            timer = timers.get(timeout=5)
+            assert timer.interval == 30
+            assert timers.empty(), "a running process must not arm a final-status timer"
+            timer.fire()
+            with pytest.raises(ExecStreamError) as caught:
+                first.result(timeout=5)
+            assert caught.value.code == Code.DEADLINE_EXCEEDED
+            assert hung_closed.wait(5)
+            assert not running_closed.is_set()
+            assert not second.done()
+            allow_exit.set()
+            assert second.result(timeout=5).exit_code == 7
+            assert timers.get(timeout=5).cancelled
+        finally:
+            release.set()
+            allow_exit.set()
