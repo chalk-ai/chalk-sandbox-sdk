@@ -1,0 +1,1 @@
+- Enabling `resource_detectors` on a sandbox no longer adds hosts to its network policy, so a sandbox with no policy keeps the default open egress instead of being restricted to `api.github.com`.
