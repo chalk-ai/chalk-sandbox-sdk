@@ -1,0 +1,1 @@
+- `ScalingGroup.deploy()` now raises `QuotaExceededError` (a subclass of `ScalingGroupError`) when the server rejects the deployment for exceeding a quota. The message is the server's text, without the `CreateScalingGroup failed:` prefix.

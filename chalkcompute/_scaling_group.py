@@ -38,6 +38,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
+from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
@@ -124,6 +125,15 @@ class ScalingGroupError(Exception):
 
 class ScalingGroupBuildError(ScalingGroupError):
     """Raised when the custom image build fails."""
+
+
+class QuotaExceededError(ScalingGroupError):
+    """Raised when the server rejects a request because it exceeds a quota.
+
+    The message is the server's own text, which names the resource, the
+    amounts and how to raise the limit. Subclasses :class:`ScalingGroupError`
+    so existing ``except ScalingGroupError`` handlers still catch it.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +659,9 @@ class ScalingGroup:
 
         Raises
         ------
+        QuotaExceededError
+            If the server rejects the deployment because it exceeds a quota.
+            Subclass of ``ScalingGroupError``.
         ScalingGroupError
             If deployment fails or times out.
         """
@@ -820,6 +833,8 @@ class ScalingGroup:
                 if self._scaling_group_id is not None
                 else "CreateScalingGroup"
             )
+            if exc.code == Code.RESOURCE_EXHAUSTED:
+                raise QuotaExceededError(exc.message) from exc
             raise ScalingGroupError(f"{operation} failed: {exc}") from exc
         if response.scaling_group is None:
             raise ScalingGroupError(f"{operation} returned no scaling group")

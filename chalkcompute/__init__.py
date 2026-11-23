@@ -233,6 +233,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     # _scaling_group.py
     "ScalingGroup": ("chalkcompute._scaling_group", "ScalingGroup"),
+    "QuotaExceededError": ("chalkcompute._scaling_group", "QuotaExceededError"),
     "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
     "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
     "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),

@@ -166,6 +166,7 @@ from chalkcompute._workflow_worker import (
 )
 from chalkcompute._workflow_worker import run_workflow as run_workflow
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
+from chalkcompute._scaling_group import QuotaExceededError as QuotaExceededError
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
@@ -382,6 +383,7 @@ __all__ = [
     "SandboxFileSystem",
     "SandboxFileSystemError",
     "ScalingGroup",
+    "QuotaExceededError",
     "ScalingGroupBuildError",
     "ScalingGroupError",
     "ScalingGroupInfo",
