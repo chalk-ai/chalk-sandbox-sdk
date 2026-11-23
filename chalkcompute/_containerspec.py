@@ -9,12 +9,14 @@ from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from typing import Any, cast
 
-from protobuf import Oneof
-from protobuf.wkt import Duration
+from protobuf import Oneof, message_to_json_value
+from protobuf.wkt import Duration, Empty, Timestamp
 
 from chalkcompute._chalk_identity import (
     ChalkIdentity,
+    OIDCAudiencePolicy,
     OIDCTokenFile,
+    SandboxGroupLimits,
     normalize_chalk_identity,
     validate_chalk_identity,
 )
@@ -552,6 +554,7 @@ class ContainerSpec:
     # Only sandboxes can run as their own principal; every other surface leaves
     # this False so ChalkIdentity(mode="sandbox") fails at construction.
     allow_sandbox_identity: bool = False
+    group_limits: SandboxGroupLimits | None = None
 
     def __post_init__(self) -> None:
         self.validate_fields(
@@ -574,6 +577,7 @@ class ContainerSpec:
             tags=self.tags,
             restart_policy=self.restart_policy,
             chalk_identity=self.chalk_identity,
+            group_limits=self.group_limits,
             oidc_token_files=self.oidc_token_files,
             allow_sandbox_identity=self.allow_sandbox_identity,
             managed_ssh=self.managed_ssh,
@@ -636,6 +640,7 @@ class ContainerSpec:
         chalk_identity: bool | ChalkIdentity = False,
         oidc_token_files: Mapping[str, OIDCTokenFile] | None = None,
         allow_sandbox_identity: bool = False,
+        group_limits: SandboxGroupLimits | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
@@ -716,6 +721,14 @@ class ContainerSpec:
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
             raise TypeError("restart_policy must be a RestartPolicy")
         validate_chalk_identity(chalk_identity, allow_sandbox=allow_sandbox_identity)
+        if group_limits is not None:
+            if not isinstance(group_limits, SandboxGroupLimits):
+                raise TypeError("group_limits must be a SandboxGroupLimits")
+            identity = normalize_chalk_identity(chalk_identity)
+            if identity is None or identity.mode != "sandbox":
+                raise ValueError(
+                    'group_limits requires chalk_identity=ChalkIdentity(mode="sandbox")'
+                )
         _validate_oidc_token_files(
             oidc_token_files,
             chalk_identity=chalk_identity,
@@ -786,25 +799,15 @@ class ContainerSpec:
             spec["readinessProbe"] = dict(self.readiness_probe)
         if self.restart_policy is not None:
             spec["restartPolicy"] = self.restart_policy.value
-        identity = normalize_chalk_identity(self.chalk_identity)
+        identity = self._workload_identity_proto()
         if identity is not None:
-            spec["chalkWorkloadIdentity"] = (
-                {
-                    "mode": "IDENTITY_MODE_WORKLOAD_PRINCIPAL",
-                    **(
-                        {
-                            "oidcTokenFiles": [
-                                {"audience": file.audience, "envVar": env_var}
-                                for env_var, file in self.oidc_token_files.items()
-                            ]
-                        }
-                        if self.oidc_token_files
-                        else {}
-                    ),
-                }
-                if identity.mode == "sandbox"
-                else {"mode": "IDENTITY_MODE_CREATOR_IDENTITY"}
-            )
+            identity_dict = cast("dict[str, Any]", message_to_json_value(identity))
+            if identity_dict.get("workloadPrincipal") == {}:
+                identity_dict.pop("workloadPrincipal")
+            spec["chalkWorkloadIdentity"] = identity_dict
+        group_limits = self._group_limits_proto()
+        if group_limits is not None:
+            spec["groupLimits"] = message_to_json_value(group_limits)
         return spec
 
     def to_proto(self) -> container_pb.ChalkContainerSpec:
@@ -928,6 +931,7 @@ class ContainerSpec:
                 else container_pb.RestartPolicy[self.restart_policy.name]
             ),
             chalk_workload_identity=self._workload_identity_proto(),
+            group_limits=self._group_limits_proto(),
         )
 
     def _workload_identity_proto(self) -> container_pb.ChalkWorkloadIdentity | None:
@@ -940,12 +944,53 @@ class ContainerSpec:
             )
         return container_pb.ChalkWorkloadIdentity(
             mode=container_pb.IdentityMode.WORKLOAD_PRINCIPAL,
-            workload_principal=container_pb.WorkloadPrincipalIdentity(),
+            workload_principal=container_pb.WorkloadPrincipalIdentity(
+                permissions=list(identity.permissions)
+            ),
+            oidc_audience_policy=_oidc_audience_policy_to_proto(
+                identity.oidc_audience_policy
+            ),
+            user_provided_claims=dict(identity.user_provided_claims or {}),
             oidc_token_files=[
                 container_pb.OIDCTokenFile(audience=file.audience, env_var=env_var)
                 for env_var, file in self.oidc_token_files.items()
             ],
         )
+
+    def _group_limits_proto(self) -> container_pb.SandboxGroupLimits | None:
+        limits = self.group_limits
+        if limits is None:
+            return None
+        return container_pb.SandboxGroupLimits(
+            max_active_descendants=limits.max_active_descendants,
+            resources=(
+                container_pb.ResourceLimits(cpu=limits.cpu, memory=limits.memory)
+                if limits.cpu is not None or limits.memory is not None
+                else None
+            ),
+            expires_at=(
+                None
+                if limits.expires_at is None
+                else Timestamp.from_datetime(limits.expires_at)
+            ),
+            oidc_audience_policy=_oidc_audience_policy_to_proto(
+                limits.oidc_audience_policy
+            ),
+        )
+
+
+def _oidc_audience_policy_to_proto(
+    policy: OIDCAudiencePolicy | None,
+) -> container_pb.OIDCAudiencePolicy | None:
+    if policy is None:
+        return None
+    if policy._audiences is None:
+        return container_pb.OIDCAudiencePolicy(policy=Oneof("any", Empty()))
+    return container_pb.OIDCAudiencePolicy(
+        policy=Oneof(
+            "only", container_pb.OIDCAudienceSet(audiences=list(policy._audiences))
+        )
+    )
 
 
 # Injected by the platform next to the Chalk identity token; an OIDCTokenFile

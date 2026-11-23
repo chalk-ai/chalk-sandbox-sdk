@@ -501,6 +501,74 @@ The external service must trust Chalk's issuer and validate the token using the
 Chalk API server's `/.well-known/jwks.json` endpoint. The existing
 `ConnectClient.get_workload_identity_token()` string API remains available.
 
+#### Sandbox principal and group limits
+
+Create a root sandbox from a session authenticated as a user or service token.
+Grant only permissions the caller holds in the target environment. The root
+needs `SANDBOX_MANAGE` to create children.
+
+```python
+import chalkcompute as cc
+
+root = cc.Sandbox(
+    image="python:3.13-slim",
+    cpu="500m",
+    memory="1Gi",
+    lifetime="1800s",
+    chalk_identity=cc.ChalkIdentity(
+        mode="sandbox",
+        permissions=[cc.Permission.SANDBOX_MANAGE, cc.Permission.SANDBOX_READ],
+        oidc_audience_policy=cc.OIDCAudiencePolicy.only([]),
+        user_provided_claims={"project": "batch"},
+    ),
+    group_limits=cc.SandboxGroupLimits(
+        max_active_descendants=2,
+        cpu="2",
+        memory="4Gi",
+        oidc_audience_policy=cc.OIDCAudiencePolicy.only([]),
+    ),
+).run()
+```
+
+With `chalkcompute` installed inside the root, use its ambient working
+credential to create a child. The server derives the group from that credential.
+The child can request a subset of the parent's permissions and retain a subset
+of its workload claims with the same values. Use `wait=False` because the
+parent's credential can submit the request but cannot poll the child. An
+authorized operator can monitor the returned ID.
+
+```python
+import chalkcompute as cc
+
+with cc.SandboxClient.from_env() as client:
+    child = client.create(
+        image="python:3.13-slim",
+        cpu="500m",
+        memory="1Gi",
+        lifetime="300s",
+        chalk_identity=cc.ChalkIdentity(
+            mode="sandbox", permissions=[cc.Permission.SANDBOX_READ]
+        ),
+        wait=False,
+    )
+    print(child.id)
+```
+
+Both create entry points accept the same identity and group options. Supply
+`group_limits` only on the root. The descendant limit defaults to zero and
+excludes the root. CPU and memory ceilings include the root. An optional
+timezone-aware `expires_at` sets an absolute deadline for the group. Omitting
+permissions requests an empty grant.
+
+The group's OIDC policy caps audience authority across its members and defaults
+to `Any`. A root with no explicit identity policy uses its declared token-file
+audiences when it has files and the group ceiling otherwise. A child with no
+explicit policy inherits its parent's effective policy. Use
+`OIDCAudiencePolicy.only([])` to disable OIDC issuance, `.only(audiences)` to
+allow specific audiences, or `.any()` to request unrestricted audiences. An
+explicit policy must fit the applicable ceiling, so `.any()` requires an
+unrestricted ceiling.
+
 #### Platform-managed token files for sandboxes
 
 For a CLI or entrypoint that you cannot wrap, declare the token file in the
@@ -534,10 +602,11 @@ credentials that identify the sandbox (`sub` is
 `v1:env:<environment>:sandbox:<sandbox_id>`) instead of the user who created it.
 With the default creator identity (`chalk_identity=True`), every workload a
 developer launches is indistinguishable from that developer to the external
-service. A sandbox can mint tokens only for the audiences it declares. This is
-supported for sandboxes only; functions, classes, containers and scaling groups
-reject `ChalkIdentity(mode="sandbox")`, and `OIDCTokenFile` is rejected in image
-and per-exec `env`.
+service. The sandbox's effective OIDC audience policy governs which audiences
+it can mint tokens for, including tokens delivered as files. This is supported
+for sandboxes only. Functions, classes, containers and scaling groups reject
+`ChalkIdentity(mode="sandbox")`, and `OIDCTokenFile` is rejected in image and
+per-exec `env`.
 
 A sandbox can declare at most 8 token files, must run on host compute (the
 default; `compute_class=cc.ComputeClass.K8S` is rejected), and cannot set a
