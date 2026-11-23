@@ -42,9 +42,8 @@ from protobuf import Oneof
 from protobuf.wkt import Duration
 
 from chalkcompute._exec import (
-    EXEC_HTTP_CLIENT,
+    ExecProcessClient,
     ExecStreamError,
-    FinalStatusStream,
     start_final_status_timeout,
 )
 from chalkcompute._artifact import ArtifactClient, _artifact_from_proto
@@ -72,9 +71,6 @@ from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_connect as runtime_connect,
 )
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
-from chalkcompute._gen.chalk.sandbox.v2 import (
-    process_service_connect as process_connect,
-)
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
@@ -561,9 +557,6 @@ class ExecProcess:
     session_id: str | None = None
     """V2 session identifier once the process session starts."""
 
-    def __post_init__(self) -> None:
-        self._response_iterator = FinalStatusStream(self._response_iterator)
-
     def write_stdin(self, data: str | bytes) -> None:
         """Send data to the process's stdin.
 
@@ -770,10 +763,8 @@ class ExecProcess:
                     yield request
 
             self._request_queue = request_queue
-            self._response_iterator = FinalStatusStream(
-                self._client._process_stub.open_session(
-                    request_iterator(), headers=self._client._headers
-                )
+            self._response_iterator = self._client._process_stub.open_session(
+                request_iterator(), headers=self._client._headers
             )
 
         return ExecResult(
@@ -2247,11 +2238,11 @@ class SandboxClient:
             http_client=SYNC_HTTP_CLIENT,
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
-        self._process_stub = process_connect.SandboxProcessServiceClientSync(
+        self._process_stub = ExecProcessClient(
             self._address,
             protocol=ProtocolType.GRPC,
             interceptors=interceptors,
-            http_client=EXEC_HTTP_CLIENT,
+            http_client=SYNC_HTTP_CLIENT,
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
         self._runtime_stub = runtime_connect.SandboxRuntimeServiceClientSync(

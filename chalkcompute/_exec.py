@@ -1,15 +1,24 @@
 """Exec errors and a bounded wait for the final RPC status."""
 
-from collections.abc import Iterator
-from contextvars import ContextVar
+from collections.abc import Iterator, Mapping
 from threading import Event, Timer
 from typing import Generic, TypeVar
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
+from connectrpc.protocol import ProtocolType
+from connectrpc.request import Headers
 from pyqwest import SyncClient, SyncRequest, SyncResponse
 
+from chalkcompute._gen.chalk.sandbox.v2.process_service_connect import (
+    SandboxProcessServiceClientSync,
+)
+from chalkcompute._gen.chalk.sandbox.v2.process_service_pb import (
+    OpenSessionRequest,
+    OpenSessionResponse,
+)
 from chalkcompute._http import _SYNC_HTTP_TRANSPORT
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 
 _Result = TypeVar("_Result")
 _Response = TypeVar("_Response")
@@ -24,27 +33,25 @@ class ExecStreamError(ConnectError, Generic[_Result]):
         self.result = result
 
 
-# Capture the HTTP response for this iterator, never another concurrent RPC.
-_active_stream: ContextVar["FinalStatusStream | None"] = ContextVar(
-    "exec_final_status_stream", default=None
-)
+class _ExecCancellation:
+    def __init__(self) -> None:
+        self.response: SyncResponse | None = None
 
-
-class _ExecTransport:
     def execute_sync(self, request: SyncRequest) -> SyncResponse:
-        response = _SYNC_HTTP_TRANSPORT.execute_sync(request)
-        if (stream := _active_stream.get()) is not None:
-            stream.response = response
-        return response
+        self.response = _SYNC_HTTP_TRANSPORT.execute_sync(request)
+        return self.response
 
-
-EXEC_HTTP_CLIENT = SyncClient(transport=_ExecTransport())
+    def cancel(self) -> None:
+        if self.response is not None:
+            self.response.close()
 
 
 class FinalStatusStream(Iterator[_Response]):
-    def __init__(self, responses: Iterator[_Response]) -> None:
+    def __init__(
+        self, responses: Iterator[_Response], cancellation: _ExecCancellation
+    ) -> None:
         self._responses = responses
-        self.response: SyncResponse | None = None
+        self._cancellation = cancellation
         self._timer: Timer | None = None
         self._expired = Event()
 
@@ -52,7 +59,6 @@ class FinalStatusStream(Iterator[_Response]):
         return self
 
     def __next__(self) -> _Response:
-        token = _active_stream.set(self)
         try:
             if self._expired.is_set():
                 raise TimeoutError
@@ -69,22 +75,42 @@ class FinalStatusStream(Iterator[_Response]):
                     "Timed out waiting for the final exec RPC status",
                 ) from exc
             raise
-        finally:
-            _active_stream.reset(token)
 
     def start_timeout(self) -> None:
-        if self._timer is not None or self.response is None:
+        if self._timer is not None:
             return
-        response = self.response
 
         def expire() -> None:
             self._expired.set()
             # Closing the HTTP body interrupts next(); closing its Python generator cannot.
-            response.close()
+            self._cancellation.cancel()
 
         self._timer = Timer(FINAL_STATUS_TIMEOUT_SECONDS, expire)
         self._timer.daemon = True
         self._timer.start()
+
+
+class ExecProcessClient(SandboxProcessServiceClientSync):
+    def open_session(
+        self,
+        request: Iterator[OpenSessionRequest],
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> Iterator[OpenSessionResponse]:
+        cancellation = _ExecCancellation()
+        # Each stream owns cancellation; all transports share the connection pool.
+        client = SandboxProcessServiceClientSync(
+            self._address,
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
+            http_client=SyncClient(transport=cancellation),
+            read_max_bytes=RPC_READ_MAX_BYTES,
+        )
+        return FinalStatusStream(
+            client.open_session(request, headers=headers, timeout_ms=timeout_ms),
+            cancellation,
+        )
 
 
 def start_final_status_timeout(responses: Iterator[object]) -> None:
