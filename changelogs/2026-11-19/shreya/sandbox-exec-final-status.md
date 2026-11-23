@@ -1,0 +1,1 @@
+- Check the final sandbox exec RPC status, preserve command results on error, and bound the post-exit wait to 30 seconds.

@@ -41,6 +41,11 @@ from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
+from chalkcompute._exec import (
+    ExecProcessClient,
+    ExecStreamError,
+    start_final_status_timeout,
+)
 from chalkcompute._artifact import ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
     ConnectError,
@@ -66,9 +71,6 @@ from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_connect as runtime_connect,
 )
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
-from chalkcompute._gen.chalk.sandbox.v2 import (
-    process_service_connect as process_connect,
-)
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
@@ -605,15 +607,39 @@ class ExecProcess:
             Events describing process start, stdout/stderr chunks,
             process exit, or errors.
         """
-        for response in self._response_iterator:
-            if response.seq:
-                self._last_seq = max(self._last_seq, response.seq)
-            event = _response_to_event(response)
-            if event.session_id is not None:
-                self.session_id = event.session_id
-            yield event
-            if event.is_exited or event.is_error:
-                return
+        result = ExecResult(
+            stdout=b"", stderr=b"", exit_code=None, session_id=self.session_id
+        )
+        terminal: ExecEvent | None = None
+        try:
+            for response in self._response_iterator:
+                if response.seq:
+                    self._last_seq = max(self._last_seq, response.seq)
+                event = _response_to_event(response)
+                if event.session_id is not None:
+                    self.session_id = result.session_id = event.session_id
+                if event.is_exited or event.is_error:
+                    if event.exit_code is not None:
+                        result.exit_code = event.exit_code
+                    if event.exit_signal is not None:
+                        result.signal = event.exit_signal
+                    result.error = event.error_message or result.error
+                    self._request_queue.put(None)
+                    terminal = event
+                    start_final_status_timeout(self._response_iterator)
+                    continue
+                yield event
+        except ConnectRpcError as exc:
+            result.error = result.error or exc.message
+            raise ExecStreamError(exc, result) from exc
+        if terminal is None:
+            raise ExecStreamError(
+                ConnectRpcError(
+                    Code.UNKNOWN, "Exec stream ended before the process completed"
+                ),
+                result,
+            )
+        yield terminal
 
     def wait(self, *, auto_reattach: bool = True) -> ExecResult:
         """Consume all output and return the final result.
@@ -641,7 +667,6 @@ class ExecProcess:
             Code.ABORTED,
             Code.INTERNAL,
             Code.UNAVAILABLE,
-            Code.DATA_LOSS,
         }
 
         while not completed:
@@ -680,14 +705,26 @@ class ExecProcess:
                             error = f"{event.code}: {event.message}"
                             completed = True
                     if completed:
-                        break
+                        self._request_queue.put(None)
+                        start_final_status_timeout(self._response_iterator)
             except ConnectRpcError as exc:
                 if (
-                    not auto_reattach
+                    completed
+                    or not auto_reattach
                     or self.session_id is None
                     or exc.code not in transient_codes
                 ):
-                    raise
+                    raise ExecStreamError(
+                        exc,
+                        ExecResult(
+                            stdout=b"".join(stdout_parts),
+                            stderr=b"".join(stderr_parts),
+                            exit_code=exit_code,
+                            signal=exit_signal,
+                            error=error or exc.message,
+                            session_id=self.session_id,
+                        ),
+                    ) from exc
 
             if completed:
                 self._request_queue.put(None)
@@ -2211,7 +2248,7 @@ class SandboxClient:
             http_client=SYNC_HTTP_CLIENT,
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
-        self._process_stub = process_connect.SandboxProcessServiceClientSync(
+        self._process_stub = ExecProcessClient(
             self._address,
             protocol=ProtocolType.GRPC,
             interceptors=interceptors,
