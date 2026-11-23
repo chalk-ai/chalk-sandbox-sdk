@@ -2,12 +2,82 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import KW_ONLY, dataclass, field
+from datetime import datetime
 from typing import Literal
+
+from chalkcompute._gen.chalk.auth.v1.permissions_pb import Permission
 
 IdentityModeName = Literal["creator", "sandbox"]
 _IDENTITY_MODES: tuple[IdentityModeName, ...] = ("creator", "sandbox")
+
+
+@dataclass(frozen=True, slots=True)
+class OIDCAudiencePolicy:
+    """Allow any OIDC audience or restrict issuance to an explicit set."""
+
+    _audiences: tuple[str, ...] | None
+
+    @classmethod
+    def any(cls) -> OIDCAudiencePolicy:
+        """Request unrestricted audiences. Requires an unrestricted ceiling."""
+        return cls(None)
+
+    @classmethod
+    def only(cls, audiences: Sequence[str]) -> OIDCAudiencePolicy:
+        """Allow the specified audiences. An empty sequence denies issuance."""
+        if isinstance(audiences, (str, bytes)) or not isinstance(audiences, Sequence):
+            raise TypeError("audiences must be a sequence of strings")
+        return cls(tuple(audiences))
+
+    def __post_init__(self) -> None:
+        if self._audiences is not None:
+            if not isinstance(self._audiences, tuple):
+                raise TypeError("use OIDCAudiencePolicy.any() or .only(audiences)")
+            if any(
+                not isinstance(audience, str) or not audience.strip()
+                for audience in self._audiences
+            ):
+                raise ValueError("audiences must be non-empty strings")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SandboxGroupLimits:
+    """Limits requested by the root sandbox for its group.
+
+    The root counts toward the aggregate CPU and memory ceilings but does
+    not count as an active descendant. The group deadline uses a timezone-aware
+    datetime. The OIDC audience policy bounds issuance for every group member.
+    """
+
+    max_active_descendants: int | None = None
+    cpu: str | None = None
+    memory: str | None = None
+    expires_at: datetime | None = None
+    oidc_audience_policy: OIDCAudiencePolicy | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_active_descendants is not None:
+            if type(self.max_active_descendants) is not int:
+                raise TypeError("max_active_descendants must be an integer")
+            if not 0 <= self.max_active_descendants < 2**32:
+                raise ValueError(
+                    "max_active_descendants must be between 0 and 2**32 - 1"
+                )
+        if self.cpu is not None and not isinstance(self.cpu, str):
+            raise TypeError("cpu must be a string")
+        if self.memory is not None and not isinstance(self.memory, str):
+            raise TypeError("memory must be a string")
+        if self.expires_at is not None:
+            if not isinstance(self.expires_at, datetime):
+                raise TypeError("expires_at must be a datetime")
+            if self.expires_at.utcoffset() is None:
+                raise ValueError("expires_at must be timezone-aware")
+        if self.oidc_audience_policy is not None and not isinstance(
+            self.oidc_audience_policy, OIDCAudiencePolicy
+        ):
+            raise TypeError("oidc_audience_policy must be an OIDCAudiencePolicy")
 
 
 @dataclass(frozen=True)
@@ -24,9 +94,10 @@ class OIDCTokenFile:
     already read and cached is not refreshed.
 
     Requires ``chalk_identity=ChalkIdentity(mode="sandbox")``, so the token
-    identifies the sandbox rather than the user who created it. The sandbox can
-    mint tokens only for the audiences it declares. Supported on host compute
-    (the sandbox default), with at most 8 token files per sandbox. The
+    identifies the sandbox. The declaration configures file delivery.
+    OIDC issuance is governed by the sandbox's effective audience policy,
+    including any inherited limits. Supported on host compute (the sandbox
+    default), with at most 8 token files per sandbox. The
     variable must not also be set by ``env`` or ``secrets``.
 
     Parameters
@@ -73,15 +144,56 @@ class ChalkIdentity:
         ``"sandbox"`` issues credentials that identify the sandbox itself.
         This is supported for sandboxes only and is required by
         :class:`OIDCTokenFile`.
+    permissions
+        Chalk API permissions requested for the sandbox principal. The default
+        requests an empty grant.
+    oidc_audience_policy
+        Requested OIDC audience authority. With ``None``, a root uses its
+        declared token-file audiences if present and the group ceiling otherwise.
+        A child inherits its parent's effective policy.
+    user_provided_claims
+        String claims requested for the sandbox's Chalk identity token.
     """
 
     mode: IdentityModeName = "creator"
+    _: KW_ONLY
+    permissions: Sequence[Permission] = ()
+    oidc_audience_policy: OIDCAudiencePolicy | None = None
+    user_provided_claims: Mapping[str, str] | None = field(default=None, hash=False)
 
     def __post_init__(self) -> None:
         if self.mode not in _IDENTITY_MODES:
             raise ValueError(
                 f"ChalkIdentity mode must be one of {list(_IDENTITY_MODES)}, "
                 f"got {self.mode!r}"
+            )
+        if self.mode != "sandbox" and (
+            self.permissions
+            or self.oidc_audience_policy is not None
+            or self.user_provided_claims is not None
+        ):
+            raise ValueError('principal settings require ChalkIdentity(mode="sandbox")')
+        if (
+            not isinstance(self.permissions, Sequence)
+            or isinstance(self.permissions, (str, bytes))
+            or not all(
+                isinstance(permission, Permission) for permission in self.permissions
+            )
+        ):
+            raise TypeError("permissions must be a sequence of Permission values")
+        object.__setattr__(self, "permissions", tuple(self.permissions))
+        if self.oidc_audience_policy is not None and not isinstance(
+            self.oidc_audience_policy, OIDCAudiencePolicy
+        ):
+            raise TypeError("oidc_audience_policy must be an OIDCAudiencePolicy")
+        if self.user_provided_claims is not None:
+            if not isinstance(self.user_provided_claims, Mapping) or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in self.user_provided_claims.items()
+            ):
+                raise TypeError("user_provided_claims must map strings to strings")
+            object.__setattr__(
+                self, "user_provided_claims", dict(self.user_provided_claims)
             )
 
 

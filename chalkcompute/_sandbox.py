@@ -84,6 +84,7 @@ from chalkcompute._image import Image
 from chalkcompute._chalk_identity import (
     ChalkIdentity,
     OIDCTokenFile,
+    SandboxGroupLimits,
     split_oidc_token_files,
 )
 from chalkcompute._naming import stdin_bytes, validate_env, validate_exec_command
@@ -838,6 +839,7 @@ class Sandbox:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool | ChalkIdentity | None = None,
+        group_limits: SandboxGroupLimits | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -915,6 +917,9 @@ class Sandbox:
             identity or ``False`` to disable managed Chalk identity. Pass
             ``ChalkIdentity(mode="sandbox")`` for credentials that identify
             the sandbox itself, which :class:`OIDCTokenFile` requires.
+        group_limits
+            Root sandbox group limits. Requires
+            ``ChalkIdentity(mode="sandbox")``.
         managed_ssh
             Optional SSH destinations: a list of :class:`SSHDest`, each
             reachable by its ``alias`` (default: its ``host``), or a mapping
@@ -1045,6 +1050,7 @@ class Sandbox:
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity: bool | ChalkIdentity = False
+        self._group_limits: SandboxGroupLimits | None = None
         self._oidc_token_files: dict[str, OIDCTokenFile] = {}
         self._managed_ssh: dict[str, SSHDest] = {}
         self._tracing: TracingPolicy | _RemoteFunctionTracingPolicy | None = None
@@ -1073,6 +1079,8 @@ class Sandbox:
                 or host_pool_id is not None
                 or tags is not None
                 or restart_policy is not None
+                or chalk_identity is not None
+                or group_limits is not None
                 or managed_ssh is not None
                 or tracing is not None
                 or chalk_client is not None
@@ -1119,6 +1127,7 @@ class Sandbox:
             tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
+            group_limits=group_limits,
             oidc_token_files=oidc_token_files,
             allow_sandbox_identity=True,
             managed_ssh=managed_ssh,
@@ -1146,6 +1155,7 @@ class Sandbox:
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
+        self._group_limits = group_limits
         self._oidc_token_files = oidc_token_files
         self._managed_ssh = normalize_managed_ssh(managed_ssh)
         self._tracing = tracing_policy
@@ -2304,6 +2314,7 @@ class SandboxClient:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool | ChalkIdentity | None = None,
+        group_limits: SandboxGroupLimits | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
@@ -2362,6 +2373,9 @@ class SandboxClient:
             identity or ``False`` to disable managed Chalk identity. Pass
             ``ChalkIdentity(mode="sandbox")`` for credentials that identify
             the sandbox itself, which :class:`OIDCTokenFile` requires.
+        group_limits
+            Root sandbox group limits. Requires
+            ``ChalkIdentity(mode="sandbox")``.
         managed_ssh
             Optional SSH destinations, as a list of :class:`SSHDest` or a
             mapping of aliases to them. See :class:`Sandbox`.
@@ -2406,6 +2420,7 @@ class SandboxClient:
                 tags=tags,
                 restart_policy=restart_policy,
                 chalk_identity=chalk_identity,
+                group_limits=group_limits,
                 managed_ssh=managed_ssh,
                 tracing=tracing,
             ),
@@ -2486,6 +2501,7 @@ class SandboxClient:
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
+            group_limits=sandbox._group_limits,
             oidc_token_files=sandbox._oidc_token_files,
             allow_sandbox_identity=True,
             managed_ssh=sandbox._managed_ssh,

@@ -21,7 +21,10 @@ from chalkcompute._artifact import ArtifactNotFoundError as ArtifactNotFoundErro
 from chalkcompute._cls import ClassBuildError as ClassBuildError
 from chalkcompute._cls import ClassError as ClassError
 from chalkcompute._chalk_identity import ChalkIdentity as ChalkIdentity
+from chalkcompute._chalk_identity import OIDCAudiencePolicy as OIDCAudiencePolicy
 from chalkcompute._chalk_identity import OIDCTokenFile as OIDCTokenFile
+from chalkcompute._chalk_identity import SandboxGroupLimits as SandboxGroupLimits
+from chalkcompute._gen.chalk.auth.v1.permissions_pb import Permission as Permission
 from chalkcompute._cls import RemoteClass as RemoteClass
 from chalkcompute._cls import after as after
 from chalkcompute._cls import before as before
@@ -332,6 +335,9 @@ __all__ = [
     "OIDCToken",
     "OIDCTokenFile",
     "ChalkIdentity",
+    "OIDCAudiencePolicy",
+    "Permission",
+    "SandboxGroupLimits",
     "WorkloadIdentityTokenError",
     "WorkloadIdentityTokenSource",
     "build_image",

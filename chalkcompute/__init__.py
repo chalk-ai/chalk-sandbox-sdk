@@ -160,6 +160,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     # _chalk_identity.py
     "ChalkIdentity": ("chalkcompute._chalk_identity", "ChalkIdentity"),
+    "OIDCAudiencePolicy": ("chalkcompute._chalk_identity", "OIDCAudiencePolicy"),
+    "Permission": ("chalkcompute._gen.chalk.auth.v1.permissions_pb", "Permission"),
+    "SandboxGroupLimits": ("chalkcompute._chalk_identity", "SandboxGroupLimits"),
     "OIDCTokenFile": ("chalkcompute._chalk_identity", "OIDCTokenFile"),
     # _workload_identity.py
     "OIDCToken": ("chalkcompute._workload_identity", "OIDCToken"),
