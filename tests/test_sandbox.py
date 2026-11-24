@@ -1327,6 +1327,9 @@ def test_abandon_commits_after_termination(
 ) -> None:
     sandbox, stub = lifecycle_sandbox
     sandbox.terminate()
+    request = stub.terminate_sandbox.call_args.args[0]
+    assert request.volume_commit_policy == pb.VolumeCommitPolicy.UNSPECIFIED
+
     sandbox.terminate(volume_commit_policy=VolumeCommitPolicy.ABANDON)
     request = stub.terminate_sandbox.call_args.args[0]
     assert request.id == "sandbox-123"

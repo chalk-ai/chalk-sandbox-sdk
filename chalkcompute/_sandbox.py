@@ -155,7 +155,6 @@ if TYPE_CHECKING:
 class VolumeCommitPolicy(Enum):
     """Managed-host volume publication policy on sandbox termination."""
 
-    PUBLISH = "publish"
     ABANDON = "abandon"
 
 
@@ -2149,7 +2148,6 @@ class Sandbox:
         _set_sandbox_span_id(self._id)
         policy = {
             None: pb.VolumeCommitPolicy.UNSPECIFIED,
-            VolumeCommitPolicy.PUBLISH: pb.VolumeCommitPolicy.PUBLISH,
             VolumeCommitPolicy.ABANDON: pb.VolumeCommitPolicy.ABANDON,
         }[volume_commit_policy]
         if self._terminated and policy != pb.VolumeCommitPolicy.ABANDON:
