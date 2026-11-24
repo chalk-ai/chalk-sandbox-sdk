@@ -2118,7 +2118,12 @@ class Sandbox:
         self.refresh()
 
     @_instrumented("chalkcompute.sandbox.terminate")
-    def terminate(self, grace_period_seconds: int | None = None) -> None:
+    def terminate(
+        self,
+        grace_period_seconds: int | None = None,
+        *,
+        abandon_pending_volume_commits: bool = False,
+    ) -> None:
         """Terminate this sandbox.
 
         Metadata remains available through :attr:`info` and :meth:`refresh`.
@@ -2128,14 +2133,17 @@ class Sandbox:
         ----------
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
+        abandon_pending_volume_commits
+            Interrupt outstanding managed-host volume publication. Buffered writes may be lost.
         """
         _set_sandbox_span_id(self._id)
-        if self._terminated:
+        if self._terminated and not abandon_pending_volume_commits:
             return
         client = self._require_client()
-        sandbox_id = self._require_started()
+        sandbox_id = self._terminated_id or self._require_started()
         req = pb.TerminateSandboxRequest(
             id=sandbox_id,
+            abandon_pending_volume_commits=abandon_pending_volume_commits,
             grace_period=Duration(seconds=grace_period_seconds)
             if grace_period_seconds is not None
             else None,

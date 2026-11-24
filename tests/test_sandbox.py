@@ -1321,6 +1321,17 @@ def test_sandbox_info_after_terminate_reads_server_metadata(
     assert stub.get_sandbox.call_count == 2
 
 
+def test_abandon_commits_after_termination(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    sandbox.terminate()
+    sandbox.terminate(abandon_pending_volume_commits=True)
+    request = stub.terminate_sandbox.call_args.args[0]
+    assert request.id == "sandbox-123"
+    assert request.abandon_pending_volume_commits
+
+
 @pytest.mark.parametrize(
     "code, error, message",
     [
