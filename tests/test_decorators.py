@@ -67,6 +67,34 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
     assert {deployed_fn._func_name for deployed_fn in deployed} == {"bare", "called"}
 
 
+@pytest.mark.usefixtures("no_deploy")
+@pytest.mark.parametrize(
+    ("targets", "name", "expected"),
+    [
+        ('["score"]', None, (0, 1, 1)),
+        ('["eval-score"]', "eval-score", (0, 1, 1)),
+        ('["score"]', "other-name", (1, 1, None)),
+        ('["score_extra"]', None, (1, 1, None)),
+        ('"score"', None, (1, 1, None)),
+        ("invalid JSON", None, (1, 1, None)),
+    ],
+)
+def test_dashboard_eval_scales_only_named_functions(
+    monkeypatch, targets, name, expected
+):
+    monkeypatch.setenv("CHALK_EVAL_FUNCTION_NAMES", targets)
+
+    @function(name=name)
+    def score(output: str) -> float:
+        return 1.0
+
+    assert (
+        score._min_replicas,
+        score._max_replicas,
+        score._target_queue_depth,
+    ) == expected
+
+
 def test_function_decorator_passes_schedule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

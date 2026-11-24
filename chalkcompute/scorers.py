@@ -211,6 +211,7 @@ def _declare_scorer(
     }
     exec(compile(source, frame.f_code.co_filename, "exec"), namespace)
     scorer = namespace[py_name]
+    scorer.__chalk_eval_function__ = True
     for attribute, value in (stamp or {}).items():
         setattr(scorer, attribute, value)
 
