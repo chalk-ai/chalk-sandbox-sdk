@@ -144,6 +144,7 @@ from chalkcompute._sandbox import SandboxClient as SandboxClient
 from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
+from chalkcompute._sandbox import VolumeCommitPolicy as VolumeCommitPolicy
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxSnapshot as SandboxSnapshot
 from chalkcompute._sandbox import SandboxSnapshotError as SandboxSnapshotError
@@ -368,6 +369,7 @@ __all__ = [
     "SandboxClient",
     "SandboxError",
     "SandboxInfo",
+    "VolumeCommitPolicy",
     "SandboxNotFoundError",
     "SandboxSnapshot",
     "SandboxSnapshotError",

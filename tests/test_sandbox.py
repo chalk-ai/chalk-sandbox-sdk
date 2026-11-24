@@ -14,6 +14,7 @@ from chalkcompute import (
     Sandbox,
     SandboxSnapshot,
     Secret,
+    VolumeCommitPolicy,
 )
 from connectrpc.client import ConnectClientSync
 from connectrpc.code import Code
@@ -1326,10 +1327,10 @@ def test_abandon_commits_after_termination(
 ) -> None:
     sandbox, stub = lifecycle_sandbox
     sandbox.terminate()
-    sandbox.terminate(abandon_pending_volume_commits=True)
+    sandbox.terminate(volume_commit_policy=VolumeCommitPolicy.ABANDON)
     request = stub.terminate_sandbox.call_args.args[0]
     assert request.id == "sandbox-123"
-    assert request.abandon_pending_volume_commits
+    assert request.volume_commit_policy == pb.VolumeCommitPolicy.ABANDON
 
 
 @pytest.mark.parametrize(
