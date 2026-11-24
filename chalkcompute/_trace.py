@@ -49,6 +49,7 @@ from typing import Any, TypeVar
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
+from protobuf.wkt import Timestamp
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
@@ -822,7 +823,7 @@ def _keep_tail(text: str, limit: int) -> str:
 
 
 class TraceClient:
-    """Client for span and session queries against ``chalk.server.v1.TraceService``."""
+    """Query spans, traces, and session summaries in a Chalk environment."""
 
     def __init__(
         self,
@@ -832,7 +833,23 @@ class TraceClient:
     ) -> None:
         if chalk_client is not None and connect_client is not None:
             raise ValueError("pass only one of chalk_client or connect_client")
-        self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
+        self._owns_connect = connect_client is None
+        self._connect = (
+            ConnectClient(chalk_client=chalk_client)
+            if connect_client is None
+            else connect_client
+        )
+
+    def __enter__(self) -> TraceClient:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close the connection created by this client."""
+        if self._owns_connect:
+            self._connect.close()
 
     @_instrumented("chalkcompute.trace.list_spans")
     def list_spans(
@@ -843,13 +860,42 @@ class TraceClient:
         attribute_filters: Mapping[str, str | None] | None = None,
         limit: int | None = None,
     ) -> list[Span]:
-        """List a session's spans, paging transparently.
+        """List a session's spans, paging transparently."""
+        return self._list_spans(
+            query=_session_query(_require_id(session_id, "session_id")),
+            operation_name=operation_name,
+            attribute_filters=attribute_filters,
+            limit=limit,
+        )
 
-        ``ListSpan`` has no session filter, so the session is expressed through
-        the faceted ``query`` string, whose ``session:`` key Chalk resolves
-        against the indexed ``SessionId`` column.
+    @_instrumented("chalkcompute.trace.list_sandbox_spans")
+    def list_sandbox_spans(
+        self,
+        sandbox_id: str,
+        *,
+        start_time: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[Span]:
+        """List spans recorded for a sandbox, paging transparently.
+
+        ``start_time`` sets the earliest span start to include. ``limit`` caps
+        the total number of spans returned across all pages.
         """
-        session_id = _require_id(session_id, "session_id")
+        return self._list_spans(
+            attribute_filters={"sandbox.id": _require_id(sandbox_id, "sandbox_id")},
+            start_time=start_time,
+            limit=limit,
+        )
+
+    def _list_spans(
+        self,
+        *,
+        query: str | None = None,
+        operation_name: str | None = None,
+        attribute_filters: Mapping[str, str | None] | None = None,
+        start_time: datetime | None = None,
+        limit: int | None,
+    ) -> list[Span]:
         if limit is not None and limit < 0:
             raise ValueError("limit must be >= 0 or None")
 
@@ -857,6 +903,7 @@ class TraceClient:
             trace_pb.AttributeFilter(key=key, value=value)
             for key, value in (attribute_filters or {}).items()
         ]
+        earliest = None if start_time is None else Timestamp.from_datetime(start_time)
         spans: list[Span] = []
         remaining = limit
         page_token: str | None = None
@@ -865,7 +912,8 @@ class TraceClient:
             response = self._call(
                 stub.list_span,
                 trace_pb.ListSpanRequest(
-                    query=_session_query(session_id),
+                    query=query,
+                    start_time=earliest,
                     limit=(
                         _MAX_PAGE_SIZE
                         if remaining is None
