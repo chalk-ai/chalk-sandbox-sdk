@@ -50,9 +50,10 @@ Keep existing overrides that callers depend on: changing or removing one changes
 the target deployment and does not rename the existing function.
 
 Leave `min_replicas`, `max_replicas`, and `concurrency` out of ordinary examples
-and evaluations. Functions and classes currently default to one replica
-(`min_replicas=1`, `max_replicas=1`) and no explicit concurrency policy
-(`concurrency=None`). A dataset with many rows does not by itself justify
+and evaluations. Ordinary functions and classes default to 1/1 replicas. SDK
+scorer factories and dashboard Eval deployments default to 0/1, except when a
+GPU utilization target requires a warm replica. The default concurrency policy
+is `concurrency=None`. A dataset with many rows does not by itself justify
 changing these settings. Concurrency is a cap on in-flight calls, not a switch
 that enables parallel evaluation.
 
