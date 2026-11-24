@@ -589,6 +589,29 @@ def test_sandbox_host_pool_placement(
         assert placement.value.host_pool_id == host_pool_id
 
 
+@pytest.mark.parametrize("use_client_create", [False, True])
+@pytest.mark.parametrize("trace_syscalls", [None, ["openat", "connect"]])
+def test_trace_syscalls(
+    use_client_create: bool, trace_syscalls: list[str] | None
+) -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    options = {} if trace_syscalls is None else {"trace_syscalls": trace_syscalls}
+    try:
+        if use_client_create:
+            client.create("ubuntu:latest", wait=False, **options)
+        else:
+            Sandbox(image="ubuntu:latest", sandbox_client=client, **options).run(
+                wait=False
+            )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert list(stub.request.source.value.trace_syscalls) == (trace_syscalls or [])
+
+
 def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) -> None:
     def host_bindings(sandbox: Sandbox, host: str) -> dict[str, str | Secret]:
         assert sandbox._network_policy is not None

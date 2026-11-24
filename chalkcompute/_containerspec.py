@@ -555,6 +555,7 @@ class ContainerSpec:
     # this False so ChalkIdentity(mode="sandbox") fails at construction.
     allow_sandbox_identity: bool = False
     group_limits: SandboxGroupLimits | None = None
+    trace_syscalls: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         self.validate_fields(
@@ -932,6 +933,7 @@ class ContainerSpec:
             ),
             chalk_workload_identity=self._workload_identity_proto(),
             group_limits=self._group_limits_proto(),
+            trace_syscalls=list(self.trace_syscalls),
         )
 
     def _workload_identity_proto(self) -> container_pb.ChalkWorkloadIdentity | None:
