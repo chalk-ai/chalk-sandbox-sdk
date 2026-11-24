@@ -6,7 +6,7 @@ import inspect
 
 import pytest
 
-from chalkcompute import scorers
+from chalkcompute import ScaleFromZeroRequestPolicy, scorers
 from chalkcompute._evaluation import EvaluationScorerResult
 
 pytestmark = pytest.mark.usefixtures("no_deploy")
@@ -33,6 +33,39 @@ def test_deploys_under_a_default_name_with_the_declared_columns() -> None:
     assert scorer._explicit_name == "exact-match"
     assert list(inspect.signature(scorer._func).parameters) == ["answer", "gold"]
     assert scorers.exact_match(name="answer-match")._explicit_name == "answer-match"
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, (0, 1, 1)),
+        ({"target_queue_depth": 4}, (0, 1, 4)),
+        ({"min_replicas": 1}, (1, 1, None)),
+        ({"max_replicas": 1}, (1, 1, None)),
+        ({"max_replicas": 3}, (1, 3, None)),
+        ({"min_replicas": 0, "max_replicas": 4}, (0, 4, None)),
+        ({"gpu": "nvidia-t4:1", "target_gpu_utilization_percentage": 75}, (1, 1, None)),
+    ],
+)
+def test_scorer_replica_defaults(options, expected) -> None:
+    scorer = scorers.exact_match(**options)
+
+    assert (
+        scorer._min_replicas,
+        scorer._max_replicas,
+        scorer._target_queue_depth,
+    ) == expected
+
+
+def test_scorer_with_hold_still_requests_async_queue_activation() -> None:
+    # HOLD serves synchronous traffic. The platform rejects HOLD plus a queue
+    # trigger, so an incompatible override cannot silently strand an Eval call.
+    scorer = scorers.exact_match(
+        scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD
+    )
+
+    assert scorer._scale_from_zero_request_policy is ScaleFromZeroRequestPolicy.HOLD
+    assert scorer._target_queue_depth == 1
 
 
 def test_strips_by_default_and_can_fold_case_or_whitespace() -> None:

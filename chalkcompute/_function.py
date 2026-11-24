@@ -2251,6 +2251,21 @@ def _compile_catalog_argument_binder(
 # ---------------------------------------------------------------------------
 
 
+def _is_eval_function(func: Callable, registered_name: str) -> bool:
+    if getattr(func, "__chalk_eval_function__", False):
+        return True
+    # The dashboard imports user code in its deploy sandbox. Only the named
+    # Eval functions in that module should receive Eval defaults.
+    names_json = os.environ.get("CHALK_EVAL_FUNCTION_NAMES")
+    if not names_json:
+        return False
+    try:
+        names = json.loads(names_json)
+    except ValueError:
+        return False
+    return isinstance(names, list) and registered_name in names
+
+
 class RemoteFunction:
     """A versioned remote function backed by ExternalFunctionCatalogService.
 
@@ -2315,8 +2330,8 @@ class RemoteFunction:
         chalk_identity: bool | ChalkIdentity = False,
         authenticated: bool = False,
         readiness_probe: _ReadinessProbe | None = None,
-        min_replicas: int = 1,
-        max_replicas: int = 1,
+        min_replicas: int | None = None,
+        max_replicas: int | None = None,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
@@ -2391,6 +2406,18 @@ class RemoteFunction:
             tags=tags,
             chalk_identity=chalk_identity,
         )
+        if (
+            min_replicas is None
+            and max_replicas is None
+            # A GPU utilization target needs a running replica for measurements.
+            and target_gpu_utilization_percentage is None
+            and _is_eval_function(func, name or self._func_name)
+        ):
+            min_replicas = 0
+            if target_queue_depth is None:
+                target_queue_depth = 1
+        min_replicas = 1 if min_replicas is None else min_replicas
+        max_replicas = 1 if max_replicas is None else max_replicas
         validate_replica_and_utilization(
             min_replicas=min_replicas,
             max_replicas=max_replicas,
@@ -4277,8 +4304,8 @@ def function(
     chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
-    min_replicas: int = 1,
-    max_replicas: int = 1,
+    min_replicas: int | None = None,
+    max_replicas: int | None = None,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
@@ -4319,8 +4346,8 @@ def function(
     chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
-    min_replicas: int = 1,
-    max_replicas: int = 1,
+    min_replicas: int | None = None,
+    max_replicas: int | None = None,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
@@ -4362,8 +4389,8 @@ def function(
     chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
-    min_replicas: int = 1,
-    max_replicas: int = 1,
+    min_replicas: int | None = None,
+    max_replicas: int | None = None,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
@@ -4391,11 +4418,12 @@ def function(
     underscores, and can be used with ``RemoteFunction.from_name(...)``.
 
     Add optional configuration only for a concrete workload requirement.
-    Ordinary functions, evaluation tasks, and scorers should omit
-    ``min_replicas``, ``max_replicas``, and ``concurrency``: defaults are one
-    replica and no explicit concurrency policy. Multiple evaluation rows do
-    not require overriding them. Document why any tuning override is needed;
-    do not copy unrelated examples' settings or explicitly repeat defaults.
+    Ordinary functions default to one replica and no explicit concurrency
+    policy. Function-backed scorers from ``cc.scorers`` and functions deployed
+    by the Eval dashboard default to zero idle replicas. Multiple evaluation
+    rows do not require overriding these settings. Document why any tuning
+    override is needed; do not copy unrelated examples' settings or explicitly
+    repeat defaults.
 
     **Locally**, decoration validates the function, starts deployment in a
     background worker, and returns. The worker:
@@ -4455,8 +4483,9 @@ def function(
         ``(name_or_volume, mount_path)`` tuples for persistent storage.
         Volume handles preserve their selected ref or pinned version.
     min_replicas
-        Minimum number of replicas. Defaults to 1; normally omit. Set to 0
-        only when deliberately choosing scale-to-zero behavior.
+        Minimum number of replicas. Defaults to 1 for ordinary functions.
+        Eval deployments default to 0 when both bounds are omitted and no GPU
+        utilization target is set. Pass 1 to keep a replica warm.
     max_replicas
         Maximum number of replicas. Defaults to 1; normally omit. Increase
         only when the workload needs additional replica capacity.

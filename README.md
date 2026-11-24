@@ -801,6 +801,12 @@ remain available for other telemetry fields.
 `inputs` pair naming the candidate column and the column it is compared
 against, scores between 0 and 1, and records the raw quantity as row metadata.
 
+Function-backed scorers default to zero idle replicas and wake one replica when
+an evaluation queues work. Supplying either replica bound uses the ordinary
+function defaults for the other bound. A GPU utilization target requires a warm
+replica. The default queue trigger for Eval calls is incompatible with the
+synchronous `HOLD` scale-from-zero policy.
+
 ```python
 match = cc.scorers.exact_match(case_insensitive=True)
 
