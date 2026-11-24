@@ -110,9 +110,9 @@ details into examples.
 
 Use the smallest decorator that expresses the example's teaching goal. Omit
 `min_replicas`, `max_replicas`, and `concurrency` unless the example demonstrates
-scaling or has a concrete capacity or downstream limit to satisfy. The defaults
-are one replica and no explicit concurrency policy. Multiple evaluation rows do
-not require these options, and `concurrency` is a cap, not an enablement flag.
+scaling or has a concrete capacity or downstream limit to satisfy. Multiple
+evaluation rows can run concurrently with the default settings. Use
+`concurrency` to cap the number of in-flight calls.
 Explain a necessary override next to the option; do not copy arbitrary values
 or restate defaults. The same rule applies to resource requests, retries, and
 timeouts. Remove temporary troubleshooting overrides before presenting a final
