@@ -1034,8 +1034,9 @@ function samples, what it rewards and how many steps it takes are up to it.
 ```python
 @cc.training(dataset="support-triage", gpu="nvidia-l40s:1")
 def train_support_policy(df, config):
-    experiment = config["experiment"]  # ids, base_model, where to leave the model
-    ...
+    ctx = cc.experiment_context()   # experiment, evaluation, base_model, baseline run
+    model = fine_tune(ctx.base_model, df, config)  # a PEFT model
+    ctx.finish(model)               # hands the trained model to the experiment
 
 experiment = cc.Experiment.start(
     evaluation,
@@ -1046,13 +1047,14 @@ experiment = cc.Experiment.start(
 ).wait()
 ```
 
-`config["experiment"]` names the experiment, the evaluation, the base model and
-the baseline run. For the final run to reach the trained model, the function
-today has to save a LoRA adapter of `base_model` at
-`adapter_dir/adapter_out`, record it as a checkpoint, and load it into
-`policy_server_url` under the name `adapter_out`; all four are in
-`config["experiment"]`. `gpu`, `steps` and the other settings of the server's
-own trainer are refused alongside `train=`.
+`cc.experiment_context()` names the experiment, the evaluation, the base model
+and the baseline run. `ctx.finish(model)` takes a PEFT model: it saves the LoRA
+adapter, records it as the run's checkpoint, which the experiment registers a
+model version from, and loads it into the model server the final run calls.
+The training image needs `torch`, `peft` and `chalkpy[runtime]` for it. The
+same details are in `config["experiment"]` for a function that would rather do
+this itself. `gpu`, `steps` and the other settings of the server's own trainer
+are refused alongside `train=`.
 
 `cc.Experiment.from_id` and `cc.Experiment.list_all(evaluation=...)` attach to
 existing experiments; the list holds at most the 100 most recent.

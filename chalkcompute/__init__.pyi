@@ -103,6 +103,11 @@ from chalkcompute._experiment import (
 )
 from chalkcompute._experiment import ExperimentStatus as ExperimentStatus
 from chalkcompute._experiment import ExperimentStep as ExperimentStep
+from chalkcompute._experiment_context import ExperimentContext as ExperimentContext
+from chalkcompute._experiment_context import (
+    ExperimentContextError as ExperimentContextError,
+)
+from chalkcompute._experiment_context import experiment_context as experiment_context
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -333,6 +338,9 @@ __all__ = [
     "ExperimentScorerResult",
     "ExperimentStatus",
     "ExperimentStep",
+    "ExperimentContext",
+    "ExperimentContextError",
+    "experiment_context",
     "SqlExpression",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",

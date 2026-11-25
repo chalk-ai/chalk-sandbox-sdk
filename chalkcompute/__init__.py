@@ -137,6 +137,13 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     "ExperimentStatus": ("chalkcompute._experiment", "ExperimentStatus"),
     "ExperimentStep": ("chalkcompute._experiment", "ExperimentStep"),
+    # _experiment_context.py
+    "ExperimentContext": ("chalkcompute._experiment_context", "ExperimentContext"),
+    "ExperimentContextError": (
+        "chalkcompute._experiment_context",
+        "ExperimentContextError",
+    ),
+    "experiment_context": ("chalkcompute._experiment_context", "experiment_context"),
     # _trace.py
     "SessionSummary": ("chalkcompute._trace", "SessionSummary"),
     "Span": ("chalkcompute._trace", "Span"),
