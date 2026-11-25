@@ -38,7 +38,6 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
-from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
@@ -66,6 +65,7 @@ from chalkcompute._http import (
     SyncHTTPTransport,
 )
 from chalkcompute._naming import sanitize_dns_label
+from chalkcompute._quota_error import QuotaExceededError, _translate_quota_error
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._remote_function_tracing import (
@@ -127,13 +127,8 @@ class ScalingGroupBuildError(ScalingGroupError):
     """Raised when the custom image build fails."""
 
 
-class QuotaExceededError(ScalingGroupError):
-    """Raised when the server rejects a request because it exceeds a quota.
-
-    The message is the server's own text, which names the resource, the
-    amounts and how to raise the limit. Subclasses :class:`ScalingGroupError`
-    so existing ``except ScalingGroupError`` handlers still catch it.
-    """
+class _ScalingGroupQuotaExceededError(QuotaExceededError, ScalingGroupError):
+    """A quota rejection from a scaling group deployment."""
 
 
 # ---------------------------------------------------------------------------
@@ -809,32 +804,33 @@ class ScalingGroup:
         progress_update(key, detail="Deploying")
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
         try:
-            if self._scaling_group_id is None:
-                response = self._client.call(
-                    stub.create_scaling_group,
-                    sg_pb.CreateScalingGroupRequest(spec=spec),
-                    timeout=60,
-                )
-                operation = "CreateScalingGroup"
-            else:
-                response = self._client.call(
-                    stub.update_scaling_group,
-                    sg_pb.UpdateScalingGroupRequest(
-                        scaling_group_id=self._scaling_group_id,
-                        spec=spec,
-                        update_mask=FieldMask(paths=["spec"]),
-                    ),
-                    timeout=60,
-                )
-                operation = "UpdateScalingGroup"
+            with _translate_quota_error(_ScalingGroupQuotaExceededError):
+                if self._scaling_group_id is None:
+                    response = self._client.call(
+                        stub.create_scaling_group,
+                        sg_pb.CreateScalingGroupRequest(spec=spec),
+                        timeout=60,
+                    )
+                    operation = "CreateScalingGroup"
+                else:
+                    response = self._client.call(
+                        stub.update_scaling_group,
+                        sg_pb.UpdateScalingGroupRequest(
+                            scaling_group_id=self._scaling_group_id,
+                            spec=spec,
+                            update_mask=FieldMask(paths=["spec"]),
+                        ),
+                        timeout=60,
+                    )
+                    operation = "UpdateScalingGroup"
+        except QuotaExceededError:
+            raise
         except ConnectRpcError as exc:
             operation = (
                 "UpdateScalingGroup"
                 if self._scaling_group_id is not None
                 else "CreateScalingGroup"
             )
-            if exc.code == Code.RESOURCE_EXHAUSTED:
-                raise QuotaExceededError(exc.message) from exc
             raise ScalingGroupError(f"{operation} failed: {exc}") from exc
         if response.scaling_group is None:
             raise ScalingGroupError(f"{operation} returned no scaling group")

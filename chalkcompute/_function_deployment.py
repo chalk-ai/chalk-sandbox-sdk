@@ -17,6 +17,7 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_pb,
 )
 from chalkcompute._image import Image
+from chalkcompute._quota_error import QuotaExceededError, _translate_quota_error
 from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
@@ -177,13 +178,14 @@ def ensure_external_function(
     )
     while time.monotonic() < deadline:
         try:
-            response = client.call(
-                stub.ensure_external_function,
-                request,
-                # A cold request can verify a large upload and publish it. A
-                # fixed short RPC timeout would repeatedly discard that work.
-                timeout=max(0.1, deadline - time.monotonic()),
-            )
+            with _translate_quota_error(QuotaExceededError):
+                response = client.call(
+                    stub.ensure_external_function,
+                    request,
+                    # A cold request can verify a large upload and publish it. A
+                    # fixed short RPC timeout would repeatedly discard that work.
+                    timeout=max(0.1, deadline - time.monotonic()),
+                )
         except ConnectRpcError as exc:
             if exc.code not in (Code.UNAVAILABLE, Code.DEADLINE_EXCEEDED):
                 raise

@@ -118,6 +118,7 @@ from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
 from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
+from chalkcompute._quota_error import QuotaExceededError as QuotaExceededError
 from chalkcompute._router_rate_limit import RateLimit as RateLimit
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
 from chalkcompute._function_error import CallCancelledError as CallCancelledError
@@ -166,7 +167,6 @@ from chalkcompute._workflow_worker import (
 )
 from chalkcompute._workflow_worker import run_workflow as run_workflow
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
-from chalkcompute._scaling_group import QuotaExceededError as QuotaExceededError
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
@@ -298,6 +298,7 @@ __all__ = [
     "RateLimitPolicy",
     "ConcurrencyPolicy",
     "QueuePolicy",
+    "QuotaExceededError",
     "TracingPolicy",
     "function",
     "DatasetClient",
@@ -383,7 +384,6 @@ __all__ = [
     "SandboxFileSystem",
     "SandboxFileSystemError",
     "ScalingGroup",
-    "QuotaExceededError",
     "ScalingGroupBuildError",
     "ScalingGroupError",
     "ScalingGroupInfo",

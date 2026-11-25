@@ -82,6 +82,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),
+    "QuotaExceededError": ("chalkcompute._quota_error", "QuotaExceededError"),
     "TracingPolicy": (
         "chalkcompute._remote_function_tracing",
         "TracingPolicy",
@@ -233,7 +234,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     # _scaling_group.py
     "ScalingGroup": ("chalkcompute._scaling_group", "ScalingGroup"),
-    "QuotaExceededError": ("chalkcompute._scaling_group", "QuotaExceededError"),
     "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
     "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
     "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),

@@ -90,6 +90,7 @@ from chalkcompute._chalk_identity import (
     split_oidc_token_files,
 )
 from chalkcompute._naming import stdin_bytes, validate_env, validate_exec_command
+from chalkcompute._quota_error import QuotaExceededError, _translate_quota_error
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -155,6 +156,10 @@ class SandboxError(Exception):
     """Base exception for sandbox errors."""
 
     pass
+
+
+class _SandboxQuotaExceededError(QuotaExceededError, SandboxError):
+    """A quota rejection from a sandbox launch or restore."""
 
 
 class SandboxNotFoundError(SandboxError):
@@ -2089,11 +2094,14 @@ class Sandbox:
         retry_delay = _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS
         while True:
             try:
-                client._stub.resume_sandbox(
-                    pb.ResumeSandboxRequest(id=sandbox_id),
-                    headers=client._headers,
-                )
+                with _translate_quota_error(_SandboxQuotaExceededError):
+                    client._stub.resume_sandbox(
+                        pb.ResumeSandboxRequest(id=sandbox_id),
+                        headers=client._headers,
+                    )
                 break
+            except QuotaExceededError:
+                raise
             except ConnectRpcError as e:
                 if not _is_retryable_resume_conflict(e):
                     _handle_rpc_error(e, sandbox_id)
@@ -2544,10 +2552,11 @@ class SandboxClient:
             managed_ssh=sandbox._managed_ssh,
         ).to_proto()
 
-        resp = self._stub.create_sandbox(
-            pb.CreateSandboxRequest(source=Oneof("spec", spec)),
-            headers=self._headers,
-        )
+        with _translate_quota_error(_SandboxQuotaExceededError):
+            resp = self._stub.create_sandbox(
+                pb.CreateSandboxRequest(source=Oneof("spec", spec)),
+                headers=self._headers,
+            )
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
         # Bind the id before polling so a failed poll still leaves the caller a
@@ -2880,13 +2889,15 @@ class SandboxClient:
             )
         sandbox = Sandbox(sandbox_client=self)
         try:
-            response = self._stub.create_sandbox(
-                pb.CreateSandboxRequest(source=Oneof("snapshot_id", snapshot_id)),
-                headers=self._headers,
-                timeout_ms=max(
-                    1, math.ceil(min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining) * 1000)
-                ),
-            )
+            with _translate_quota_error(_SandboxQuotaExceededError):
+                response = self._stub.create_sandbox(
+                    pb.CreateSandboxRequest(source=Oneof("snapshot_id", snapshot_id)),
+                    headers=self._headers,
+                    timeout_ms=max(
+                        1,
+                        math.ceil(min(_SNAPSHOT_RPC_TIMEOUT_SECONDS, remaining) * 1000),
+                    ),
+                )
         except ConnectRpcError as e:
             _handle_rpc_error(e, snapshot_id)
             raise
