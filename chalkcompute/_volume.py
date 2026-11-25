@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import KW_ONLY, dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeAlias
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -257,6 +257,17 @@ def _dataset_output_path(object_path: str, dest_prefix: str = "") -> str:
     return "/".join([*prefix_parts, *relative_parts])
 
 
+_UploadEntry: TypeAlias = tuple[str, bytes | Path] | tuple[str, Path, dict[str, int]]
+
+
+def _local_upload_entry(
+    path: str, local_path: str | Path, mode: int | None
+) -> _UploadEntry:
+    if mode is None:
+        return path, Path(local_path)
+    return path, Path(local_path), {"mode": mode}
+
+
 def _prepare_source_files(image: Image) -> builtins.list[tuple[str, PreparedFiles]]:
     """Prepare local sources once for manifests and uploads."""
     groups = image.lazy_local_files_grouped_for_volume_mounts()
@@ -268,13 +279,14 @@ def _prepare_source_files(image: Image) -> builtins.list[tuple[str, PreparedFile
         )
     prepared = []
     for mount_path, files in groups.items():
-        source = []
-        for file in files:
-            path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
-            entry: tuple[Any, ...] = (path, Path(file.src))
-            if file.mode is not None:
-                entry = (*entry, {"mode": file.mode})
-            source.append(entry)
+        source = [
+            _local_upload_entry(
+                os.path.relpath(file.dest, mount_path).replace(os.sep, "/"),
+                file.src,
+                file.mode,
+            )
+            for file in files
+        ]
         try:
             prepared.append((mount_path, _native.prepare_files(source, "main")))
         except _native_error_types() as exc:
@@ -1643,7 +1655,9 @@ class VolumeClient:
                 created.append(vol)
                 with vol.batch_upload() as batch:
                     for lf in files:
-                        batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
+                        batch.put_file(
+                            os.path.relpath(lf.dest, dest_dir), lf.src, mode=lf.mode
+                        )
                 volumes.append(
                     VolumeMount(
                         name=vol.name, mount_path=dest_dir, version_id=vol.version.id
@@ -1715,7 +1729,8 @@ class VolumeClient:
                 else self.create(name, volume_type="source_code")
             )
             source = [
-                (os.path.relpath(lf.dest, dest_dir), Path(lf.src)) for lf in files
+                _local_upload_entry(os.path.relpath(lf.dest, dest_dir), lf.src, lf.mode)
+                for lf in files
             ]
             self._raise_if_closed()
             removes = [("/", True)] if existed else []
@@ -2007,7 +2022,7 @@ class VolumeClient:
     def _upload(
         self,
         volume: str,
-        files: Sequence[tuple[str, bytes | Path]],
+        files: Sequence[_UploadEntry],
         *,
         ref_name: str | None = None,
     ) -> builtins.list[CommitStatus]:
@@ -2345,7 +2360,7 @@ class _BatchUpload:
     ) -> None:
         self._volume = volume
         self._max_files_per_commit = max_files_per_commit
-        self._pending: list[tuple[str, bytes | Path]] = []
+        self._pending: list[_UploadEntry] = []
 
     def put(self, path: str, data: bytes | str) -> None:
         """Stage a file for the next commit.
@@ -2363,7 +2378,9 @@ class _BatchUpload:
         if len(self._pending) >= self._max_files_per_commit:
             self._flush()
 
-    def put_file(self, path: str, local_path: str | Path) -> None:
+    def put_file(
+        self, path: str, local_path: str | Path, *, mode: int | None = None
+    ) -> None:
         """Stage a local file for the next commit.
 
         Parameters
@@ -2372,8 +2389,10 @@ class _BatchUpload:
             Destination path within the volume.
         local_path
             Local file to upload.
+        mode
+            POSIX permission bits to use in place of the local file's permissions.
         """
-        self._pending.append((path, Path(local_path)))
+        self._pending.append(_local_upload_entry(path, local_path, mode))
         if len(self._pending) >= self._max_files_per_commit:
             self._flush()
 
