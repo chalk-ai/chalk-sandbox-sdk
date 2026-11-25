@@ -1,0 +1,1 @@
+- Raise `QuotaExceededError` when scaling group deployments, container launches, sandbox launches and restores, or function and class deployments exceed an environment quota. The exception preserves the server message and exposes the quota resource and amounts.

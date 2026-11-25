@@ -123,6 +123,7 @@ from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
 from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
+from chalkcompute._quota_error import QuotaExceededError as QuotaExceededError
 from chalkcompute._router_rate_limit import RateLimit as RateLimit
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
 from chalkcompute._function_error import CallCancelledError as CallCancelledError
@@ -302,6 +303,7 @@ __all__ = [
     "RateLimitPolicy",
     "ConcurrencyPolicy",
     "QueuePolicy",
+    "QuotaExceededError",
     "TracingPolicy",
     "function",
     "DatasetClient",

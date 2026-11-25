@@ -68,6 +68,7 @@ from chalkcompute._naming import (
     validate_exec_command,
 )
 from chalkcompute._image_build import normalize_image_volumes
+from chalkcompute._quota_error import QuotaExceededError, _translate_quota_error
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
@@ -98,6 +99,10 @@ if TYPE_CHECKING:
 
 class ContainerError(Exception):
     """Base exception for Container errors."""
+
+
+class _ContainerQuotaExceededError(QuotaExceededError, ContainerError):
+    """A quota rejection from a container launch."""
 
 
 class ImageBuildError(ContainerError):
@@ -1163,7 +1168,10 @@ class Container:
             )
             stub = self._client.stub(container_connect.ContainerServiceClientSync)
             try:
-                resp = self._client.call(stub.run_container, request, timeout=60)
+                with _translate_quota_error(_ContainerQuotaExceededError):
+                    resp = self._client.call(stub.run_container, request, timeout=60)
+            except QuotaExceededError:
+                raise
             except ConnectRpcError as e:
                 raise ContainerError(
                     f"RunContainer failed: {rpc_error_message(e)}"
