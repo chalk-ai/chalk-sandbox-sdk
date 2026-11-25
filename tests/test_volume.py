@@ -170,7 +170,8 @@ def test_put_dir_propagates_upload_failure(tmp_path, monkeypatch):
     assert volume.version.id == 10
 
 
-def test_upload_lazy_files_pins_uploaded_version(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", [None, 0o755, 0])
+def test_upload_lazy_files_forwards_mode_and_pins_version(tmp_path, monkeypatch, mode):
     from chalkcompute import Image
 
     client = _make_client(monkeypatch)
@@ -180,9 +181,16 @@ def test_upload_lazy_files_pins_uploaded_version(tmp_path, monkeypatch):
     _prepare_upload(client, version_id=12)
     source = tmp_path / "bridge.py"
     source.write_text("pass")
+    source.chmod(0o644)
     mounts = client.upload_lazy_files(
-        Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
+        Image.base("engine:1").add_local_file(
+            str(source), "/assets/bridge.py", mode=mode
+        )
     )
+    expected = (
+        ("bridge.py", source) if mode is None else ("bridge.py", source, {"mode": mode})
+    )
+    assert client._inner.upload.call_args.args[1] == [expected]
     assert len(mounts) == 1
     assert mounts[0].version_id == 12
     assert mounts[0].ref_name is None
@@ -1260,22 +1268,20 @@ def test_remove_file_delegates_to_native_remove_files(
     )
 
 
-def _lazy_image(tmp_path, dest: str = "/app/f.txt"):
+def _lazy_image(tmp_path, dest: str = "/app/f.txt", *, mode: int | None = None):
     from chalkcompute._image import Image, LazyLocalFile
 
     src = tmp_path / "f.txt"
     src.write_bytes(b"hi")
     image = Image.base("python:3.14")
-    image._lazy_local_files = {LazyLocalFile(src=str(src), dest=dest)}
+    image._lazy_local_files = {LazyLocalFile(src=str(src), dest=dest, mode=mode)}
     return image, src
 
 
 def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    from pathlib import Path
-
-    image, src = _lazy_image(tmp_path)
+    image, src = _lazy_image(tmp_path, mode=0o755)
     client = _make_client(monkeypatch)
     client._rpc.get_volume.side_effect = _not_found()
     client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
@@ -1297,7 +1303,7 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     staged = client._inner.stage.return_value
     client._inner.stage.assert_called_once_with(
         "fn-src-add-app",
-        [("f.txt", Path(str(src)))],
+        [("f.txt", src, {"mode": 0o755})],
         vv._default_upload_config(),
     )
     client._inner.staged_intent.assert_called_once_with(
