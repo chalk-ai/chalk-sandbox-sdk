@@ -771,6 +771,65 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### Creating an online evaluation
+
+Run this script with Chalk credentials for an environment with evaluations
+enabled. Set `model` to a model available through that environment's AI router.
+
+Keep the judge at module scope so its deployed handler can import it. The
+judge's arguments use the names of the telemetry columns it reads.
+
+```python
+from dataclasses import dataclass
+
+import chalkcompute as cc
+
+
+@dataclass
+class AnswerQuality:
+    score: float
+    reason: str
+
+
+judge = cc.scorers.llm_judge(
+    AnswerQuality,
+    model="gpt-5",
+    instructions="Score how well the output answers the input, from 0 to 1.",
+    inputs=("input_value", "output_value"),
+)
+
+if __name__ == "__main__":
+    evaluation = cc.OnlineEvaluation.create(
+        "LLM answer quality",
+        scope=cc.EvaluatorScope.SPAN,
+        predicate=(
+            "openinference_span_kind = 'LLM' "
+            "AND input_value IS NOT NULL AND output_value IS NOT NULL"
+        ),
+        sample_rate=0.05,
+        scorers=[judge],
+        enabled=True,
+    )
+    print(f"Saved online evaluation {evaluation.id}")
+```
+
+Creation pins the deployed judge's Function version and saves an enabled
+definition with a 5% sample rate for matching spans. The judge Function and
+evaluation definition persist after the script exits.
+
+Use `cc.OnlineEvaluation.list(enabled=True, limit=20)` to get a list of the
+20 newest enabled evaluations (or fewer if fewer match). To stream up to 20 paused evaluations, use
+`cc.OnlineEvaluation.filter_by(enabled=False).limit(20).iter()`. Pages are
+fetched as you iterate. Use `cc.OnlineEvaluation.iter()` to stream all evaluations.
+
+If another caller edits the evaluation after you fetch it, `update()` raises
+`cc.EvaluationError` with `status_code == 409`. Call
+`latest = evaluation.refresh()` to fetch the current definition into a new
+handle. Review its settings, then apply any edit you still want, for example
+`evaluation = latest.update(enabled=False)`.
+
+Online scorer IDs are their names within the evaluator.
+
 ### Reading span metrics
 
 Scorers can accept `trace: cc.Trace` and read typed usage values from each span:

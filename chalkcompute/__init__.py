@@ -114,6 +114,12 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "EvaluationScorerResult",
     ),
     "EvaluationSuite": ("chalkcompute._evaluation", "EvaluationSuite"),
+    "EvaluatorScope": (
+        "chalkcompute._gen.chalk.evaluation.v1.service_pb",
+        "EvaluatorScope",
+    ),
+    "OnlineEvaluation": ("chalkcompute._evaluation", "OnlineEvaluation"),
+    "OnlineEvaluationLookup": ("chalkcompute._evaluation", "OnlineEvaluationLookup"),
     # _experiment.py
     "Experiment": ("chalkcompute._experiment", "Experiment"),
     "ExperimentClient": ("chalkcompute._experiment", "ExperimentClient"),

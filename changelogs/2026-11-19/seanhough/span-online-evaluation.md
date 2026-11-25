@@ -1,0 +1,2 @@
+- Add `cc.OnlineEvaluation` to create, read, update, and delete span-level definitions with pinned scorers.
+- Add paginated listing for online evaluations.

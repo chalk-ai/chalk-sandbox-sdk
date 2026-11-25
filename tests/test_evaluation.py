@@ -1016,3 +1016,378 @@ def test_archive_suite_translates_not_found() -> None:
     )
     with pytest.raises(EvaluationNotFoundError):
         EvaluationClient(connect_client=transport).archive_suite("missing")
+
+
+def test_online_evaluation_crud_pins_judge_and_uses_saved_revision(
+    monkeypatch: pytest.MonkeyPatch, no_deploy: Any
+) -> None:
+    import chalkcompute as cc
+
+    @dataclass
+    class Grade:
+        score: float
+
+    judge = scorers.llm_judge(
+        Grade, model="model", inputs=("input_value", "output_value")
+    )
+    assert isinstance(judge, RemoteFunction)
+    judge._version_info = FunctionVersionInfo(
+        id="judge-v2", function_name="grade", version=2, scaling_group_name="sg-grade"
+    )
+    predicate = "openinference_span_kind = 'LLM'"
+    raw = {
+        "id": "online-1",
+        "environmentId": "env-1",
+        "revision": "1",
+        "spec": {
+            "name": "Online quality",
+            "scope": "EVALUATOR_SCOPE_SPAN",
+            "predicate": {"sqlExpression": predicate},
+            "sampleRate": 0.05,
+            "enabled": True,
+            "scorers": [
+                {
+                    "name": "grade",
+                    "spec": {"function": {"functionVersionId": "judge-v2"}},
+                }
+            ],
+            "metadata": {"owner": "ml"},
+        },
+    }
+    updated_raw = {
+        **raw,
+        "revision": "2",
+        "spec": {
+            **raw["spec"],
+            "enabled": False,
+            "sampleRate": 1.0,
+            "predicate": {"sqlExpression": ""},
+        },
+    }
+    connect = _FakeConnectClient(
+        {
+            "create_online_evaluator": [
+                _message(
+                    evaluation_pb.CreateOnlineEvaluatorResponse,
+                    {"onlineEvaluator": raw},
+                )
+            ],
+            "get_online_evaluator": [
+                _message(
+                    evaluation_pb.GetOnlineEvaluatorResponse, {"onlineEvaluator": raw}
+                ),
+                _message(
+                    evaluation_pb.GetOnlineEvaluatorResponse,
+                    {"onlineEvaluator": updated_raw},
+                ),
+                ConnectRpcError(Code.NOT_FOUND, "online evaluator not found"),
+            ],
+            "update_online_evaluator": [
+                _message(
+                    evaluation_pb.UpdateOnlineEvaluatorResponse,
+                    {"onlineEvaluator": updated_raw},
+                ),
+                ConnectRpcError(
+                    Code.ABORTED, "online evaluator was updated concurrently"
+                ),
+                _message(
+                    evaluation_pb.UpdateOnlineEvaluatorResponse,
+                    {
+                        "onlineEvaluator": {
+                            **updated_raw,
+                            "revision": "3",
+                            "spec": {**updated_raw["spec"], "name": "Renamed"},
+                        }
+                    },
+                ),
+            ],
+            "delete_online_evaluator": [
+                evaluation_pb.DeleteOnlineEvaluatorResponse(
+                    online_evaluator_id="online-1"
+                )
+            ],
+        }
+    )
+    monkeypatch.setattr("chalkcompute._evaluation.ConnectClient", lambda **_: connect)
+
+    created = cc.OnlineEvaluation.create(
+        " Online quality ",
+        predicate=f"  {predicate}  ",
+        sample_rate=0.05,
+        scorers=[judge],
+    )
+    assert not hasattr(created, "revision")
+    create_request = connect.calls[-1][1]
+    assert create_request.spec.sample_rate == 0.05
+    assert create_request.spec.name == "Online quality"
+    assert create_request.spec.scope is cc.EvaluatorScope.SPAN
+    assert create_request.spec.predicate.sql_expression == predicate
+    assert (
+        create_request.spec.scorers[0].spec.implementation.value.function_version_id
+        == "judge-v2"
+    )
+
+    saved = cc.OnlineEvaluation.from_id(created.id)
+    assert saved.scope is cc.EvaluatorScope.SPAN
+    assert saved.predicate == predicate
+    assert saved.scorers == (
+        cc.EvaluationScorer(id="grade", function_version_id="judge-v2"),
+    )
+    updated = saved.update(
+        name=" Online quality ", enabled=False, predicate="  ", sample_rate=1.0
+    )
+    update_request = connect.calls[-1][1]
+    assert update_request.spec.sample_rate == 1.0
+    assert update_request.spec.name == "Online quality"
+    assert update_request.expected_revision == 1
+    assert update_request.spec.predicate.sql_expression == ""
+    assert update_request.spec.enabled is False
+    assert update_request.spec.metadata.to_json() == '{"owner":"ml"}'
+    assert (
+        update_request.spec.scorers[0].spec.implementation.value.function_version_id
+        == "judge-v2"
+    )
+    assert saved.predicate == predicate
+    with pytest.raises(EvaluationError, match="concurrently") as stale:
+        saved.update(enabled=False)
+    assert stale.value.status_code == 409
+    assert connect.calls[-1][1].expected_revision == 1
+
+    reread = saved.refresh()
+    assert reread.predicate == ""
+    assert reread.enabled is False
+    assert reread.scorers == saved.scorers
+
+    reread.update(name="Renamed")
+    retry = connect.calls[-1][1]
+    assert retry.expected_revision == 2
+    assert retry.spec.name == "Renamed"
+    assert retry.spec.enabled is False
+    assert retry.spec.predicate.sql_expression == ""
+    updated.delete()
+    assert connect.calls[-1][1].online_evaluator_id == updated.id
+    with pytest.raises(EvaluationNotFoundError) as missing:
+        cc.OnlineEvaluation.from_id(updated.id)
+    assert missing.value.status_code == 404
+
+
+@pytest.mark.parametrize("lazy", [True, False])
+def test_list_online_evaluations_paginates_with_enabled_filter(
+    monkeypatch: pytest.MonkeyPatch,
+    lazy: bool,
+) -> None:
+    import chalkcompute as cc
+
+    def evaluator(evaluator_id: str) -> evaluation_pb.OnlineEvaluator:
+        return evaluation_pb.OnlineEvaluator(
+            id=evaluator_id,
+            revision=1,
+            spec=evaluation_pb.OnlineEvaluatorSpec(
+                name="Span quality",
+                scope=cc.EvaluatorScope.SPAN,
+                enabled=False,
+            ),
+        )
+
+    connect = _FakeConnectClient(
+        {
+            "list_online_evaluators": [
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=[evaluator("newer")], next_cursor="page-2"
+                ),
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=[evaluator("older")], next_cursor="page-3"
+                ),
+            ],
+        }
+    )
+    monkeypatch.setattr("chalkcompute._evaluation.ConnectClient", lambda **_: connect)
+
+    if lazy:
+        iterator = cc.OnlineEvaluation.filter_by(enabled=False).limit(2).iter()
+        assert connect.calls == []
+        assert next(iterator).id == "newer"
+        assert len(connect.calls) == 1
+        assert [evaluation.id for evaluation in iterator] == ["older"]
+    else:
+        evaluations = cc.OnlineEvaluation.list(enabled=False, limit=2)
+        assert isinstance(evaluations, list)
+        assert [evaluation.id for evaluation in evaluations] == ["newer", "older"]
+
+    first, second = (request for _, request in connect.calls)
+    assert first.limit == 2
+    assert first.cursor == ""
+    assert second.limit == 1
+    assert second.cursor == "page-2"
+    assert first.filters.to_json() == '{"enabled":false}'
+    assert second.filters.to_json() == '{"enabled":false}'
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("name", None, TypeError),
+        ("predicate", None, TypeError),
+        ("sample_rate", None, TypeError),
+        ("scorers", None, TypeError),
+        ("enabled", None, TypeError),
+        ("sample_rate", 0.0, ValueError),
+        ("sample_rate", -0.01, ValueError),
+        ("sample_rate", 1.01, ValueError),
+        ("sample_rate", float("nan"), ValueError),
+        ("sample_rate", float("inf"), ValueError),
+        ("sample_rate", True, TypeError),
+        ("sample_rate", "1", TypeError),
+        ("enabled", 1, TypeError),
+        ("name", "  ", ValueError),
+        ("predicate", 1, TypeError),
+        ("predicate", "é" * 2001, ValueError),
+        ("scorers", [], ValueError),
+        (
+            "scorers",
+            [SqlExpression("score", "1"), SqlExpression("score", "2")],
+            ValueError,
+        ),
+    ],
+)
+def test_invalid_online_edits_fail_before_rpc(
+    field: str, value: Any, error: type[Exception]
+) -> None:
+    raw = evaluation_pb.OnlineEvaluator(
+        id="id", revision=1, spec=evaluation_pb.OnlineEvaluatorSpec(name="Quality")
+    )
+    connect = _FakeConnectClient(
+        {
+            "get_online_evaluator": [
+                evaluation_pb.GetOnlineEvaluatorResponse(online_evaluator=raw)
+            ]
+        }
+    )
+    client = EvaluationClient(connect_client=connect)
+    saved = client.get_online("id")
+    create_args = {
+        "name": "Quality",
+        "scorers": [SqlExpression("quality", "1")],
+        field: value,
+    }
+    expected = (
+        r"^use enabled=False to disable scoring instead of sample_rate 0\.0$"
+        if field == "sample_rate" and value == 0.0
+        else field.rstrip("s")
+    )
+    with pytest.raises(error, match=expected):
+        client.create_online(**create_args)
+    with pytest.raises(error, match=expected):
+        saved.update(**{field: value})
+    assert len(connect.calls) == 1
+
+
+def test_online_create_forwards_distinct_scorer_names_and_sql_predicate() -> None:
+    names = ["A-b", "a_b", "é", *(f"score_{i}" for i in range(30))]
+    predicate = "output_value = ';'"
+    raw = evaluation_pb.OnlineEvaluator(
+        id="id", spec=evaluation_pb.OnlineEvaluatorSpec()
+    )
+    connect = _FakeConnectClient(
+        {
+            "create_online_evaluator": [
+                evaluation_pb.CreateOnlineEvaluatorResponse(online_evaluator=raw)
+            ]
+        }
+    )
+    EvaluationClient(connect_client=connect).create_online(
+        "Quality",
+        scorers=[SqlExpression(name, "1") for name in names],
+        predicate=predicate,
+    )
+    spec = connect.calls[0][1].spec
+    assert [scorer.name for scorer in spec.scorers] == names
+    assert spec.predicate.sql_expression == predicate
+
+
+def test_online_update_validates_retained_spec_fields() -> None:
+    raw = evaluation_pb.OnlineEvaluator(
+        id="id", spec=evaluation_pb.OnlineEvaluatorSpec(name="Quality", sample_rate=2.0)
+    )
+    connect = _FakeConnectClient(
+        {
+            "get_online_evaluator": [
+                evaluation_pb.GetOnlineEvaluatorResponse(online_evaluator=raw)
+            ]
+        }
+    )
+    saved = EvaluationClient(connect_client=connect).get_online("id")
+    with pytest.raises(ValueError, match="sample_rate"):
+        saved.update(name="Renamed")
+    assert saved.name == "Quality"
+    assert [method for method, _ in connect.calls] == ["get_online_evaluator"]
+
+
+@pytest.mark.parametrize("scope", list(evaluation_pb.EvaluatorScope))
+def test_create_online_forwards_scope(scope: evaluation_pb.EvaluatorScope) -> None:
+    raw = evaluation_pb.OnlineEvaluator(
+        id="id", spec=evaluation_pb.OnlineEvaluatorSpec(scope=scope)
+    )
+    connect = _FakeConnectClient(
+        {
+            "create_online_evaluator": [
+                evaluation_pb.CreateOnlineEvaluatorResponse(online_evaluator=raw)
+            ]
+        }
+    )
+    client = EvaluationClient(connect_client=connect)
+    client.create_online(
+        "Quality", scope=scope, scorers=[SqlExpression("quality", "1")]
+    )
+    assert connect.calls[0][1].spec.scope == scope
+
+
+def test_online_lookup_and_iteration_validate_before_rpc() -> None:
+    connect = _FakeConnectClient({})
+    client = EvaluationClient(connect_client=connect)
+    for operation in (client.get_online, client.delete_online):
+        with pytest.raises(ValueError, match="evaluation_id"):
+            operation("  ")
+    for limit in (True, 1.5):
+        with pytest.raises(TypeError, match="limit"):
+            list(client.iter_online(limit=limit))
+    with pytest.raises(ValueError, match="limit"):
+        list(client.iter_online(limit=-1))
+    with pytest.raises(TypeError, match="enabled"):
+        list(client.iter_online(enabled="yes"))
+    assert list(client.iter_online(limit=0)) == []
+    assert connect.calls == []
+
+
+def test_online_evaluation_lookup_is_reusable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import chalkcompute as cc
+
+    rows = [
+        evaluation_pb.OnlineEvaluator(
+            id=str(i), spec=evaluation_pb.OnlineEvaluatorSpec()
+        )
+        for i in range(3)
+    ]
+    connect = _FakeConnectClient(
+        {
+            "list_online_evaluators": [
+                evaluation_pb.ListOnlineEvaluatorsResponse(
+                    online_evaluators=rows[:2], next_cursor="more"
+                ),
+                evaluation_pb.ListOnlineEvaluatorsResponse(online_evaluators=rows),
+            ]
+        }
+    )
+    supplied_client = object()
+
+    def connect_for_client(*, chalk_client):
+        assert chalk_client is supplied_client
+        return connect
+
+    monkeypatch.setattr("chalkcompute._evaluation.ConnectClient", connect_for_client)
+    paused = cc.OnlineEvaluation.filter_by(enabled=False, chalk_client=supplied_client)
+    assert list(paused.limit(0).iter()) == []
+    assert connect.calls == []
+    assert [row.id for row in paused.limit(2).iter()] == ["0", "1"]
+    assert [row.id for row in paused.iter()] == ["0", "1", "2"]
+    assert all(request.filters.enabled is False for _, request in connect.calls)
