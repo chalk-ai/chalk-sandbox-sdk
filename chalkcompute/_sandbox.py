@@ -33,6 +33,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, cast
 
 from connectrpc.code import Code
@@ -149,6 +150,12 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
+
+class VolumeCommitPolicy(Enum):
+    """Managed-host volume publication policy on sandbox termination."""
+
+    ABANDON = "abandon"
 
 
 class SandboxError(Exception):
@@ -2118,7 +2125,12 @@ class Sandbox:
         self.refresh()
 
     @_instrumented("chalkcompute.sandbox.terminate")
-    def terminate(self, grace_period_seconds: int | None = None) -> None:
+    def terminate(
+        self,
+        grace_period_seconds: int | None = None,
+        *,
+        volume_commit_policy: VolumeCommitPolicy | None = None,
+    ) -> None:
         """Terminate this sandbox.
 
         Metadata remains available through :attr:`info` and :meth:`refresh`.
@@ -2128,14 +2140,23 @@ class Sandbox:
         ----------
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
+        volume_commit_policy
+            By default, publish pending writes after sandbox processes exit. Use
+            :attr:`VolumeCommitPolicy.ABANDON` to interrupt outstanding managed-host
+            publication, including after an earlier termination. Buffered writes may be lost.
         """
         _set_sandbox_span_id(self._id)
-        if self._terminated:
+        policy = {
+            None: pb.VolumeCommitPolicy.UNSPECIFIED,
+            VolumeCommitPolicy.ABANDON: pb.VolumeCommitPolicy.ABANDON,
+        }[volume_commit_policy]
+        if self._terminated and policy != pb.VolumeCommitPolicy.ABANDON:
             return
         client = self._require_client()
-        sandbox_id = self._require_started()
+        sandbox_id = self._terminated_id or self._require_started()
         req = pb.TerminateSandboxRequest(
             id=sandbox_id,
+            volume_commit_policy=policy,
             grace_period=Duration(seconds=grace_period_seconds)
             if grace_period_seconds is not None
             else None,

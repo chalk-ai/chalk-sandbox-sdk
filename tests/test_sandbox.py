@@ -14,6 +14,7 @@ from chalkcompute import (
     Sandbox,
     SandboxSnapshot,
     Secret,
+    VolumeCommitPolicy,
 )
 from connectrpc.client import ConnectClientSync
 from connectrpc.code import Code
@@ -1319,6 +1320,20 @@ def test_sandbox_info_after_terminate_reads_server_metadata(
     assert refreshed == info
     assert refreshed is not info
     assert stub.get_sandbox.call_count == 2
+
+
+def test_abandon_commits_after_termination(
+    lifecycle_sandbox: tuple[Sandbox, MagicMock],
+) -> None:
+    sandbox, stub = lifecycle_sandbox
+    sandbox.terminate()
+    request = stub.terminate_sandbox.call_args.args[0]
+    assert request.volume_commit_policy == pb.VolumeCommitPolicy.UNSPECIFIED
+
+    sandbox.terminate(volume_commit_policy=VolumeCommitPolicy.ABANDON)
+    request = stub.terminate_sandbox.call_args.args[0]
+    assert request.id == "sandbox-123"
+    assert request.volume_commit_policy == pb.VolumeCommitPolicy.ABANDON
 
 
 @pytest.mark.parametrize(
