@@ -859,6 +859,8 @@ remain available for other telemetry fields.
 `cc.scorers` deploys common scorers without a function body. Each one takes an
 `inputs` pair naming the candidate column and the column it is compared
 against, scores between 0 and 1, and records the raw quantity as row metadata.
+Scorer factories can be called inside a setup function or a `__main__` block;
+workers load the captured scorer configuration without rerunning that setup.
 
 Function-backed scorers default to zero idle replicas and wake one replica when
 an evaluation queues work. Supplying either replica bound uses the ordinary
@@ -912,11 +914,14 @@ class TraceQuality:
     task_correctness: int = field(metadata={"description": "Was the task actually completed, from 0 to 2?"})
     reason: str
 
-trace_quality = cc.scorers.llm_judge(
-    TraceQuality,
-    model="gpt-5",
-    instructions="You are grading a browser agent's login attempt.",
-)
+def create_judge(instructions):
+    return cc.scorers.llm_judge(
+        TraceQuality,
+        model="gpt-5",
+        instructions=instructions,
+    )
+
+trace_quality = create_judge("You are grading a browser agent's login attempt.")
 ```
 
 Dataclass judges can be declared without Pydantic installed. Their annotations
@@ -939,8 +944,11 @@ environment itself, and the router holds the provider credentials. To call a
 provider directly instead, pass `api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY")`,
 and `base_url` for any other OpenAI-compatible endpoint. Every function deployed from the
 same module imports that module, so if it imports Pydantic, give sibling functions
-an image with `pydantic` as well. A judge is generated
-at import time, so it cannot be deployed in strip mode.
+an image with `pydantic` as well. To create a judge inside a function or
+conditional, keep the response model and any `prompt_fn` or `parse_fn` as
+importable definitions in a shipped module. Existing import-time declarations
+with lambdas or local definitions continue to use source loading. Judges
+require the SDK runtime and cannot be deployed in strip mode.
 
 `cc.scorers.jev` is a judge that escalates when unsure, the cascade from
 [JEV-as-a-Judge](https://arxiv.org/abs/2609.26550). The cheap model picks a
