@@ -50,6 +50,9 @@ class StubbedConnectClient:
     def stub(self, stub_cls: type) -> _FakeStub:
         return _FakeStub(stub_cls)
 
+    def function_dashboard_url(self, function_name: str) -> str | None:
+        return None
+
 
 def default_container_handler(method: str, request: Any) -> Any:
     """Successful responses for the ContainerService lifecycle."""
